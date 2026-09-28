@@ -1,0 +1,25 @@
+# Phụ thuộc & build output — mỗi package con đã có .gitignore riêng, đây là
+# lưới an toàn ở gốc repo.
+node_modules/
+dist/
+dist-electron/
+release/
+out/
+
+# Dữ liệu thật — KHÔNG BAO GIỜ đẩy lên GitHub: database SQLite chứa hồ sơ
+# khách hàng/bệnh án, ảnh trước-sau, log vận hành, và bản backup trước khi
+# rebrand sang Louva.
+**/data/
+*.db
+*.db-journal
+_backup_legacy/
+.run/
+
+# Môi trường & khoá
+.env
+.env.local
+!.env.example
+
+# Khác
+*.log
+.DS_Store

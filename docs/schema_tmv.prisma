@@ -1,0 +1,3237 @@
+// =============================================================================
+// LƯỢC ĐỒ DỮ LIỆU — CRM ĐA PHÒNG BAN CHO PHÒNG KHÁM PHẪU THUẬT THẨM MỸ
+// =============================================================================
+//
+//  ĐÂY LÀ BẢN NHÁP THIẾT KẾ. KHÔNG phải schema đang chạy.
+//  Schema đang chạy (SQLite, 5 model): crm-app/backend/prisma/schema.prisma
+//  — TUYỆT ĐỐI KHÔNG ghi đè tệp đó bằng tệp này.
+//
+//  Tài liệu kiến trúc đi kèm:
+//    wiki/Phong_Kham_Tham_My/Kien_Truc_CRM_Tham_My.md
+//
+//  Khác biệt nền tảng so với schema hiện tại:
+//    1. PostgreSQL thay cho SQLite  -> có enum thật, JSONB, đồng thời nhiều người ghi.
+//    2. Đa cơ sở (Branch)           -> khách LIÊN THÔNG, bệnh án CÁCH LY theo cơ sở.
+//    3. RBAC động (Role/Permission) -> thay 2 vai trò cứng ADMIN/SALE.
+//    4. AuditLog + DataAccessLog    -> ghi cả thay đổi lẫn hành vi CHỈ ĐỌC bệnh án/ảnh.
+//    5. Tiền dùng Decimal(14,2)     -> không bao giờ dùng Float cho tiền.
+//
+//  Quy ước:
+//    - Mọi bảng nghiệp vụ theo cơ sở đều có branchId.
+//    - Bảng y khoa (MedicalRecord, ProcedureRecord, PhotoAsset, ConsentForm)
+//      có branchId NOT NULL và bị cách ly theo cơ sở ở tầng truy vấn.
+//    - onDelete: Restrict cho dữ liệu y tế/tài chính (không được xoá mất vết),
+//      Cascade cho dữ liệu con thuần tuý, SetNull cho tham chiếu người dùng.
+//    - Sinh hash tiền tệ: Decimal @db.Decimal(14, 2)
+//
+//  Kiểm tra cú pháp:
+//    DATABASE_URL="postgresql://u:p@localhost:5432/db" \
+//    npx prisma validate --schema crm-app/docs/schema_tmv.prisma
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ENUM
+// =============================================================================
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED // tạm khoá (nghỉ phép dài, kỷ luật)
+  RESIGNED  // đã nghỉ việc -> thu hồi toàn bộ phiên, chạy bàn giao khách
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum PermissionScope {
+  ALL    // toàn công ty
+  BRANCH // trong cơ sở của mình
+  OWN    // chỉ dữ liệu mình phụ trách
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  APPROVE
+  REJECT
+  LOGIN
+  LOGIN_FAILED
+  LOGOUT
+  BREAK_GLASS
+}
+
+enum AccessResourceType {
+  MEDICAL_RECORD
+  PHOTO
+  CUSTOMER_PHONE
+  CONSENT_FORM
+  PROCEDURE
+  REPORT_EXPORT
+}
+
+enum AccessSeverity {
+  NORMAL
+  ELEVATED // vượt phạm vi thông thường
+  CRITICAL // break-glass, export lớn, tải ảnh hàng loạt
+}
+
+enum LeadStage {
+  NEW
+  CONTACTING
+  APPOINTED   // đã đặt lịch
+  ARRIVED     // đã đến phòng khám
+  WON         // đã ký hợp đồng
+  LOST
+  SPAM
+}
+
+enum CustomerStatus {
+  LEAD
+  ACTIVE      // đang dùng dịch vụ
+  POST_OP     // đang trong giai đoạn hậu phẫu
+  COMPLETED
+  INACTIVE
+  BLACKLIST
+}
+
+enum ChannelKind {
+  FACEBOOK
+  TIKTOK
+  GOOGLE
+  ZALO
+  WEBSITE
+  REFERRAL   // khách cũ giới thiệu
+  WALK_IN
+  HOTLINE
+  KOL
+  OTHER
+}
+
+enum ConversationKind {
+  CUSTOMER // tab "Khách"
+  GROUP    // tab "Nhóm"
+}
+
+enum ConversationChannel {
+  ZALO_OA
+  ZALO_GROUP
+  FACEBOOK
+  HOTLINE
+  INTERNAL
+}
+
+enum MessageDirection {
+  IN
+  OUT
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  STICKER
+  LOCATION
+  TEMPLATE // ZNS
+  SYSTEM   // sự kiện hệ thống hiển thị trong luồng chat
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum AppointmentType {
+  CONSULT           // tư vấn
+  PROCEDURE         // thủ thuật (tiêm, laser)
+  SURGERY           // phẫu thuật
+  FOLLOW_UP         // tái khám
+  TREATMENT_SESSION // buổi trong gói liệu trình
+  OBSTETRIC         // khám sản (dùng chung cho cơ sở Y học bào thai)
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CONFIRMED
+  CHECKED_IN
+  IN_SERVICE
+  DONE
+  NO_SHOW
+  CANCELLED
+  RESCHEDULED
+}
+
+enum VisitStatus {
+  WAITING    // đã check-in, đang chờ
+  CONSULTING // đang tư vấn
+  IN_SERVICE // đang làm dịch vụ
+  RECOVERY   // hồi sức / nghỉ sau thủ thuật
+  PAYING     // chờ thanh toán
+  DONE
+  LEFT       // bỏ về giữa chừng
+}
+
+enum RoomType {
+  CONSULT
+  TREATMENT
+  OPERATING // phòng mổ
+  RECOVERY
+  LASER
+  ULTRASOUND // siêu âm (cơ sở sản)
+}
+
+enum ShiftKind {
+  OFFICE
+  MORNING
+  AFTERNOON
+  EVENING
+  NIGHT
+  ON_CALL
+  SURGERY_DUTY
+}
+
+enum ShiftAssignmentStatus {
+  PLANNED
+  CONFIRMED
+  SWAPPED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  EARLY_LEAVE
+  ABSENT
+  ON_LEAVE
+  HOLIDAY
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  UNPAID
+  MATERNITY
+  COMPENSATORY
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ServiceKind {
+  SURGERY    // phẫu thuật: nâng mũi, cắt mí, hút mỡ...
+  INJECTION  // tiêm: filler, botox, meso
+  LASER
+  SKIN_CARE
+  THREAD_LIFT
+  DENTAL
+  OBSTETRIC  // dịch vụ sản/siêu âm
+  OTHER
+}
+
+enum PackageStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  EXPIRED
+  CANCELLED
+}
+
+enum QuotationStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+enum ContractStatus {
+  DRAFT
+  SIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BANK_TRANSFER
+  QR_CODE
+  EWALLET
+  INSTALLMENT_PARTNER // trả góp qua đối tác tài chính
+  VOUCHER
+  DEPOSIT             // trừ vào tiền cọc/ví khách
+}
+
+enum InstallmentKind {
+  IN_HOUSE // phòng khám tự cho trả góp
+  PARTNER  // qua công ty tài chính
+}
+
+enum InstallmentStatus {
+  PENDING
+  PAID
+  OVERDUE
+  WAIVED
+  CANCELLED
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  PAID
+}
+
+enum ProductKind {
+  FILLER
+  BOTOX
+  THREAD
+  IMPLANT
+  DRUG
+  CONSUMABLE
+  COSMETIC
+  EQUIPMENT
+}
+
+enum StockMoveType {
+  PURCHASE_IN
+  USE_OUT      // xuất dùng cho ca -> truy vết lô về khách
+  SALE_OUT     // bán lẻ sản phẩm
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUST_IN
+  ADJUST_OUT
+  DISPOSE      // huỷ do hết hạn/hỏng
+  RETURN_OUT   // trả nhà cung cấp
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  ORDERED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+enum ProcedureStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  ABORTED
+  CANCELLED
+}
+
+enum AnesthesiaType {
+  NONE
+  TOPICAL
+  LOCAL
+  SEDATION
+  GENERAL
+}
+
+enum PhotoStage {
+  BEFORE
+  INTRA_OP
+  AFTER_D1
+  AFTER_D3
+  AFTER_D7
+  AFTER_M1
+  AFTER_M3
+  AFTER_M6
+  AFTER_Y1
+  OTHER
+}
+
+enum ConsentType {
+  SURGERY       // cam kết phẫu thuật
+  ANESTHESIA    // cam kết gây mê
+  PHOTO_USAGE   // đồng ý dùng ảnh cho truyền thông
+  DATA_PRIVACY  // đồng ý xử lý dữ liệu cá nhân (NĐ 13/2023)
+  FINANCE       // cam kết thanh toán / trả góp
+  RISK_DISCLOSURE
+}
+
+enum ConsentStatus {
+  PENDING
+  SIGNED
+  REVOKED // khách rút lại đồng ý -> phải gỡ ảnh khỏi thư viện case
+  EXPIRED
+}
+
+enum ComplicationSeverity {
+  MILD
+  MODERATE
+  SEVERE
+  LIFE_THREATENING
+}
+
+enum ComplicationStatus {
+  REPORTED
+  TREATING
+  RESOLVED
+  REFERRED // chuyển tuyến
+}
+
+enum ComplaintStatus {
+  NEW
+  ACKNOWLEDGED
+  INVESTIGATING
+  RESOLVED
+  ESCALATED
+  CLOSED
+}
+
+enum CaseStudyStatus {
+  DRAFT
+  PENDING_APPROVAL
+  PUBLISHED
+  REJECTED
+  WITHDRAWN // khách rút đồng ý hoặc quản lý gỡ
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELLED
+  OVERDUE
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum ActivityType {
+  NOTE
+  CALL
+  ZALO_MESSAGE
+  STATUS_CHANGE
+  ASSIGNED
+  APPOINTMENT
+  CONTRACT
+  PAYMENT
+  VISIT
+  SYSTEM
+}
+
+enum KpiGroup {
+  SALES     // KPI kinh doanh
+  NURSING   // KPI điều dưỡng (TÁCH RIÊNG khỏi kinh doanh)
+  DOCTOR
+  RECEPTION
+  MARKETING
+  CLINIC_OPS
+}
+
+enum KpiPeriodType {
+  DAY
+  WEEK
+  MONTH
+  QUARTER
+  YEAR
+}
+
+enum CommissionBasis {
+  CONTRACT_VALUE // trên giá trị hợp đồng
+  COLLECTED_CASH // trên tiền THỰC THU (khuyến nghị dùng cái này)
+  GROSS_PROFIT
+  FIXED_AMOUNT
+}
+
+enum CommissionRoleKind {
+  CONSULTANT // người tư vấn
+  CLOSER     // người chốt
+  PERFORMER  // người thực hiện dịch vụ
+  TELESALE   // người mang khách về
+  REFERRER
+}
+
+enum CommissionStatus {
+  PENDING
+  APPROVED
+  PAID
+  CANCELLED
+}
+
+enum CashDirection {
+  IN
+  OUT
+}
+
+enum NotificationChannel {
+  IN_APP
+  ZALO_ZNS
+  SMS
+  EMAIL
+}
+
+// =============================================================================
+// KHỐI 1 — TỔ CHỨC, NGƯỜI DÙNG, PHÂN QUYỀN, KIỂM TOÁN
+// =============================================================================
+
+/// Cơ sở (chi nhánh). Trục phân quyền thứ 2 của toàn hệ thống.
+/// Ví dụ: "PK Y học bào thai Dr. Tú", "PK PTTM Dr. Tú".
+model Branch {
+  id        String   @id @default(uuid())
+  code      String   @unique // PK_SAN, PK_TMV
+  name      String
+  address   String?
+  phone     String?
+  taxCode   String?
+  /// Giấy phép hoạt động khám chữa bệnh (NĐ 96/2023)
+  licenseNo String?
+  timezone  String   @default("Asia/Ho_Chi_Minh")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  departments      Department[]
+  userLinks        UserBranch[]
+  customerLinks    CustomerBranchLink[]
+  leads            Lead[]
+  campaigns        Campaign[]
+  zaloOAConfigs    ZaloOAConfig[]
+  conversations    Conversation[]
+  appointments     Appointment[]
+  visits           Visit[]
+  rooms            Room[]
+  shiftTemplates   ShiftTemplate[]
+  shiftAssignments ShiftAssignment[]
+  attendances      Attendance[]
+  consultations    ConsultationSession[]
+  quotations       Quotation[]
+  treatmentPlans   TreatmentPlan[]
+  medicalRecords   MedicalRecord[]
+  photoSets        PhotoSet[]
+  procedures       ProcedureRecord[]
+  surgerySchedules SurgerySchedule[]
+  followUpPlans    FollowUpPlan[]
+  complications    Complication[]
+  complaints       Complaint[]
+  caseStudies      CaseStudy[]
+  servicePrices    ServicePrice[]
+  contracts        Contract[]
+  invoices         Invoice[]
+  payments         Payment[]
+  refunds          Refund[]
+  warehouses       Warehouse[]
+  purchaseOrders   PurchaseOrder[]
+  cashbookEntries  CashbookEntry[]
+  kpiTargets       KpiTarget[]
+  commissionEntry  CommissionEntry[]
+  tasks            Task[]
+  surveys          SatisfactionSurvey[]
+  auditLogs        AuditLog[]
+  dataAccessLogs   DataAccessLog[]
+
+  @@map("branches")
+}
+
+/// Phòng ban trong một cơ sở (Lễ tân, Telesale, Chuyên môn, Kho, Kế toán...).
+model Department {
+  id        String   @id @default(uuid())
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  code      String
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employees EmployeeProfile[]
+
+  @@unique([branchId, code])
+  @@map("departments")
+}
+
+/// Tài khoản đăng nhập. Vai trò KHÔNG còn là cột cứng — xem UserRoleLink.
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  phone        String?    @unique
+  passwordHash String
+  name         String
+  avatarUrl    String?
+  status       UserStatus @default(ACTIVE)
+  /// Bắt buộc 2FA với vai trò chạm bệnh án / ảnh / tiền.
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret  String? // mã hoá ở tầng ứng dụng trước khi ghi
+  mustChangePassword Boolean @default(true)
+  lastLoginAt  DateTime?
+  resignedAt   DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  profile   EmployeeProfile?
+  branches  UserBranch[]
+  roleLinks UserRoleLink[]
+  sessions  AuthSession[]
+
+  auditLogs      AuditLog[]      @relation("AuditActor")
+  dataAccessLogs DataAccessLog[] @relation("AccessActor")
+  notifications  Notification[]  @relation("NotifyUser")
+
+  handoversFrom      CustomerHandover[] @relation("HandoverFrom")
+  handoversTo        CustomerHandover[] @relation("HandoverTo")
+  handoversPerformed CustomerHandover[] @relation("HandoverBy")
+
+  leadsOwned       Lead[]     @relation("LeadOwner")
+  leadsCreated     Lead[]     @relation("LeadCreator")
+  customersOwned   Customer[] @relation("CustomerOwner")
+  customersCreated Customer[] @relation("CustomerCreator")
+  activities       Activity[] @relation("ActivityActor")
+  tasksAssigned    Task[]     @relation("TaskAssignee")
+  tasksCreated     Task[]     @relation("TaskCreator")
+
+  conversationsAssigned Conversation[] @relation("ConvAssignee")
+  chatMessagesSent      ChatMessage[]  @relation("MsgSender")
+  quickReplies          QuickReply[]   @relation("QuickReplyAuthor")
+
+  appointmentsCreated      Appointment[] @relation("ApptCreator")
+  appointmentsAsDoctor     Appointment[] @relation("ApptDoctor")
+  appointmentsAsConsultant Appointment[] @relation("ApptConsultant")
+  visitsCheckedIn          Visit[]       @relation("VisitCheckInBy")
+
+  shiftAssignments        ShiftAssignment[] @relation("ShiftUser")
+  shiftAssignmentsCreated ShiftAssignment[] @relation("ShiftCreator")
+  attendances             Attendance[]      @relation("AttendanceUser")
+  leaveRequests           LeaveRequest[]    @relation("LeaveRequester")
+  leaveApprovals          LeaveRequest[]    @relation("LeaveApprover")
+
+  consultationsAsDoctor     ConsultationSession[] @relation("ConsultDoctor")
+  consultationsAsConsultant ConsultationSession[] @relation("ConsultConsultant")
+  quotations                Quotation[]           @relation("QuotationConsultant")
+  treatmentPlans            TreatmentPlan[]       @relation("PlanDoctor")
+
+  medicalRecordsPrimary     MedicalRecord[]       @relation("MRPrimaryDoctor")
+  medicalEntries            MedicalRecordEntry[]  @relation("MREntryAuthor")
+  allergiesRecorded         Allergy[]             @relation("AllergyRecorder")
+  contraindicationsRecorded Contraindication[]    @relation("ContraRecorder")
+  preOpLabsRecorded         PreOpLab[]            @relation("LabRecorder")
+  vitalSignsRecorded        VitalSign[]           @relation("VitalRecorder")
+  consentFormsWitnessed     ConsentForm[]         @relation("ConsentStaff")
+  photoSetsCreated          PhotoSet[]            @relation("PhotoSetCreator")
+  photosUploaded            PhotoAsset[]          @relation("PhotoUploader")
+
+  proceduresAsSurgeon      ProcedureRecord[]   @relation("ProcSurgeon")
+  proceduresAsAnesthetist  ProcedureRecord[]   @relation("ProcAnesthetist")
+  surgeryTeamRoles         SurgeryTeamMember[] @relation("SurgeryTeamUser")
+  surgerySchedulesCreated  SurgerySchedule[]   @relation("SurgeryCreator")
+
+  followUpTasks         FollowUpTask[]     @relation("FollowUpAssignee")
+  complicationsReported Complication[]     @relation("ComplicationReporter")
+  complaintsAssigned    Complaint[]        @relation("ComplaintHandler")
+  complaintActions      ComplaintAction[]  @relation("ComplaintActionUser")
+  caseStudiesAuthored   CaseStudy[]        @relation("CaseAuthor")
+  caseStudiesApproved   CaseStudy[]        @relation("CaseApprover")
+
+  contractsAsConsultant Contract[] @relation("ContractConsultant")
+  contractsAsCloser     Contract[] @relation("ContractCloser")
+  invoicesIssued        Invoice[]  @relation("InvoiceIssuer")
+  paymentsCollected     Payment[]  @relation("PaymentCashier")
+  refundsRequested      Refund[]   @relation("RefundRequester")
+  refundsApproved       Refund[]   @relation("RefundApprover")
+
+  stockMovements  StockMovement[] @relation("StockActor")
+  stockCounts     StockCount[]    @relation("StockCountUser")
+  purchaseOrders  PurchaseOrder[] @relation("POCreator")
+  productUsages   ProductUsage[]  @relation("UsageBy")
+
+  kpiTargets        KpiTarget[]          @relation("KpiTargetUser")
+  kpiActuals        KpiActual[]          @relation("KpiActualUser")
+  commissionEntries CommissionEntry[]    @relation("CommissionUser")
+  cashbookEntries   CashbookEntry[]      @relation("CashbookUser")
+  surveysCollected  SatisfactionSurvey[] @relation("SurveyCollector")
+  payrollLines      PayrollLine[]        @relation("PayrollUser")
+
+  @@index([status])
+  @@map("users")
+}
+
+/// Hồ sơ nhân sự (tách khỏi tài khoản đăng nhập).
+model EmployeeProfile {
+  id            String    @id @default(uuid())
+  userId        String    @unique
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId  String?
+  department    Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  employeeCode  String    @unique
+  jobTitle      String?
+  /// Chứng chỉ hành nghề (bắt buộc với bác sĩ, điều dưỡng)
+  licenseNo     String?
+  licenseExpiry DateTime?
+  gender        Gender?
+  dob           DateTime?
+  idNumber      String? // CCCD — mã hoá ở tầng ứng dụng
+  address       String?
+  hiredAt       DateTime?
+  terminatedAt  DateTime?
+  baseSalary    Decimal?  @db.Decimal(14, 2)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([departmentId])
+  @@map("employee_profiles")
+}
+
+/// Gán người dùng vào cơ sở. Một người có thể thuộc nhiều cơ sở.
+model UserBranch {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, branchId])
+  @@index([branchId])
+  @@map("user_branches")
+}
+
+/// Vai trò do quản lý tự tạo (thay 2 vai trò cứng ADMIN/SALE của schema cũ).
+model Role {
+  id          String   @id @default(uuid())
+  code        String   @unique // LE_TAN, TELESALE, TU_VAN_VIEN, BAC_SI, DIEU_DUONG, KHO, KE_TOAN, QUAN_LY_CO_SO, GIAM_DOC, QTHT
+  name        String
+  description String?
+  /// Vai trò hệ thống thì không cho sửa/xoá.
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions RolePermission[]
+  userLinks   UserRoleLink[]
+
+  @@map("roles")
+}
+
+/// Danh mục quyền dạng "module.action", ví dụ: medical_record.read,
+/// photo.download, report.export, medical.break_glass, customer.view_phone.
+model Permission {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  module      String
+  action      String
+  description String?
+  /// Quyền nhạy cảm -> mọi lần dùng đều ghi DataAccessLog.
+  sensitive   Boolean  @default(false)
+
+  roles RolePermission[]
+
+  @@unique([module, action])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String          @id @default(uuid())
+  roleId       String
+  role         Role            @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission      @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  /// Chiều thứ 3: phạm vi dữ liệu (ALL / BRANCH / OWN).
+  scope        PermissionScope @default(BRANCH)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+/// Gán vai trò cho người dùng, có thể giới hạn trong một cơ sở cụ thể.
+/// branchId = null nghĩa là vai trò áp dụng ở mọi cơ sở người đó thuộc về.
+model UserRoleLink {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  branchId  String?
+  createdAt DateTime @default(now())
+
+  @@unique([userId, roleId, branchId])
+  @@map("user_role_links")
+}
+
+/// Phiên đăng nhập — BẢNG THẬT để thu hồi được ngay khi nhân viên nghỉ việc.
+/// Schema cũ chỉ có JWT 7 ngày không thu hồi được: đó là lỗ hổng phải bịt.
+model AuthSession {
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String    @unique
+  deviceLabel      String?
+  ipAddress        String?
+  userAgent        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  revokedReason    String?
+  /// Phát hiện tái sử dụng refresh token đã xoay vòng -> khoá toàn bộ phiên.
+  rotatedFromId    String?
+  createdAt        DateTime  @default(now())
+  lastUsedAt       DateTime?
+
+  @@index([userId, revokedAt])
+  @@map("auth_sessions")
+}
+
+/// Nhật ký THAY ĐỔI dữ liệu. Bảng append-only (thu hồi UPDATE/DELETE ở cấp PG).
+model AuditLog {
+  id         String      @id @default(uuid())
+  actorId    String?
+  actor      User?       @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  branchId   String?
+  branch     Branch?     @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  action     AuditAction
+  entityType String
+  entityId   String?
+  beforeData Json?
+  afterData  Json?
+  ipAddress  String?
+  userAgent  String?
+  /// Hash của bản ghi trước đó -> phát hiện log bị sửa (hash chain).
+  prevHash   String?
+  hash       String?
+  createdAt  DateTime    @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// Nhật ký TRUY CẬP (chỉ đọc) dữ liệu nhạy cảm: bệnh án, ảnh, SĐT, export.
+/// TÁCH RIÊNG khỏi AuditLog vì mục đích và thời hạn lưu khác nhau.
+model DataAccessLog {
+  id           String             @id @default(uuid())
+  actorId      String?
+  actor        User?              @relation("AccessActor", fields: [actorId], references: [id], onDelete: SetNull)
+  branchId     String?
+  branch       Branch?            @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customerId   String?
+  customer     Customer?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  resourceType AccessResourceType
+  resourceId   String?
+  severity     AccessSeverity     @default(NORMAL)
+  /// Lý do bắt buộc nhập khi break-glass.
+  reason       String?
+  recordCount  Int                @default(1)
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime           @default(now())
+
+  @@index([customerId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([severity, createdAt])
+  @@map("data_access_logs")
+}
+
+/// Bàn giao khách khi nhân viên nghỉ việc / đổi vị trí.
+model CustomerHandover {
+  id            String   @id @default(uuid())
+  fromUserId    String
+  fromUser      User     @relation("HandoverFrom", fields: [fromUserId], references: [id], onDelete: Restrict)
+  toUserId      String
+  toUser        User     @relation("HandoverTo", fields: [toUserId], references: [id], onDelete: Restrict)
+  performedById String
+  performedBy   User     @relation("HandoverBy", fields: [performedById], references: [id], onDelete: Restrict)
+  branchId      String?
+  reason        String?
+  customerCount Int      @default(0)
+  conversationCount Int  @default(0)
+  taskCount     Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  @@index([fromUserId])
+  @@map("customer_handovers")
+}
+
+/// Cấu hình hệ thống dạng khoá-giá trị (ngưỡng cảnh báo, hạn mức export...).
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+model Notification {
+  id        String              @id @default(uuid())
+  userId    String
+  user      User                @relation("NotifyUser", fields: [userId], references: [id], onDelete: Cascade)
+  channel   NotificationChannel @default(IN_APP)
+  title     String
+  body      String?
+  linkUrl   String?
+  readAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+// =============================================================================
+// KHỐI 2 — MARKETING, LEAD, KHÁCH HÀNG, CSKH
+// =============================================================================
+
+/// Kênh lead (Facebook, TikTok, Google, Zalo, giới thiệu, walk-in...).
+model Channel {
+  id        String      @id @default(uuid())
+  code      String      @unique
+  name      String
+  kind      ChannelKind
+  active    Boolean     @default(true)
+  createdAt DateTime    @default(now())
+
+  campaigns Campaign[]
+  leads     Lead[]
+  customers Customer[]
+  costs     CampaignCost[]
+
+  @@map("channels")
+}
+
+/// Chiến dịch marketing kèm UTM và ngân sách.
+model Campaign {
+  id           String    @id @default(uuid())
+  code         String    @unique
+  name         String
+  channelId    String?
+  channel      Channel?  @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  branchId     String?
+  branch       Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  startDate    DateTime?
+  endDate      DateTime?
+  budget       Decimal?  @db.Decimal(14, 2)
+  utmSource    String?
+  utmMedium    String?
+  utmCampaign  String?
+  utmTerm      String?
+  utmContent   String?
+  /// Dịch vụ chiến dịch đang đẩy (để tính ROAS theo dịch vụ).
+  targetServiceId String?
+  targetService   Service? @relation(fields: [targetServiceId], references: [id], onDelete: SetNull)
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  costs Lead[]  @relation("LeadCampaign")
+  spend CampaignCost[]
+
+  @@index([branchId])
+  @@map("campaigns")
+}
+
+/// Chi phí theo kênh theo NGÀY -> nền tảng tính CPL, CAC, ROAS.
+model CampaignCost {
+  id         String   @id @default(uuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  channelId  String?
+  channel    Channel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  costDate   DateTime @db.Date
+  amount     Decimal  @db.Decimal(14, 2)
+  impressions Int?
+  clicks      Int?
+  note        String?
+  createdAt  DateTime @default(now())
+
+  @@unique([campaignId, channelId, costDate])
+  @@index([costDate])
+  @@map("campaign_costs")
+}
+
+/// Lead thô trước khi trở thành khách hàng.
+model Lead {
+  id          String    @id @default(uuid())
+  branchId    String?
+  branch      Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  name        String?
+  phone       String?
+  zaloUserId  String?
+  email       String?
+  channelId   String?
+  channel     Channel?  @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  campaignId  String?
+  campaign    Campaign? @relation("LeadCampaign", fields: [campaignId], references: [id], onDelete: SetNull)
+  /// UTM chụp lại tại thời điểm lead đổ về (không phụ thuộc campaign đã sửa).
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmContent  String?
+  landingUrl  String?
+  /// Dịch vụ khách quan tâm ban đầu.
+  interestedServiceId String?
+  interestedService   Service? @relation(fields: [interestedServiceId], references: [id], onDelete: SetNull)
+  stage       LeadStage @default(NEW)
+  lostReason  String?
+  note        String?
+  ownerId     String?
+  owner       User?     @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  createdById String?
+  createdBy   User?     @relation("LeadCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  /// Khi convert thành công thì trỏ sang Customer.
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  convertedAt DateTime?
+  firstContactedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([stage, createdAt])
+  @@index([ownerId, stage])
+  @@index([phone])
+  @@index([campaignId])
+  @@map("leads")
+}
+
+/// KHÁCH HÀNG — LIÊN THÔNG TOÀN CÔNG TY (bán chéo sản <-> thẩm mỹ).
+/// Bệnh án KHÔNG liên thông: xem MedicalRecord.branchId.
+model Customer {
+  id           String         @id @default(uuid())
+  code         String         @unique // KH000001
+  name         String
+  phone        String?
+  altPhone     String?
+  email        String?
+  zaloUserId   String?        @unique
+  gender       Gender?
+  dob          DateTime?
+  address      String?
+  /// CCCD — mã hoá ở tầng ứng dụng, chỉ hiện cho vai trò có quyền.
+  idNumber     String?
+  status       CustomerStatus @default(LEAD)
+  sourceChannelId String?
+  sourceChannel   Channel?    @relation(fields: [sourceChannelId], references: [id], onDelete: SetNull)
+  /// Khách cũ giới thiệu khách mới (tự tham chiếu).
+  referredById String?
+  referredBy   Customer?      @relation("CustomerReferral", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals    Customer[]     @relation("CustomerReferral")
+  ownerId      String?
+  owner        User?          @relation("CustomerOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  createdById  String?
+  createdBy    User?          @relation("CustomerCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  note         String?
+  /// Số dư ví/tiền cọc còn lại của khách.
+  depositBalance Decimal      @default(0) @db.Decimal(14, 2)
+  /// Đồng ý nhận truyền thông (NĐ 13/2023 — tách khỏi đồng ý xử lý dữ liệu).
+  marketingOptIn Boolean      @default(false)
+  firstVisitAt DateTime?
+  lastVisitAt  DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  branchLinks     CustomerBranchLink[]
+  leads           Lead[]
+  tags            CustomerTag[]
+  activities      Activity[]
+  tasks           Task[]
+  conversations   Conversation[]
+  appointments    Appointment[]
+  visits          Visit[]
+  consultations   ConsultationSession[]
+  quotations      Quotation[]
+  treatmentPlans  TreatmentPlan[]
+  medicalRecords  MedicalRecord[]
+  consentForms    ConsentForm[]
+  photoSets       PhotoSet[]
+  procedures      ProcedureRecord[]
+  followUpPlans   FollowUpPlan[]
+  complications   Complication[]
+  complaints      Complaint[]
+  caseStudies     CaseStudy[]
+  contracts       Contract[]
+  invoices        Invoice[]
+  payments        Payment[]
+  installmentPlans InstallmentPlan[]
+  refunds         Refund[]
+  packageUsages   PackageUsage[]
+  productUsages   ProductUsage[]
+  vouchers        Voucher[]
+  surveys         SatisfactionSurvey[]
+  dataAccessLogs  DataAccessLog[]
+
+  @@index([phone])
+  @@index([ownerId, status])
+  @@index([status, updatedAt])
+  @@map("customers")
+}
+
+/// Khách gắn với cơ sở nào (một khách có thể dùng dịch vụ ở cả hai cơ sở).
+model CustomerBranchLink {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  branchId   String
+  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  isPrimary  Boolean  @default(false)
+  firstVisitAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@unique([customerId, branchId])
+  @@index([branchId])
+  @@map("customer_branch_links")
+}
+
+model Tag {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  color     String?
+  createdAt DateTime @default(now())
+
+  customers CustomerTag[]
+
+  @@map("tags")
+}
+
+model CustomerTag {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tagId      String
+  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([customerId, tagId])
+  @@map("customer_tags")
+}
+
+/// Dòng thời gian tương tác. Khác schema cũ: có cột CÓ CẤU TRÚC thay vì
+/// nhét userId vào content dạng văn bản tự do (nợ kỹ thuật #7).
+model Activity {
+  id           String       @id @default(uuid())
+  customerId   String
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  actorId      String?
+  actor        User?        @relation("ActivityActor", fields: [actorId], references: [id], onDelete: SetNull)
+  type         ActivityType
+  content      String?
+  /// Cột có cấu trúc cho sự kiện gán/chuyển phụ trách.
+  targetUserId String?
+  fromValue    String?
+  toValue      String?
+  /// Tham chiếu tới thực thể liên quan (appointmentId, contractId...).
+  refType      String?
+  refId        String?
+  metadata     Json?
+  createdAt    DateTime     @default(now())
+
+  @@index([customerId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([type, createdAt])
+  @@map("activities")
+}
+
+/// Việc cần làm: nhắc gọi lại, chăm sóc, đòi nợ... có SLA.
+model Task {
+  id          String       @id @default(uuid())
+  branchId    String?
+  branch      Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customerId  String?
+  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  assigneeId  String?
+  assignee    User?        @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdById String?
+  createdBy   User?        @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  status      TaskStatus   @default(OPEN)
+  priority    TaskPriority @default(NORMAL)
+  dueAt       DateTime?
+  completedAt DateTime?
+  /// Hạn SLA (phút) để sinh cảnh báo "bỏ quên" / "quá hẹn gọi lại".
+  slaMinutes  Int?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([assigneeId, status, dueAt])
+  @@index([customerId])
+  @@map("tasks")
+}
+
+/// Khảo sát hài lòng (NPS) — đầu vào cho KPI điều dưỡng và KPI tư vấn.
+model SatisfactionSurvey {
+  id          String   @id @default(uuid())
+  branchId    String?
+  branch      Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  collectedById String?
+  collectedBy   User?  @relation("SurveyCollector", fields: [collectedById], references: [id], onDelete: SetNull)
+  npsScore     Int?
+  doctorScore  Int?
+  nurseScore   Int?
+  serviceScore Int?
+  comment      String?
+  refType      String?
+  refId        String?
+  createdAt    DateTime @default(now())
+
+  @@index([customerId])
+  @@index([branchId, createdAt])
+  @@map("satisfaction_surveys")
+}
+
+// =============================================================================
+// KHỐI 3 — HỘP THƯ ZALO TẬP TRUNG (MÀN HÌNH LÕI)
+// =============================================================================
+
+/// Cấu hình Zalo OA. Khác schema cũ: NHIỀU OA (mỗi cơ sở một OA) và
+/// secret/token phải MÃ HOÁ trước khi ghi (nợ kỹ thuật #2).
+model ZaloOAConfig {
+  id             String    @id @default(uuid())
+  branchId       String
+  branch         Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  oaId           String    @unique
+  oaName         String?
+  appId          String
+  /// Các trường dưới đây lưu dạng CIPHERTEXT (AES-GCM, khoá trong KMS/Vault).
+  appSecretEnc   String
+  accessTokenEnc String?
+  refreshTokenEnc String?
+  encKeyId       String? // định danh khoá KMS đã dùng, phục vụ xoay khoá
+  tokenExpiresAt DateTime?
+  webhookSecret  String?
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  conversations Conversation[]
+  webhookEvents ZaloWebhookEvent[]
+
+  @@index([branchId])
+  @@map("zalo_oa_configs")
+}
+
+/// Hội thoại — tab "Khách" (CUSTOMER) và tab "Nhóm" (GROUP).
+/// GẮN THẲNG vào Customer để panel hồ sơ bên phải hoạt động.
+model Conversation {
+  id            String              @id @default(uuid())
+  branchId      String
+  branch        Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  oaConfigId    String?
+  oaConfig      ZaloOAConfig?       @relation(fields: [oaConfigId], references: [id], onDelete: SetNull)
+  kind          ConversationKind    @default(CUSTOMER)
+  channel       ConversationChannel @default(ZALO_OA)
+  /// Định danh phía Zalo: user_id (khách) hoặc group_id (nhóm).
+  externalId    String
+  title         String?
+  avatarUrl     String?
+  customerId    String?
+  customer      Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  /// Ô "Telesale phụ trách" ở panel bên phải.
+  assigneeId    String?
+  assignee      User?               @relation("ConvAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  unreadCount   Int                 @default(0)
+  lastMessageAt DateTime?
+  lastMessagePreview String?
+  archived      Boolean             @default(false)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  messages     ChatMessage[]
+  appointments Appointment[] @relation("ApptFromConversation")
+
+  @@unique([oaConfigId, externalId])
+  @@index([branchId, lastMessageAt])
+  @@index([assigneeId, unreadCount])
+  @@index([customerId])
+  @@map("conversations")
+}
+
+/// Tin nhắn. Khác schema cũ: có type, status gửi, đính kèm, và
+/// zaloMessageId UNIQUE để webhook idempotent (nợ kỹ thuật #10).
+model ChatMessage {
+  id             String           @id @default(uuid())
+  conversationId String
+  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction      MessageDirection
+  type           MessageType      @default(TEXT)
+  status         MessageStatus    @default(SENT)
+  content        String?
+  senderUserId   String?
+  senderUser     User?            @relation("MsgSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+  /// Với tin nhắn nhóm: định danh người gửi phía Zalo.
+  senderExternalId String?
+  senderName     String?
+  zaloMessageId  String?          @unique
+  /// Lý do thất bại khi gửi qua OA (thay vì ném 502 và bỏ lại tin "ma").
+  failureReason  String?
+  sentAt         DateTime?
+  createdAt      DateTime         @default(now())
+
+  attachments MessageAttachment[]
+
+  @@index([conversationId, createdAt])
+  @@index([senderUserId, createdAt])
+  @@map("chat_messages")
+}
+
+model MessageAttachment {
+  id         String      @id @default(uuid())
+  messageId  String
+  message    ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  fileName   String?
+  mimeType   String?
+  sizeBytes  Int?
+  /// Khoá đối tượng trên S3/R2 — KHÔNG bao giờ là URL công khai.
+  storageKey String
+  thumbKey   String?
+  createdAt  DateTime    @default(now())
+
+  @@index([messageId])
+  @@map("message_attachments")
+}
+
+/// Mẫu trả lời nhanh cho telesale/lễ tân.
+model QuickReply {
+  id        String   @id @default(uuid())
+  branchId  String?
+  title     String
+  content   String
+  shortcut  String?
+  /// null = dùng chung toàn cơ sở.
+  authorId  String?
+  author    User?    @relation("QuickReplyAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  usageCount Int     @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([branchId])
+  @@map("quick_replies")
+}
+
+/// Log thô webhook Zalo: phục vụ idempotency, gỡ lỗi chữ ký và phát lại sự kiện.
+model ZaloWebhookEvent {
+  id            String        @id @default(uuid())
+  oaConfigId    String?
+  oaConfig      ZaloOAConfig? @relation(fields: [oaConfigId], references: [id], onDelete: SetNull)
+  eventName     String?
+  /// Khoá chống trùng: msg_id hoặc hash của raw payload.
+  dedupeKey     String        @unique
+  rawPayload    Json
+  signatureValid Boolean      @default(false)
+  processedAt   DateTime?
+  errorMessage  String?
+  createdAt     DateTime      @default(now())
+
+  @@index([createdAt])
+  @@map("zalo_webhook_events")
+}
+
+// =============================================================================
+// KHỐI 4 — LỄ TÂN: LỊCH HẸN, CHECK-IN; PHÂN LỊCH LÀM VIỆC, CHẤM CÔNG
+// =============================================================================
+
+model Room {
+  id        String   @id @default(uuid())
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  code      String
+  name      String
+  type      RoomType
+  capacity  Int      @default(1)
+  /// Thời gian dọn/khử khuẩn tối thiểu giữa 2 ca (phút) — dùng khi xếp phòng mổ.
+  turnoverMinutes Int @default(30)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  appointments     Appointment[]
+  visits           Visit[]
+  surgerySchedules SurgerySchedule[]
+
+  @@unique([branchId, code])
+  @@map("rooms")
+}
+
+/// LUỒNG 1 CỦA LỄ TÂN: ĐẶT LỊCH (khách chưa đến).
+model Appointment {
+  id           String            @id @default(uuid())
+  branchId     String
+  branch       Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId   String
+  customer     Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  type         AppointmentType   @default(CONSULT)
+  status       AppointmentStatus @default(BOOKED)
+  serviceId    String?
+  service      Service?          @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  roomId       String?
+  room         Room?             @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  doctorId     String?
+  doctor       User?             @relation("ApptDoctor", fields: [doctorId], references: [id], onDelete: SetNull)
+  consultantId String?
+  consultant   User?             @relation("ApptConsultant", fields: [consultantId], references: [id], onDelete: SetNull)
+  createdById  String?
+  createdBy    User?             @relation("ApptCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  /// Đặt lịch NGAY TỪ KHUNG CHAT -> giữ vết hội thoại nguồn.
+  sourceConversationId String?
+  sourceConversation   Conversation? @relation("ApptFromConversation", fields: [sourceConversationId], references: [id], onDelete: SetNull)
+  startAt      DateTime
+  endAt        DateTime
+  note         String?
+  cancelReason String?
+  /// Lịch cũ khi dời hẹn (tự tham chiếu).
+  rescheduledFromId String?  @unique
+  rescheduledFrom   Appointment? @relation("ApptReschedule", fields: [rescheduledFromId], references: [id], onDelete: SetNull)
+  rescheduledTo     Appointment? @relation("ApptReschedule")
+  confirmedAt  DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  visits        Visit[]
+  reminders     AppointmentReminder[]
+  followUpTasks FollowUpTask[]
+
+  @@index([branchId, startAt])
+  @@index([doctorId, startAt])
+  @@index([roomId, startAt])
+  @@index([customerId, startAt])
+  @@index([status, startAt])
+  @@map("appointments")
+}
+
+model AppointmentReminder {
+  id            String              @id @default(uuid())
+  appointmentId String
+  appointment   Appointment         @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  channel       NotificationChannel @default(ZALO_ZNS)
+  scheduledAt   DateTime
+  sentAt        DateTime?
+  status        String              @default("PENDING")
+  errorMessage  String?
+  createdAt     DateTime            @default(now())
+
+  @@index([scheduledAt, sentAt])
+  @@map("appointment_reminders")
+}
+
+/// LUỒNG 2 CỦA LỄ TÂN: CHECK-IN (khách ĐÃ ĐẾN).
+/// Tách hẳn khỏi Appointment vì khách vãng lai không có lịch hẹn.
+model Visit {
+  id            String       @id @default(uuid())
+  branchId      String
+  branch        Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId    String
+  customer      Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  roomId        String?
+  room          Room?        @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  /// Số thứ tự trong ngày tại cơ sở.
+  queueNumber   Int?
+  status        VisitStatus  @default(WAITING)
+  checkedInById String?
+  checkedInBy   User?        @relation("VisitCheckInBy", fields: [checkedInById], references: [id], onDelete: SetNull)
+  checkedInAt   DateTime     @default(now())
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  note          String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  consultations ConsultationSession[]
+  procedures    ProcedureRecord[]
+  invoices      Invoice[]
+
+  @@index([branchId, checkedInAt])
+  @@index([branchId, status])
+  @@index([customerId, checkedInAt])
+  @@map("visits")
+}
+
+/// Ca mẫu (hành chính, sáng, chiều, trực đêm, trực mổ).
+model ShiftTemplate {
+  id        String    @id @default(uuid())
+  branchId  String
+  branch    Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  code      String
+  name      String
+  kind      ShiftKind @default(OFFICE)
+  /// Giờ dạng "HH:mm" để tránh phụ thuộc múi giờ của cột time.
+  startTime String
+  endTime   String
+  breakMinutes Int    @default(0)
+  color     String?
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+
+  assignments ShiftAssignment[]
+
+  @@unique([branchId, code])
+  @@map("shift_templates")
+}
+
+/// Phân lịch làm việc (xếp ca) — nguồn dữ liệu cho chấm công và cho việc
+/// kiểm tra "bác sĩ có ca hôm đó không" khi lễ tân đặt lịch.
+model ShiftAssignment {
+  id          String                @id @default(uuid())
+  branchId    String
+  branch      Branch                @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User                  @relation("ShiftUser", fields: [userId], references: [id], onDelete: Cascade)
+  templateId  String?
+  template    ShiftTemplate?        @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  workDate    DateTime              @db.Date
+  startAt     DateTime
+  endAt       DateTime
+  status      ShiftAssignmentStatus @default(PLANNED)
+  note        String?
+  createdById String?
+  createdBy   User?                 @relation("ShiftCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  attendances Attendance[]
+
+  @@unique([userId, workDate, startAt])
+  @@index([branchId, workDate])
+  @@map("shift_assignments")
+}
+
+model Attendance {
+  id           String           @id @default(uuid())
+  branchId     String
+  branch       Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User             @relation("AttendanceUser", fields: [userId], references: [id], onDelete: Cascade)
+  shiftId      String?
+  shift        ShiftAssignment? @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  workDate     DateTime         @db.Date
+  checkInAt    DateTime?
+  checkOutAt   DateTime?
+  status       AttendanceStatus @default(PRESENT)
+  lateMinutes  Int              @default(0)
+  earlyMinutes Int              @default(0)
+  overtimeMinutes Int           @default(0)
+  note         String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@unique([userId, workDate])
+  @@index([branchId, workDate])
+  @@map("attendances")
+}
+
+model LeaveRequest {
+  id          String      @id @default(uuid())
+  userId      String
+  user        User        @relation("LeaveRequester", fields: [userId], references: [id], onDelete: Cascade)
+  type        LeaveType
+  status      LeaveStatus @default(PENDING)
+  fromDate    DateTime    @db.Date
+  toDate      DateTime    @db.Date
+  reason      String?
+  approverId  String?
+  approver    User?       @relation("LeaveApprover", fields: [approverId], references: [id], onDelete: SetNull)
+  approvedAt  DateTime?
+  rejectReason String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([userId, fromDate])
+  @@index([status])
+  @@map("leave_requests")
+}
+
+// =============================================================================
+// KHỐI 5 — DỊCH VỤ, BẢNG GIÁ, GÓI LIỆU TRÌNH, KHUYẾN MẠI
+// =============================================================================
+
+model ServiceCategory {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  parentId  String?
+  parent    ServiceCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  ServiceCategory[] @relation("CategoryTree")
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  services Service[]
+
+  @@map("service_categories")
+}
+
+model Service {
+  id          String          @id @default(uuid())
+  categoryId  String?
+  category    ServiceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  code        String          @unique
+  name        String
+  kind        ServiceKind     @default(OTHER)
+  description String?
+  /// Thời lượng chuẩn (phút) -> dùng để tính khung giờ trống khi đặt lịch.
+  durationMinutes Int         @default(30)
+  /// Cần gây mê/phòng mổ -> hệ thống ép kiểm tra cam kết + xét nghiệm tiền phẫu.
+  requiresSurgery      Boolean @default(false)
+  requiresAnesthesia   Boolean @default(false)
+  requiresConsent      Boolean @default(true)
+  requiresPreOpLab     Boolean @default(false)
+  /// Số buổi mặc định nếu là liệu trình.
+  defaultSessions Int         @default(1)
+  active      Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  prices           ServicePrice[]
+  packageItems     PackageItem[]
+  appointments     Appointment[]
+  quotationItems   QuotationItem[]
+  contractItems    ContractItem[]
+  treatmentPlanItems TreatmentPlanItem[]
+  procedures       ProcedureRecord[]
+  followUpTemplates FollowUpTemplate[]
+  caseStudies      CaseStudy[]
+  commissionRules  CommissionRule[]
+  campaigns        Campaign[]
+  leads            Lead[]
+
+  @@index([categoryId])
+  @@map("services")
+}
+
+/// Giá THEO CƠ SỞ và THEO THỜI GIAN HIỆU LỰC (không sửa đè giá cũ,
+/// nếu không sẽ không đối chiếu được hợp đồng đã ký).
+model ServicePrice {
+  id          String    @id @default(uuid())
+  serviceId   String
+  service     Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  branchId    String?
+  branch      Branch?   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  listPrice   Decimal   @db.Decimal(14, 2)
+  /// Giá sàn — tư vấn viên giảm dưới mức này phải xin duyệt.
+  floorPrice  Decimal?  @db.Decimal(14, 2)
+  costPrice   Decimal?  @db.Decimal(14, 2)
+  currency    String    @default("VND")
+  validFrom   DateTime  @default(now())
+  validTo     DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([serviceId, branchId, validFrom])
+  @@map("service_prices")
+}
+
+/// Gói liệu trình nhiều buổi.
+model TreatmentPackage {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  description String?
+  price       Decimal  @db.Decimal(14, 2)
+  validMonths Int      @default(12)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items         PackageItem[]
+  usages        PackageUsage[]
+  contractItems ContractItem[]
+
+  @@map("treatment_packages")
+}
+
+model PackageItem {
+  id        String           @id @default(uuid())
+  packageId String
+  package   TreatmentPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  serviceId String
+  service   Service          @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  sessions  Int              @default(1)
+
+  @@unique([packageId, serviceId])
+  @@map("package_items")
+}
+
+/// Theo dõi số buổi đã dùng / còn lại của khách trong một gói đã mua.
+model PackageUsage {
+  id             String        @id @default(uuid())
+  customerId     String
+  customer       Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  packageId      String
+  package        TreatmentPackage @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  contractItemId String?       @unique
+  contractItem   ContractItem? @relation(fields: [contractItemId], references: [id], onDelete: SetNull)
+  totalSessions  Int
+  usedSessions   Int           @default(0)
+  status         PackageStatus @default(ACTIVE)
+  startedAt      DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([customerId, status])
+  @@map("package_usages")
+}
+
+model Promotion {
+  id           String   @id @default(uuid())
+  code         String   @unique
+  name         String
+  description  String?
+  discountPercent Decimal? @db.Decimal(5, 2)
+  discountAmount  Decimal? @db.Decimal(14, 2)
+  startAt      DateTime?
+  endAt        DateTime?
+  /// Giới hạn tổng số lượt áp dụng.
+  usageLimit   Int?
+  usedCount    Int      @default(0)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  vouchers  Voucher[]
+  contracts Contract[]
+
+  @@map("promotions")
+}
+
+model Voucher {
+  id          String     @id @default(uuid())
+  promotionId String?
+  promotion   Promotion? @relation(fields: [promotionId], references: [id], onDelete: SetNull)
+  code        String     @unique
+  customerId  String?
+  customer    Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  value       Decimal    @db.Decimal(14, 2)
+  issuedAt    DateTime   @default(now())
+  expiresAt   DateTime?
+  redeemedAt  DateTime?
+  redeemedContractId String?
+
+  @@index([customerId])
+  @@map("vouchers")
+}
+
+// =============================================================================
+// KHỐI 6 — TƯ VẤN & PHÁC ĐỒ
+// =============================================================================
+
+model ConsultationSession {
+  id           String   @id @default(uuid())
+  branchId     String
+  branch       Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId   String
+  customer     Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  visitId      String?
+  visit        Visit?   @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  doctorId     String?
+  doctor       User?    @relation("ConsultDoctor", fields: [doctorId], references: [id], onDelete: SetNull)
+  consultantId String?
+  consultant   User?    @relation("ConsultConsultant", fields: [consultantId], references: [id], onDelete: SetNull)
+  /// Nhu cầu khách nói ra.
+  chiefComplaint String?
+  assessment   String?
+  recommendation String?
+  startedAt    DateTime @default(now())
+  endedAt      DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  quotations Quotation[]
+  plans      TreatmentPlan[]
+
+  @@index([customerId, startedAt])
+  @@index([branchId, startedAt])
+  @@map("consultation_sessions")
+}
+
+model Quotation {
+  id             String              @id @default(uuid())
+  branchId       String
+  branch         Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  consultationId String?
+  consultation   ConsultationSession? @relation(fields: [consultationId], references: [id], onDelete: SetNull)
+  consultantId   String?
+  consultant     User?               @relation("QuotationConsultant", fields: [consultantId], references: [id], onDelete: SetNull)
+  code           String              @unique
+  status         QuotationStatus     @default(DRAFT)
+  subtotal       Decimal             @default(0) @db.Decimal(14, 2)
+  discountAmount Decimal             @default(0) @db.Decimal(14, 2)
+  totalAmount    Decimal             @default(0) @db.Decimal(14, 2)
+  validUntil     DateTime?
+  note           String?
+  sentAt         DateTime?
+  respondedAt    DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  items     QuotationItem[]
+  contracts Contract[]
+
+  @@index([customerId, createdAt])
+  @@map("quotations")
+}
+
+model QuotationItem {
+  id          String    @id @default(uuid())
+  quotationId String
+  quotation   Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  serviceId   String
+  service     Service   @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  quantity    Int       @default(1)
+  unitPrice   Decimal   @db.Decimal(14, 2)
+  discountAmount Decimal @default(0) @db.Decimal(14, 2)
+  lineTotal   Decimal   @db.Decimal(14, 2)
+  note        String?
+
+  @@index([quotationId])
+  @@map("quotation_items")
+}
+
+/// Phác đồ điều trị nhiều buổi do bác sĩ lập.
+model TreatmentPlan {
+  id             String              @id @default(uuid())
+  branchId       String
+  branch         Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  consultationId String?
+  consultation   ConsultationSession? @relation(fields: [consultationId], references: [id], onDelete: SetNull)
+  doctorId       String?
+  doctor         User?               @relation("PlanDoctor", fields: [doctorId], references: [id], onDelete: SetNull)
+  title          String
+  goal           String?
+  note           String?
+  startDate      DateTime?
+  endDate        DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  items TreatmentPlanItem[]
+
+  @@index([customerId])
+  @@map("treatment_plans")
+}
+
+model TreatmentPlanItem {
+  id          String        @id @default(uuid())
+  planId      String
+  plan        TreatmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  serviceId   String
+  service     Service       @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  sequence    Int           @default(1)
+  plannedDate DateTime?
+  completedAt DateTime?
+  note        String?
+
+  @@index([planId])
+  @@map("treatment_plan_items")
+}
+
+// =============================================================================
+// KHỐI 7 — HỢP ĐỒNG, HOÁ ĐƠN, THANH TOÁN & CÔNG NỢ
+// -----------------------------------------------------------------------------
+// NGUYÊN TẮC SỐNG CÒN: tách bạch DOANH SỐ KÝ và TIỀN THỰC THU.
+//   - Contract.totalAmount   = giá trị hợp đồng đã ký (doanh số ký)
+//   - Contract.collectedAmount = tổng tiền đã thực nhận (thực thu)
+//   - Hoa hồng CHỈ được tính trên tiền thực thu (xem CommissionRule.basis)
+// Phòng khám vỡ trận vì trả hoa hồng trên doanh số ký, khách trả góp dở dang.
+// =============================================================================
+
+model Contract {
+  id             String         @id @default(uuid())
+  branchId       String
+  branch         Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  quotationId    String?
+  quotation      Quotation?     @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  promotionId    String?
+  promotion      Promotion?     @relation(fields: [promotionId], references: [id], onDelete: SetNull)
+  /// Người tư vấn ban đầu (mở khách).
+  consultantId   String?
+  consultant     User?          @relation("ContractConsultant", fields: [consultantId], references: [id], onDelete: SetNull)
+  /// Người chốt hợp đồng (có thể khác người tư vấn) — dùng chia hoa hồng.
+  closerId       String?
+  closer         User?          @relation("ContractCloser", fields: [closerId], references: [id], onDelete: SetNull)
+
+  code           String         @unique
+  status         ContractStatus @default(DRAFT)
+
+  /// DOANH SỐ KÝ — giá trị hợp đồng sau chiết khấu.
+  subtotal       Decimal        @default(0) @db.Decimal(14, 2)
+  discountAmount Decimal        @default(0) @db.Decimal(14, 2)
+  totalAmount    Decimal        @default(0) @db.Decimal(14, 2)
+  /// TIỀN THỰC THU — cộng dồn từ Payment đã ghi nhận, trừ Refund đã chi.
+  collectedAmount Decimal       @default(0) @db.Decimal(14, 2)
+  /// Công nợ còn lại = totalAmount - collectedAmount. Lưu sẵn để lọc nhanh.
+  outstandingAmount Decimal     @default(0) @db.Decimal(14, 2)
+  /// Mức cọc tối thiểu để được xác nhận ca mổ (mặc định 30%, cấu hình theo cơ sở).
+  depositRequired Decimal       @default(0) @db.Decimal(14, 2)
+
+  signedAt       DateTime?
+  /// Đường dẫn bản scan hợp đồng đã ký (lưu mã hoá).
+  signedFileKey  String?
+  /// Phiên bản mẫu hợp đồng áp dụng — cần cho tranh chấp về sau.
+  templateCode   String?
+  templateVersion String?
+  note           String?
+  cancelReason   String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  items            ContractItem[]
+  invoices         Invoice[]
+  payments         Payment[]
+  installmentPlans InstallmentPlan[]
+  refunds          Refund[]
+  procedures       ProcedureRecord[]
+  commissionEntries CommissionEntry[]
+
+  @@index([branchId, status])
+  @@index([customerId, createdAt])
+  @@index([closerId, signedAt])
+  @@map("contracts")
+}
+
+model ContractItem {
+  id          String            @id @default(uuid())
+  contractId  String
+  contract    Contract          @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  serviceId   String?
+  service     Service?          @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  packageId   String?
+  package     TreatmentPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+
+  name        String
+  quantity    Int               @default(1)
+  unitPrice   Decimal           @default(0) @db.Decimal(14, 2)
+  discountAmount Decimal        @default(0) @db.Decimal(14, 2)
+  lineTotal   Decimal           @default(0) @db.Decimal(14, 2)
+  /// Số buổi/lần đã thực hiện trên tổng số đã bán (dùng cho gói liệu trình).
+  deliveredCount Int            @default(0)
+  note        String?
+  createdAt   DateTime          @default(now())
+
+  packageUsages PackageUsage[]
+
+  @@index([contractId])
+  @@map("contract_items")
+}
+
+model Invoice {
+  id          String        @id @default(uuid())
+  branchId    String
+  branch      Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  contractId  String?
+  contract    Contract?     @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  visitId     String?
+  visit       Visit?        @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  issuedById  String?
+  issuedBy    User?         @relation("InvoiceIssuer", fields: [issuedById], references: [id], onDelete: SetNull)
+
+  code        String        @unique
+  status      InvoiceStatus @default(DRAFT)
+  totalAmount Decimal       @default(0) @db.Decimal(14, 2)
+  paidAmount  Decimal       @default(0) @db.Decimal(14, 2)
+  issuedAt    DateTime?
+  dueAt       DateTime?
+  /// Mã hoá đơn điện tử của nhà cung cấp (nếu đã phát hành).
+  eInvoiceNo  String?
+  note        String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  payments Payment[]
+
+  @@index([branchId, status, dueAt])
+  @@index([customerId])
+  @@map("invoices")
+}
+
+model Payment {
+  id          String        @id @default(uuid())
+  branchId    String
+  branch      Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  contractId  String?
+  contract    Contract?     @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  invoiceId   String?
+  invoice     Invoice?      @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  installmentId String?
+  installment Installment?  @relation(fields: [installmentId], references: [id], onDelete: SetNull)
+  /// Thu ngân đứng tên phiếu thu — bắt buộc cho đối soát cuối ca.
+  cashierId   String?
+  cashier     User?         @relation("PaymentCashier", fields: [cashierId], references: [id], onDelete: SetNull)
+
+  code        String        @unique
+  method      PaymentMethod
+  amount      Decimal       @db.Decimal(14, 2)
+  /// Phí thu hộ / phí quẹt thẻ do phòng khám chịu — trừ ra khi tính lợi nhuận.
+  feeAmount   Decimal       @default(0) @db.Decimal(14, 2)
+  paidAt      DateTime      @default(now())
+  referenceNo String?
+  note        String?
+  /// Phiếu thu đã huỷ vẫn giữ bản ghi, không được xoá cứng.
+  voidedAt    DateTime?
+  voidReason  String?
+  createdAt   DateTime      @default(now())
+
+  @@index([branchId, paidAt])
+  @@index([contractId])
+  @@index([customerId, paidAt])
+  @@map("payments")
+}
+
+model InstallmentPlan {
+  id           String          @id @default(uuid())
+  customerId   String
+  customer     Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  contractId   String
+  contract     Contract        @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  kind         InstallmentKind @default(IN_HOUSE)
+  /// Tên công ty tài chính nếu kind = PARTNER.
+  partnerName  String?
+  totalAmount  Decimal         @db.Decimal(14, 2)
+  downPayment  Decimal         @default(0) @db.Decimal(14, 2)
+  termCount    Int
+  /// Lãi/phí trả góp phòng khám phải gánh (nếu chương trình 0% cho khách).
+  interestAmount Decimal       @default(0) @db.Decimal(14, 2)
+  startDate    DateTime
+  note         String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  installments Installment[]
+
+  @@index([contractId])
+  @@map("installment_plans")
+}
+
+model Installment {
+  id        String            @id @default(uuid())
+  planId    String
+  plan      InstallmentPlan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  sequence  Int
+  dueDate   DateTime
+  amount    Decimal           @db.Decimal(14, 2)
+  paidAmount Decimal          @default(0) @db.Decimal(14, 2)
+  status    InstallmentStatus @default(PENDING)
+  paidAt    DateTime?
+  /// Số lần đã nhắc khách — dùng cho báo cáo thu hồi công nợ.
+  remindCount Int             @default(0)
+  lastRemindedAt DateTime?
+  note      String?
+
+  payments Payment[]
+
+  @@unique([planId, sequence])
+  @@index([status, dueDate])
+  @@map("installments")
+}
+
+model Refund {
+  id          String       @id @default(uuid())
+  branchId    String
+  branch      Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  contractId  String?
+  contract    Contract?    @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  requestedById String?
+  requestedBy User?        @relation("RefundRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  approvedById String?
+  approvedBy  User?        @relation("RefundApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  code        String       @unique
+  status      RefundStatus @default(REQUESTED)
+  amount      Decimal      @db.Decimal(14, 2)
+  reason      String
+  /// Có gắn với khiếu nại nào không — nối sang khối CSKH.
+  complaintId String?
+  requestedAt DateTime     @default(now())
+  approvedAt  DateTime?
+  paidAt      DateTime?
+  method      PaymentMethod?
+  note        String?
+
+  @@index([branchId, status])
+  @@index([customerId])
+  @@map("refunds")
+}
+
+model CashbookEntry {
+  id         String        @id @default(uuid())
+  branchId   String
+  branch     Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?         @relation("CashbookUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  direction  CashDirection
+  amount     Decimal       @db.Decimal(14, 2)
+  category   String
+  description String?
+  /// Loại chứng từ nguồn: PAYMENT | REFUND | EXPENSE | PURCHASE | OTHER.
+  sourceType String?
+  sourceId   String?
+  occurredAt DateTime      @default(now())
+  /// Ca làm việc để đối soát khi đóng ca (SOP-07, SOP-08).
+  shiftLabel String?
+  createdAt  DateTime      @default(now())
+
+  @@index([branchId, occurredAt])
+  @@index([sourceType, sourceId])
+  @@map("cashbook_entries")
+}
+
+// =============================================================================
+// KHỐI 8 — BỆNH ÁN THẨM MỸ, SÀNG LỌC & CAM KẾT
+// -----------------------------------------------------------------------------
+// Dữ liệu ở khối này là DỮ LIỆU NHẠY CẢM. Mọi lần đọc phải ghi DataAccessLog.
+// Bệnh án CÁCH LY THEO CƠ SỞ (branchId): nhân sự phòng khám sản không được
+// đọc bệnh án thẩm mỹ và ngược lại, dù cùng một khách hàng.
+// =============================================================================
+
+model MedicalRecord {
+  id              String   @id @default(uuid())
+  branchId        String
+  branch          Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  primaryDoctorId String?
+  primaryDoctor   User?    @relation("MRPrimaryDoctor", fields: [primaryDoctorId], references: [id], onDelete: SetNull)
+
+  code            String   @unique
+  /// Tiền sử bệnh nội khoa, phẫu thuật cũ, thuốc đang dùng.
+  medicalHistory  String?
+  surgicalHistory String?
+  currentMedication String?
+  /// Yếu tố nguy cơ: hút thuốc, rối loạn đông máu, sẹo lồi, tiểu đường...
+  riskFactors     String?
+  bloodType       String?
+  isPregnant      Boolean  @default(false)
+  isBreastfeeding Boolean  @default(false)
+  note            String?
+  openedAt        DateTime @default(now())
+  closedAt        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  entries           MedicalRecordEntry[]
+  allergies         Allergy[]
+  contraindications Contraindication[]
+  vitalSigns        VitalSign[]
+  preOpLabs         PreOpLab[]
+
+  @@unique([branchId, customerId])
+  @@index([customerId])
+  @@map("medical_records")
+}
+
+model MedicalRecordEntry {
+  id        String        @id @default(uuid())
+  recordId  String
+  record    MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  authorId  String?
+  author    User?         @relation("MREntryAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  visitId   String?
+
+  /// Loại bút ký: KHAM | CHI_DINH | TUONG_TRINH_MO | THEO_DOI | DAN_DO | KHAC.
+  entryType String
+  content   String
+  occurredAt DateTime     @default(now())
+  /// Bút ký y khoa KHÔNG được sửa sau khi ký. Sửa = tạo bản đính chính mới.
+  signedAt  DateTime?
+  amendsEntryId String?
+  createdAt DateTime      @default(now())
+
+  @@index([recordId, occurredAt])
+  @@map("medical_record_entries")
+}
+
+model Allergy {
+  id         String        @id @default(uuid())
+  recordId   String
+  record     MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  recordedById String?
+  recordedBy User?         @relation("AllergyRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  substance  String
+  /// NHE | VUA | NANG | SOC_PHAN_VE
+  severity   String?
+  reaction   String?
+  note       String?
+  recordedAt DateTime      @default(now())
+
+  @@index([recordId])
+  @@map("allergies")
+}
+
+model Contraindication {
+  id         String        @id @default(uuid())
+  recordId   String
+  record     MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  recordedById String?
+  recordedBy User?         @relation("ContraRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  /// Chống chỉ định tuyệt đối hay tương đối: TUYET_DOI | TUONG_DOI
+  kind       String
+  condition  String
+  /// Áp dụng cho nhóm dịch vụ nào (để phần mềm CẢNH BÁO khi lên lịch ca đó).
+  serviceScope String?
+  note       String?
+  recordedAt DateTime      @default(now())
+  resolvedAt DateTime?
+
+  @@index([recordId])
+  @@map("contraindications")
+}
+
+model VitalSign {
+  id         String        @id @default(uuid())
+  recordId   String
+  record     MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  recordedById String?
+  recordedBy User?         @relation("VitalRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+  procedureId String?
+
+  measuredAt DateTime      @default(now())
+  /// Bối cảnh đo: TRUOC_MO | TRONG_MO | HOI_TINH | TAI_KHAM
+  context    String?
+  temperature Decimal?     @db.Decimal(4, 1)
+  pulse      Int?
+  systolic   Int?
+  diastolic  Int?
+  spo2       Int?
+  respiratoryRate Int?
+  weightKg   Decimal?      @db.Decimal(5, 2)
+  heightCm   Decimal?      @db.Decimal(5, 1)
+  note       String?
+
+  @@index([recordId, measuredAt])
+  @@map("vital_signs")
+}
+
+model PreOpLab {
+  id         String        @id @default(uuid())
+  recordId   String
+  record     MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  recordedById String?
+  recordedBy User?         @relation("LabRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  /// Tên xét nghiệm: công thức máu, đông máu, HbsAg, HIV, đường huyết, ECG...
+  testName   String
+  result     String?
+  unit       String?
+  referenceRange String?
+  /// TRUE nếu kết quả nằm ngoài ngưỡng — phần mềm phải cảnh báo đỏ trước mổ.
+  isAbnormal Boolean       @default(false)
+  testedAt   DateTime?
+  /// Hạn dùng của kết quả (thường 1-3 tháng) — quá hạn phải làm lại.
+  validUntil DateTime?
+  fileKey    String?
+  note       String?
+  createdAt  DateTime      @default(now())
+
+  @@index([recordId, testedAt])
+  @@map("pre_op_labs")
+}
+
+model ConsentForm {
+  id          String        @id @default(uuid())
+  customerId  String
+  customer    Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  /// Nhân viên chứng kiến / hướng dẫn khách ký.
+  staffId     String?
+  staff       User?         @relation("ConsentStaff", fields: [staffId], references: [id], onDelete: SetNull)
+  procedureId String?
+
+  type        ConsentType
+  status      ConsentStatus @default(PENDING)
+  templateCode String?
+  templateVersion String?
+  /// Phạm vi cho phép nếu type = PHOTO_USAGE: NOI_BO | WEBSITE | MANG_XA_HOI | QUANG_CAO_TRA_PHI
+  usageScope  String?
+  /// Có che mặt hay không khi dùng ảnh.
+  faceBlurred Boolean       @default(true)
+  signedAt    DateTime?
+  /// Thời hạn hiệu lực của đồng ý — hết hạn phải xin lại, không mặc định vĩnh viễn.
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  revokeReason String?
+  /// Bản scan có chữ ký tay của khách (lưu mã hoá).
+  fileKey     String?
+  note        String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  photoSets PhotoSet[]
+
+  @@index([customerId, type, status])
+  @@map("consent_forms")
+}
+
+// =============================================================================
+// KHỐI 9 — LỊCH PHÒNG MỔ, CA PHẪU THUẬT & BIẾN CHỨNG
+// -----------------------------------------------------------------------------
+// HAI CHỐT CHẶN NGHIỆP VỤ bắt buộc cài ở tầng ứng dụng:
+//   1. Chưa đủ cọc (Contract.collectedAmount >= depositRequired) -> KHÔNG cho
+//      chuyển SurgerySchedule sang trạng thái đã xác nhận.
+//   2. Checklist tiền phẫu 7 mục chưa đủ -> KHÔNG cho xác nhận ca.
+// =============================================================================
+
+model SurgerySchedule {
+  id          String          @id @default(uuid())
+  branchId    String
+  branch      Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  roomId      String?
+  room        Room?           @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  createdById String?
+  createdBy   User?           @relation("SurgeryCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  code        String          @unique
+  scheduledStart DateTime
+  scheduledEnd   DateTime
+  status      ProcedureStatus @default(SCHEDULED)
+  /// Đã qua đủ 2 chốt chặn (cọc + checklist) mới được bật cờ này.
+  isConfirmed Boolean         @default(false)
+  confirmedAt DateTime?
+  confirmedById String?
+  cancelReason String?
+  note        String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  procedures ProcedureRecord[]
+
+  @@index([branchId, scheduledStart])
+  @@index([roomId, scheduledStart])
+  @@map("surgery_schedules")
+}
+
+model ProcedureRecord {
+  id           String           @id @default(uuid())
+  branchId     String
+  branch       Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId   String
+  customer     Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  scheduleId   String?
+  schedule     SurgerySchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  contractId   String?
+  contract     Contract?        @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  serviceId    String?
+  service      Service?         @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  visitId      String?
+  visit        Visit?           @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  surgeonId    String?
+  surgeon      User?            @relation("ProcSurgeon", fields: [surgeonId], references: [id], onDelete: SetNull)
+  anesthetistId String?
+  anesthetist  User?            @relation("ProcAnesthetist", fields: [anesthetistId], references: [id], onDelete: SetNull)
+
+  code         String           @unique
+  status       ProcedureStatus  @default(SCHEDULED)
+  anesthesia   AnesthesiaType   @default(LOCAL)
+  /// Chỉ định và phương pháp mổ đã thống nhất với khách.
+  indication   String?
+  technique    String?
+  startedAt    DateTime?
+  endedAt      DateTime?
+  /// Tường trình phẫu thuật — bút ký y khoa, ký rồi không sửa.
+  operativeNote String?
+  postOpOrder  String?
+  signedAt     DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  teamMembers   SurgeryTeamMember[]
+  productUsages ProductUsage[]
+  complications Complication[]
+  photoSets     PhotoSet[]
+  followUpPlans FollowUpPlan[]
+
+  @@index([branchId, startedAt])
+  @@index([customerId, startedAt])
+  @@index([surgeonId, startedAt])
+  @@map("procedure_records")
+}
+
+model SurgeryTeamMember {
+  id          String          @id @default(uuid())
+  procedureId String
+  procedure   ProcedureRecord @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User            @relation("SurgeryTeamUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  /// PHAU_THUAT_VIEN_CHINH | PHU_MO_1 | PHU_MO_2 | GAY_ME | DUNG_CU_VIEN | CHAY_NGOAI
+  roleInTeam  String
+  /// Tỉ lệ chia hoa hồng/thù lao kíp mổ cho vị trí này (%).
+  sharePercent Decimal?       @db.Decimal(5, 2)
+  note        String?
+
+  @@unique([procedureId, userId, roleInTeam])
+  @@index([userId])
+  @@map("surgery_team_members")
+}
+
+model PreOpChecklist {
+  id          String   @id @default(uuid())
+  procedureId String?  @unique
+  scheduleId  String?  @unique
+  /// Đủ 7/7 mục mới được xác nhận ca — phần mềm chặn ở đây.
+  totalItems  Int      @default(7)
+  passedItems Int      @default(0)
+  isComplete  Boolean  @default(false)
+  completedAt DateTime?
+  completedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items PreOpChecklistItem[]
+
+  @@map("pre_op_checklists")
+}
+
+model PreOpChecklistItem {
+  id          String         @id @default(uuid())
+  checklistId String
+  checklist   PreOpChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  /// 7 mục chuẩn: XAC_NHAN_DANH_TINH | CAM_KET_DA_KY | XET_NGHIEM_DAT |
+  /// NHIN_AN_DU_GIO | ANH_TRUOC_DA_CHUP | VAT_TU_DA_CHUAN_BI | DA_DU_COC
+  itemCode    String
+  label       String
+  isPassed    Boolean        @default(false)
+  checkedAt   DateTime?
+  checkedById String?
+  note        String?
+
+  @@unique([checklistId, itemCode])
+  @@map("pre_op_checklist_items")
+}
+
+model Complication {
+  id          String               @id @default(uuid())
+  branchId    String
+  branch      Branch               @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer             @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  procedureId String?
+  procedure   ProcedureRecord?     @relation(fields: [procedureId], references: [id], onDelete: SetNull)
+  reportedById String?
+  reportedBy  User?                @relation("ComplicationReporter", fields: [reportedById], references: [id], onDelete: SetNull)
+
+  severity    ComplicationSeverity
+  status      ComplicationStatus   @default(REPORTED)
+  title       String
+  description String?
+  onsetAt     DateTime?
+  reportedAt  DateTime             @default(now())
+  treatment   String?
+  outcome     String?
+  resolvedAt  DateTime?
+  /// Nếu chuyển tuyến: tên cơ sở tiếp nhận.
+  referredTo  String?
+  /// Ca biến chứng luôn phải được giám đốc chuyên môn xem — cờ đã duyệt.
+  reviewedAt  DateTime?
+  reviewedById String?
+  lessonLearned String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@index([branchId, severity, status])
+  @@index([customerId])
+  @@map("complications")
+}
+
+// =============================================================================
+// KHỐI 10 — HẬU PHẪU, TÁI KHÁM & KHIẾU NẠI
+// -----------------------------------------------------------------------------
+// FollowUpTemplate định nghĩa MỐC CHĂM SÓC theo từng dịch vụ (D1, D3, D7, M1,
+// M3, M6). Khi ca mổ kết thúc, hệ thống sinh FollowUpPlan + hàng loạt
+// FollowUpTask có ngày đến hạn và người chịu trách nhiệm — không phụ thuộc trí
+// nhớ điều dưỡng. Task quá hạn phải nổi đỏ trên dashboard.
+// =============================================================================
+
+model FollowUpTemplate {
+  id        String   @id @default(uuid())
+  serviceId String?
+  service   Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  name      String
+  /// Số ngày sau mổ mà mốc này đến hạn (1, 3, 7, 30, 90, 180).
+  offsetDays Int
+  /// GOI_DIEN | NHAN_ZALO | TAI_KHAM_TAI_PHONG | CHUP_ANH
+  channel   String
+  /// Vai trò chịu trách nhiệm mặc định: DIEU_DUONG | CSKH | BAC_SI
+  ownerRole String
+  script    String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([serviceId, offsetDays])
+  @@map("follow_up_templates")
+}
+
+model FollowUpPlan {
+  id          String           @id @default(uuid())
+  branchId    String
+  branch      Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  procedureId String?
+  procedure   ProcedureRecord? @relation(fields: [procedureId], references: [id], onDelete: SetNull)
+
+  startDate   DateTime
+  /// Kết thúc khi qua mốc cuối và khách đã nghiệm thu kết quả.
+  completedAt DateTime?
+  /// Điểm hài lòng cuối kỳ (1-10) — nguồn cho chỉ số NPS.
+  finalScore  Int?
+  note        String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  tasks FollowUpTask[]
+
+  @@index([branchId, startDate])
+  @@index([customerId])
+  @@map("follow_up_plans")
+}
+
+model FollowUpTask {
+  id           String       @id @default(uuid())
+  planId       String
+  plan         FollowUpPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  assigneeId   String?
+  assignee     User?        @relation("FollowUpAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  appointmentId String?
+  appointment  Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  label        String
+  offsetDays   Int
+  dueAt        DateTime
+  channel      String?
+  status       TaskStatus   @default(OPEN)
+  doneAt       DateTime?
+  /// Khách tự báo mức đau / sưng (0-10) khi điều dưỡng gọi.
+  painScore    Int?
+  swellingScore Int?
+  /// Có dấu hiệu bất thường -> tự động tạo Complication để bác sĩ xem.
+  hasWarningSign Boolean    @default(false)
+  result       String?
+  note         String?
+  createdAt    DateTime     @default(now())
+
+  @@index([assigneeId, status, dueAt])
+  @@index([planId])
+  @@map("follow_up_tasks")
+}
+
+model Complaint {
+  id          String          @id @default(uuid())
+  branchId    String
+  branch      Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  handlerId   String?
+  handler     User?           @relation("ComplaintHandler", fields: [handlerId], references: [id], onDelete: SetNull)
+
+  code        String          @unique
+  status      ComplaintStatus @default(NEW)
+  /// Mức độ theo SOP-03: 1 phàn nàn nhẹ, 2 không hài lòng kết quả,
+  /// 3 đòi hoàn tiền, 4 doạ đăng mạng xã hội / doạ kiện.
+  level       Int             @default(1)
+  channel     String?
+  subject     String
+  description String?
+  procedureId String?
+  receivedAt  DateTime        @default(now())
+  /// Hạn phản hồi theo SOP — quá hạn phải leo thang lên chủ đầu tư.
+  responseDueAt DateTime?
+  firstResponseAt DateTime?
+  resolvedAt  DateTime?
+  resolution  String?
+  /// Chi phí xử lý: hoàn tiền, sửa lại, tặng dịch vụ.
+  costAmount  Decimal         @default(0) @db.Decimal(14, 2)
+  rootCause   String?
+  preventiveAction String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  actions ComplaintAction[]
+
+  @@index([branchId, status, level])
+  @@index([customerId])
+  @@map("complaints")
+}
+
+model ComplaintAction {
+  id          String    @id @default(uuid())
+  complaintId String
+  complaint   Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?     @relation("ComplaintActionUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  /// GOI_DIEN | GAP_TRUC_TIEP | HOAN_TIEN | SUA_LAI | TANG_DICH_VU | PHAT_NGON
+  actionType  String
+  content     String
+  occurredAt  DateTime  @default(now())
+  attachmentKey String?
+
+  @@index([complaintId, occurredAt])
+  @@map("complaint_actions")
+}
+
+// =============================================================================
+// KHỐI 11 — ẢNH TRƯỚC-SAU & THƯ VIỆN CASE
+// -----------------------------------------------------------------------------
+// Ảnh khách là dữ liệu nhạy cảm NHẤT của phòng khám thẩm mỹ.
+// Quy tắc cứng: KHÔNG có ConsentForm type = PHOTO_USAGE còn hiệu lực thì
+// PhotoSet.isPublishable = false, và mọi CaseStudy dùng ảnh đó phải bị gỡ.
+// Khách rút đồng ý (ConsentStatus = REVOKED) -> tự động WITHDRAWN case liên quan.
+// =============================================================================
+
+model PhotoSet {
+  id            String           @id @default(uuid())
+  branchId      String
+  branch        Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId    String
+  customer      Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  procedureId   String?
+  procedure     ProcedureRecord? @relation(fields: [procedureId], references: [id], onDelete: SetNull)
+  consentFormId String?
+  consentForm   ConsentForm?     @relation(fields: [consentFormId], references: [id], onDelete: SetNull)
+  createdById   String?
+  createdBy     User?            @relation("PhotoSetCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  stage         PhotoStage
+  takenAt       DateTime         @default(now())
+  /// Điều kiện chụp chuẩn hoá để ảnh trước-sau so sánh được (SOP-09).
+  lighting      String?
+  background    String?
+  distanceCm    Int?
+  /// Chỉ TRUE khi có consent còn hiệu lực. Mặc định FALSE.
+  isPublishable Boolean          @default(false)
+  note          String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  photos PhotoAsset[]
+
+  @@index([customerId, stage, takenAt])
+  @@index([branchId, takenAt])
+  @@map("photo_sets")
+}
+
+model PhotoAsset {
+  id          String     @id @default(uuid())
+  photoSetId  String
+  photoSet    PhotoSet   @relation(fields: [photoSetId], references: [id], onDelete: Cascade)
+  uploadedById String?
+  uploadedBy  User?      @relation("PhotoUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  caseStudyId String?
+  caseStudy   CaseStudy? @relation(fields: [caseStudyId], references: [id], onDelete: SetNull)
+
+  /// Khoá đối tượng trong kho lưu trữ đã MÃ HOÁ — không phải URL công khai.
+  storageKey  String
+  /// Bản đã che mặt / đã đóng dấu, dùng cho truyền thông.
+  maskedKey   String?
+  /// TRUOC_MAT | NGHIENG_45_T | NGHIENG_45_P | NGHIENG_90_T | NGHIENG_90_P | KHAC
+  angle       String?
+  width       Int?
+  height      Int?
+  fileSize    Int?
+  checksum    String?
+  hasWatermark Boolean   @default(false)
+  isFaceBlurred Boolean  @default(false)
+  createdAt   DateTime   @default(now())
+
+  @@index([photoSetId])
+  @@index([caseStudyId])
+  @@map("photo_assets")
+}
+
+model CaseStudy {
+  id          String          @id @default(uuid())
+  branchId    String
+  branch      Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId  String?
+  customer    Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  serviceId   String?
+  service     Service?        @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  authorId    String?
+  author      User?           @relation("CaseAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  approvedById String?
+  approvedBy  User?           @relation("CaseApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  code        String          @unique
+  title       String
+  status      CaseStudyStatus @default(DRAFT)
+  /// Tình trạng trước, kỹ thuật đã dùng, kết quả, thời gian hồi phục.
+  beforeCondition String?
+  technique   String?
+  outcome     String?
+  recoveryNote String?
+  /// Ẩn danh hoá: không được để tên thật, số điện thoại trong nội dung.
+  isAnonymized Boolean        @default(true)
+  /// Chỉ dùng nội bộ đào tạo, hay được phép dùng truyền thông.
+  internalOnly Boolean        @default(true)
+  approvedAt  DateTime?
+  publishedAt DateTime?
+  withdrawnAt DateTime?
+  withdrawReason String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  photos PhotoAsset[]
+
+  @@index([branchId, status])
+  @@index([serviceId])
+  @@map("case_studies")
+}
+
+// =============================================================================
+// KHỐI 12 — KHO, VẬT TƯ THEO LÔ & TRUY VẾT
+// -----------------------------------------------------------------------------
+// Filler, botox, chỉ, túi ngực BẮT BUỘC quản lý theo LÔ + HẠN DÙNG và phải
+// truy vết được: lô nào -> đã dùng cho khách nào -> ngày nào -> ai thực hiện.
+// Khi nhà sản xuất thu hồi một lô, phải tra ra danh sách khách trong 1 phút.
+// Danh mục sản phẩm và nhà cung cấp dùng CHUNG toàn công ty; tồn kho tách theo
+// từng kho (Warehouse) thuộc từng cơ sở.
+// =============================================================================
+
+model Warehouse {
+  id        String   @id @default(uuid())
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  code      String   @unique
+  name      String
+  /// KHO_CHINH | KHO_PHONG_MO | TU_LANH_BAO_QUAN | KHO_LE
+  kind      String   @default("KHO_CHINH")
+  location  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  lots       StockLot[]
+  movements  StockMovement[]
+  counts     StockCount[]
+  purchaseOrders PurchaseOrder[]
+
+  @@index([branchId])
+  @@map("warehouses")
+}
+
+model Supplier {
+  id           String   @id @default(uuid())
+  code         String   @unique
+  name         String
+  taxCode      String?
+  phone        String?
+  email        String?
+  address      String?
+  contactName  String?
+  /// Giấy phép nhập khẩu / công bố sản phẩm — cần khi thanh tra.
+  licenseNo    String?
+  note         String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  products       Product[]
+  purchaseOrders PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+model Product {
+  id          String      @id @default(uuid())
+  supplierId  String?
+  supplier    Supplier?   @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  code        String      @unique
+  name        String
+  kind        ProductKind
+  brand       String?
+  origin      String?
+  unit        String      @default("cái")
+  /// Đơn vị nhỏ nhất khi xuất dùng (ml, cc, đơn vị botox) để trừ kho chính xác.
+  subUnit     String?
+  subUnitRatio Decimal?   @db.Decimal(10, 3)
+  /// Số công bố / số đăng ký lưu hành do Bộ Y tế cấp.
+  registrationNo String?
+  requiresLotTracking Boolean @default(true)
+  /// Cần bảo quản lạnh — cảnh báo khi mất điện / sai nhiệt độ.
+  coldChain   Boolean     @default(false)
+  costPrice   Decimal     @default(0) @db.Decimal(14, 2)
+  salePrice   Decimal     @default(0) @db.Decimal(14, 2)
+  /// Ngưỡng tồn tối thiểu — dưới mức này hệ thống cảnh báo đặt hàng.
+  minStock    Decimal     @default(0) @db.Decimal(12, 3)
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  lots        StockLot[]
+  movements   StockMovement[]
+  usages      ProductUsage[]
+  poItems     PurchaseOrderItem[]
+  countItems  StockCountItem[]
+
+  @@index([kind, isActive])
+  @@map("products")
+}
+
+model StockLot {
+  id          String    @id @default(uuid())
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  /// Số lô do nhà sản xuất in trên vỏ hộp — KHÔNG tự sinh.
+  lotNumber   String
+  serialNo    String?
+  manufactureDate DateTime?
+  /// Hết hạn là chặn xuất dùng, không phải cảnh báo suông.
+  expiryDate  DateTime?
+  quantityIn  Decimal   @default(0) @db.Decimal(12, 3)
+  quantityOut Decimal   @default(0) @db.Decimal(12, 3)
+  quantityOnHand Decimal @default(0) @db.Decimal(12, 3)
+  unitCost    Decimal   @default(0) @db.Decimal(14, 2)
+  /// Đã bị khoá do thu hồi / nghi ngờ hàng giả.
+  isBlocked   Boolean   @default(false)
+  blockReason String?
+  receivedAt  DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  movements StockMovement[]
+  usages    ProductUsage[]
+  countItems StockCountItem[]
+
+  @@unique([productId, warehouseId, lotNumber])
+  @@index([expiryDate])
+  @@index([warehouseId, quantityOnHand])
+  @@map("stock_lots")
+}
+
+model StockMovement {
+  id          String        @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse     @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  lotId       String?
+  lot         StockLot?     @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  actorId     String?
+  actor       User?         @relation("StockActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  type        StockMoveType
+  quantity    Decimal       @db.Decimal(12, 3)
+  unitCost    Decimal       @default(0) @db.Decimal(14, 2)
+  /// Chứng từ nguồn: PROCEDURE | PURCHASE_ORDER | STOCK_COUNT | CONTRACT.
+  sourceType  String?
+  sourceId    String?
+  occurredAt  DateTime      @default(now())
+  note        String?
+  createdAt   DateTime      @default(now())
+
+  @@index([warehouseId, occurredAt])
+  @@index([productId, type])
+  @@index([lotId])
+  @@map("stock_movements")
+}
+
+model ProductUsage {
+  id          String           @id @default(uuid())
+  procedureId String?
+  procedure   ProcedureRecord? @relation(fields: [procedureId], references: [id], onDelete: SetNull)
+  customerId  String
+  customer    Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  lotId       String?
+  lot         StockLot?        @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  performedById String?
+  performedBy User?            @relation("UsageBy", fields: [performedById], references: [id], onDelete: SetNull)
+
+  quantity    Decimal          @db.Decimal(12, 3)
+  unit        String?
+  /// Vị trí giải phẫu đã tiêm/đặt — cần khi xử lý biến chứng muộn.
+  bodySite    String?
+  usedAt      DateTime         @default(now())
+  /// Hạn bảo hành sản phẩm cho khách (túi ngực, chỉ) — dùng nhắc tái khám.
+  warrantyUntil DateTime?
+  note        String?
+  createdAt   DateTime         @default(now())
+
+  @@index([customerId, usedAt])
+  @@index([lotId])
+  @@index([productId, usedAt])
+  @@map("product_usages")
+}
+
+model PurchaseOrder {
+  id          String              @id @default(uuid())
+  branchId    String
+  branch      Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  warehouseId String?
+  warehouse   Warehouse?          @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+  supplierId  String?
+  supplier    Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  createdById String?
+  createdBy   User?               @relation("POCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  code        String              @unique
+  status      PurchaseOrderStatus @default(DRAFT)
+  orderedAt   DateTime?
+  expectedAt  DateTime?
+  receivedAt  DateTime?
+  totalAmount Decimal             @default(0) @db.Decimal(14, 2)
+  paidAmount  Decimal             @default(0) @db.Decimal(14, 2)
+  note        String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  items PurchaseOrderItem[]
+
+  @@index([branchId, status])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id          String        @id @default(uuid())
+  orderId     String
+  order       PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  quantity    Decimal       @db.Decimal(12, 3)
+  receivedQuantity Decimal  @default(0) @db.Decimal(12, 3)
+  unitCost    Decimal       @default(0) @db.Decimal(14, 2)
+  lineTotal   Decimal       @default(0) @db.Decimal(14, 2)
+  lotNumber   String?
+  expiryDate  DateTime?
+
+  @@index([orderId])
+  @@map("purchase_order_items")
+}
+
+model StockCount {
+  id          String    @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?     @relation("StockCountUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  code        String    @unique
+  countedAt   DateTime  @default(now())
+  /// Đã chốt thì không sửa được, chênh lệch phải sinh bút toán điều chỉnh.
+  isFinalized Boolean   @default(false)
+  finalizedAt DateTime?
+  note        String?
+  createdAt   DateTime  @default(now())
+
+  items StockCountItem[]
+
+  @@index([warehouseId, countedAt])
+  @@map("stock_counts")
+}
+
+model StockCountItem {
+  id          String     @id @default(uuid())
+  countId     String
+  count       StockCount @relation(fields: [countId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  lotId       String?
+  lot         StockLot?  @relation(fields: [lotId], references: [id], onDelete: SetNull)
+
+  systemQuantity Decimal @default(0) @db.Decimal(12, 3)
+  countedQuantity Decimal @default(0) @db.Decimal(12, 3)
+  /// Lệch = đếm thực - sổ sách. Âm là mất hàng, phải giải trình.
+  variance    Decimal    @default(0) @db.Decimal(12, 3)
+  reason      String?
+
+  @@index([countId])
+  @@map("stock_count_items")
+}
+
+// =============================================================================
+// KHỐI 13 — KPI, HOA HỒNG & LƯƠNG
+// -----------------------------------------------------------------------------
+// KpiGroup TÁCH RIÊNG NURSING khỏi SALES: điều dưỡng không bị chấm bằng doanh
+// số, mà bằng tuân thủ vô trùng, chuẩn bị tiền phẫu, gọi chăm sóc đúng mốc.
+// CommissionRule.basis nên đặt COLLECTED_CASH — hoa hồng chỉ sinh khi TIỀN VỀ.
+// =============================================================================
+
+model KpiDefinition {
+  id          String        @id @default(uuid())
+  code        String        @unique
+  name        String
+  group       KpiGroup
+  /// Công thức tính, viết bằng ngôn ngữ nghiệp vụ để đối chiếu khi tranh cãi.
+  formula     String?
+  unit        String?
+  /// Chiều tốt: UP nếu càng cao càng tốt, DOWN nếu càng thấp càng tốt.
+  direction   String        @default("UP")
+  periodType  KpiPeriodType @default(MONTH)
+  /// Nguồn dữ liệu trong CRM để tự tính, tránh nhập tay.
+  dataSource  String?
+  isActive    Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+
+  targets KpiTarget[]
+
+  @@index([group, isActive])
+  @@map("kpi_definitions")
+}
+
+model KpiTarget {
+  id           String        @id @default(uuid())
+  branchId     String
+  branch       Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  definitionId String
+  definition   KpiDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  userId       String?
+  user         User?         @relation("KpiTargetUser", fields: [userId], references: [id], onDelete: Cascade)
+  /// Giao cho phòng ban khi không giao cho cá nhân.
+  departmentId String?
+
+  periodType   KpiPeriodType @default(MONTH)
+  periodStart  DateTime
+  periodEnd    DateTime
+  targetValue  Decimal       @db.Decimal(16, 3)
+  /// Ngưỡng tối thiểu để được tính thưởng (thường 80% chỉ tiêu).
+  thresholdValue Decimal?    @db.Decimal(16, 3)
+  weight       Decimal       @default(1) @db.Decimal(5, 2)
+  note         String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  actuals KpiActual[]
+
+  @@unique([definitionId, userId, periodStart, periodType])
+  @@index([branchId, periodStart])
+  @@map("kpi_targets")
+}
+
+model KpiActual {
+  id          String    @id @default(uuid())
+  targetId    String
+  target      KpiTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?     @relation("KpiActualUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  periodStart DateTime
+  periodEnd   DateTime
+  actualValue Decimal   @default(0) @db.Decimal(16, 3)
+  /// Tỉ lệ hoàn thành (%) — lưu sẵn để xếp hạng nhanh trên dashboard.
+  achievedRate Decimal? @db.Decimal(7, 2)
+  /// TRUE nếu số do người nhập tay chứ không do hệ thống tự tính -> cần duyệt.
+  isManual    Boolean   @default(false)
+  approvedById String?
+  approvedAt  DateTime?
+  note        String?
+  calculatedAt DateTime @default(now())
+
+  @@index([targetId, periodStart])
+  @@index([userId, periodStart])
+  @@map("kpi_actuals")
+}
+
+model CommissionRule {
+  id          String             @id @default(uuid())
+  serviceId   String?
+  service     Service?           @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  code        String             @unique
+  name        String
+  roleKind    CommissionRoleKind
+  /// KHUYẾN NGHỊ: COLLECTED_CASH. Đặt CONTRACT_VALUE là tự đặt bẫy dòng tiền.
+  basis       CommissionBasis    @default(COLLECTED_CASH)
+  percent     Decimal?           @db.Decimal(5, 2)
+  fixedAmount Decimal?           @db.Decimal(14, 2)
+  /// Chỉ áp dụng khi doanh số/tiền thu vượt ngưỡng này.
+  minThreshold Decimal?          @db.Decimal(14, 2)
+  /// Trần hoa hồng mỗi giao dịch (nếu có).
+  capAmount   Decimal?           @db.Decimal(14, 2)
+  /// Số ngày giữ lại trước khi được duyệt chi — phòng khách huỷ/hoàn tiền.
+  holdbackDays Int               @default(0)
+  effectiveFrom DateTime?
+  effectiveTo DateTime?
+  isActive    Boolean            @default(true)
+  note        String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  entries CommissionEntry[]
+
+  @@index([roleKind, isActive])
+  @@map("commission_rules")
+}
+
+model CommissionEntry {
+  id          String             @id @default(uuid())
+  branchId    String
+  branch      Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User               @relation("CommissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  ruleId      String?
+  rule        CommissionRule?    @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  contractId  String?
+  contract    Contract?          @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  payrollLineId String?
+  payrollLine PayrollLine?       @relation(fields: [payrollLineId], references: [id], onDelete: SetNull)
+  /// Phiếu thu làm phát sinh hoa hồng này (khi basis = COLLECTED_CASH).
+  paymentId   String?
+
+  roleKind    CommissionRoleKind
+  basis       CommissionBasis
+  /// Số tiền gốc dùng để tính (doanh số ký hoặc tiền thực thu).
+  baseAmount  Decimal            @db.Decimal(14, 2)
+  percent     Decimal?           @db.Decimal(5, 2)
+  amount      Decimal            @db.Decimal(14, 2)
+  status      CommissionStatus   @default(PENDING)
+  earnedAt    DateTime           @default(now())
+  /// Ngày hết thời gian giữ lại, sau ngày này mới được duyệt chi.
+  releasableAt DateTime?
+  approvedAt  DateTime?
+  approvedById String?
+  paidAt      DateTime?
+  /// Đã bị thu hồi do khách hoàn tiền / huỷ hợp đồng.
+  clawedBackAt DateTime?
+  clawbackReason String?
+  note        String?
+  createdAt   DateTime           @default(now())
+
+  @@index([branchId, status, earnedAt])
+  @@index([userId, earnedAt])
+  @@index([contractId])
+  @@map("commission_entries")
+}
+
+model PayrollPeriod {
+  id          String    @id @default(uuid())
+  branchId    String?
+  code        String    @unique
+  periodStart DateTime
+  periodEnd   DateTime
+  /// Đã chốt thì khoá, mọi điều chỉnh phải sang kỳ sau.
+  isClosed    Boolean   @default(false)
+  closedAt    DateTime?
+  closedById  String?
+  note        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  lines PayrollLine[]
+
+  @@index([periodStart])
+  @@map("payroll_periods")
+}
+
+model PayrollLine {
+  id            String        @id @default(uuid())
+  periodId      String
+  period        PayrollPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User          @relation("PayrollUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  baseSalary    Decimal       @default(0) @db.Decimal(14, 2)
+  /// Lương theo KPI (đạt bao nhiêu % thì hưởng bấy nhiêu).
+  kpiBonus      Decimal       @default(0) @db.Decimal(14, 2)
+  commission    Decimal       @default(0) @db.Decimal(14, 2)
+  allowance     Decimal       @default(0) @db.Decimal(14, 2)
+  overtimePay   Decimal       @default(0) @db.Decimal(14, 2)
+  deduction     Decimal       @default(0) @db.Decimal(14, 2)
+  insurance     Decimal       @default(0) @db.Decimal(14, 2)
+  personalTax   Decimal       @default(0) @db.Decimal(14, 2)
+  netPay        Decimal       @default(0) @db.Decimal(14, 2)
+  workingDays   Decimal?      @db.Decimal(5, 2)
+  kpiScore      Decimal?      @db.Decimal(5, 2)
+  note          String?
+  paidAt        DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  commissionEntries CommissionEntry[]
+
+  @@unique([periodId, userId])
+  @@index([userId])
+  @@map("payroll_lines")
+}
+
+// =============================================================================
+// GHI CHÚ QUAN HỆ & CHỈ MỤC QUAN TRỌNG (đọc trước khi migrate)
+// -----------------------------------------------------------------------------
+// 1. ĐA CƠ SỞ: mọi bảng nghiệp vụ đều có branchId. Middleware phải chèn điều
+//    kiện branchId vào MỌI truy vấn — không tin vào tầng giao diện.
+//    Ngoại lệ cố ý: Product, Supplier, Service, KpiDefinition, CommissionRule
+//    dùng chung toàn công ty; tồn kho tách theo Warehouse của từng cơ sở.
+//
+// 2. KHÁCH LIÊN THÔNG - BỆNH ÁN CÁCH LY: Customer dùng chung giữa phòng khám
+//    sản và phòng khám thẩm mỹ (qua CustomerBranchLink) để bán chéo, nhưng
+//    MedicalRecord có @@unique([branchId, customerId]) — mỗi cơ sở một bệnh án
+//    riêng, không đọc chéo được.
+//
+// 3. TIỀN: Contract.totalAmount (doanh số ký) KHÁC Contract.collectedAmount
+//    (thực thu). CommissionEntry.baseAmount phải lấy từ Payment khi
+//    basis = COLLECTED_CASH. Refund phải sinh clawback cho CommissionEntry
+//    tương ứng, nếu không sẽ trả thừa hoa hồng.
+//
+// 4. TRUY VẾT LÔ: StockLot -> StockMovement -> ProductUsage -> Customer.
+//    Truy vết ngược khi thu hồi lô:
+//      SELECT customer FROM product_usages WHERE lotId = ?
+//    Chỉ mục [lotId] trên product_usages là bắt buộc cho việc này.
+//
+// 5. ẢNH & ĐỒNG Ý: PhotoSet.isPublishable chỉ được TRUE khi tồn tại
+//    ConsentForm(type = PHOTO_USAGE, status = SIGNED, expiresAt > now).
+//    Khi ConsentForm chuyển REVOKED: set isPublishable = false cho mọi PhotoSet
+//    liên quan VÀ chuyển CaseStudy dùng ảnh đó sang WITHDRAWN. Đây là việc của
+//    một hook ở tầng dịch vụ, không phải ràng buộc cơ sở dữ liệu.
+//
+// 6. BÚT KÝ Y KHOA KHÔNG SỬA: MedicalRecordEntry và ProcedureRecord.operativeNote
+//    sau khi signedAt thì chỉ được đính chính bằng bản ghi mới
+//    (amendsEntryId), không UPDATE đè. Mọi truy cập đọc phải ghi DataAccessLog.
+//
+// 7. CHỈ MỤC CHO BÁO CÁO QUẢN TRỊ (đã đặt sẵn ở trên, đừng bỏ khi migrate):
+//    - payments[branchId, paidAt]        -> doanh thu thực thu theo ngày
+//    - contracts[branchId, status]       -> doanh số ký, công nợ
+//    - installments[status, dueDate]     -> danh sách công nợ đến hạn
+//    - follow_up_tasks[assigneeId, status, dueAt] -> việc chăm sóc quá hạn
+//    - stock_lots[expiryDate]            -> vật tư sắp hết hạn
+//    - commission_entries[userId, earnedAt] -> bảng lương hoa hồng
+//    - complications[branchId, severity, status] -> báo cáo an toàn người bệnh
+//
+// 8. XOÁ DỮ LIỆU: không dùng xoá cứng cho Payment, Contract, MedicalRecord,
+//    ProcedureRecord, Complication. Dùng cờ huỷ (voidedAt/cancelReason) để giữ
+//    dấu vết kiểm toán. onDelete: Cascade ở đây chỉ dành cho dữ liệu con thuần
+//    kỹ thuật (dòng chi tiết, ảnh trong bộ ảnh).
+// =============================================================================

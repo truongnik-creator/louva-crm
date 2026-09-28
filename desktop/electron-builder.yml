@@ -1,0 +1,37 @@
+appId: com.brain2026.crmdesktop
+productName: CRM Zalo
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**/*
+# Bundles the backend API (Node/Express/Prisma) into the packaged app's
+# resources dir so the desktop app never depends on a separately-started
+# backend. Electron's main process spawns it at runtime (see
+# src/main/backend-process.ts) via Electron's own bundled Node runtime, so
+# no system Node install is required either.
+#
+# NOTE: before cutting a real release, run
+#   cd ../backend && npm ci --omit=dev && npm run build
+# in a clean checkout so node_modules only contains production deps (keeps
+# the installer small). Do not `npm prune` the shared dev checkout of
+# ../backend directly — that would strip devDependencies (tsx, prisma CLI,
+# typescript, etc.) other developers/agents still need for `npm run dev`.
+extraResources:
+  - from: ../backend/dist
+    to: backend/dist
+  - from: ../backend/prisma
+    to: backend/prisma
+  - from: ../backend/package.json
+    to: backend/package.json
+  - from: ../backend/node_modules
+    to: backend/node_modules
+    filter:
+      - '**/*'
+mac:
+  target: dmg
+  category: public.app-category.business
+win:
+  target: nsis
+linux:
+  target: AppImage

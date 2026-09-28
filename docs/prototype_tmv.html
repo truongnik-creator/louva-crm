@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CRM Phòng khám Phẫu thuật Thẩm mỹ — Prototype</title>
+<style>
+:root{
+  --green-900:#0F5132; --green-800:#14663F; --green-700:#177f4d; --green-600:#1a9459;
+  --green-50:#e8f5ee; --green-100:#d3ecdf;
+  --bg:#f3f5f4; --surface:#ffffff; --surface-2:#f8faf9; --border:#e2e8e6;
+  --text:#1f2933; --muted:#6b7a80; --danger:#dc2626; --warn:#d97706; --info:#1d4ed8;
+  --side-bg:#0F5132; --side-text:#cfe6da; --side-active:#177f4d; --side-border:#1c6b46;
+  --radius:10px; --shadow:0 1px 3px rgba(15,40,25,.09),0 1px 2px rgba(15,40,25,.06);
+}
+body.dark{
+  --bg:#0e1512; --surface:#151d19; --surface-2:#1a231e; --border:#26332c;
+  --text:#e6edea; --muted:#93a49c;
+  --side-bg:#0b3524; --side-text:#bcd8c9; --side-active:#125c3a; --side-border:#12492f;
+  --green-50:#122a1f; --green-100:#173525; --green-700:#177f4d;
+  --shadow:0 1px 3px rgba(0,0,0,.5);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  font-size:14px;color:var(--text);
+  background-color:var(--bg);
+  background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);
+  background-size:28px 28px;
+}
+#app{display:flex;height:100vh;overflow:hidden}
+a{color:inherit;text-decoration:none}
+h1,h2,h3,h4{margin:0 0 8px 0;font-weight:600}
+/* ---------- SIDEBAR ---------- */
+.sidebar{width:248px;flex:0 0 248px;background:var(--side-bg);color:var(--side-text);display:flex;flex-direction:column;height:100vh}
+.side-head{padding:14px 14px 12px;border-bottom:1px solid var(--side-border)}
+.side-head .role{font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.75}
+.side-head .clinic{color:#fff;font-weight:700;font-size:14px;margin-top:3px;line-height:1.3}
+.side-head select{width:100%;margin-top:9px;background:rgba(255,255,255,.09);color:#fff;border:1px solid var(--side-border);border-radius:8px;padding:6px 8px;font-size:12.5px}
+.side-nav{flex:1;overflow-y:auto;padding:8px 8px 16px}
+.side-nav::-webkit-scrollbar{width:8px}
+.side-nav::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:8px}
+.nav-group{margin:12px 6px 4px;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;opacity:.62;font-weight:700}
+.nav-item{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13.2px;line-height:1.3;color:var(--side-text)}
+.nav-item:hover{background:rgba(255,255,255,.08);color:#fff}
+.nav-item.active{background:var(--side-active);color:#fff;font-weight:600}
+.nav-item .ic{width:16px;text-align:center;opacity:.9;font-size:13px}
+.nav-item .badge{margin-left:auto;background:#e11d48;color:#fff;font-size:10.5px;font-weight:700;border-radius:999px;padding:1px 6px}
+.side-foot{border-top:1px solid var(--side-border);padding:10px 12px 12px;font-size:12.5px}
+.side-foot .me{color:#fff;font-weight:600}
+.side-foot .me small{display:block;font-weight:400;opacity:.7;font-size:11px;margin-top:2px}
+.side-foot .acts{display:flex;flex-direction:column;gap:4px;margin-top:9px}
+.side-foot button{background:rgba(255,255,255,.08);border:1px solid var(--side-border);color:var(--side-text);padding:5px 8px;border-radius:7px;cursor:pointer;font-size:12px;text-align:left;font-family:inherit}
+.side-foot button:hover{background:rgba(255,255,255,.16);color:#fff}
+/* ---------- MAIN ---------- */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;height:100vh}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:11px 18px;display:flex;align-items:center;gap:12px;flex:0 0 auto}
+.topbar h1{font-size:16px;margin:0}
+.topbar .sub{color:var(--muted);font-size:12.5px}
+.topbar .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.content{flex:1;overflow:auto;padding:16px 18px}
+.content.flush{padding:0;overflow:hidden}
+/* ---------- ATOMS ---------- */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid transparent;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:500;cursor:pointer;background:var(--green-700);color:#fff;font-family:inherit}
+.btn:hover{background:var(--green-800)}
+.btn.sec{background:var(--surface);color:var(--text);border-color:var(--border)}
+.btn.sec:hover{background:var(--surface-2)}
+.btn.sm{padding:4px 9px;font-size:12px}
+.btn.block{width:100%}
+.input,select.input,textarea.input{border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:13px;background:var(--surface);color:var(--text);font-family:inherit;width:100%}
+.input:focus{outline:2px solid var(--green-600);outline-offset:-1px}
+.muted{color:var(--muted)}
+.tag{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}
+.tag.out{background:transparent;border:1px solid var(--border);color:var(--muted);font-weight:500}
+.row{display:flex;gap:10px;align-items:center}
+.grid{display:grid;gap:12px}
+.empty{padding:34px;text-align:center;color:var(--muted);font-size:13px}
+table{width:100%;border-collapse:collapse;background:var(--surface)}
+thead th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);background:var(--surface-2);padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{padding:10px 12px;border-bottom:1px solid var(--border);font-size:13px}
+tbody tr:hover{background:var(--surface-2)}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;box-shadow:var(--shadow)}
+.kpi .lab{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.kpi .val{font-size:20px;font-weight:700;margin-top:4px}
+.kpi .dt{font-size:11.5px;margin-top:3px}
+.up{color:#16a34a}.down{color:var(--danger)}
+.sec-title{font-size:13px;font-weight:700;margin-bottom:9px}
+</style>
+<style id="css2">
+/* ---------- ZALO ---------- */
+.zalo{display:flex;height:100%;background:var(--surface)}
+.zcol1{width:302px;flex:0 0 302px;border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+.zc1-head{padding:12px;border-bottom:1px solid var(--border)}
+.ztabs{display:flex;gap:6px}
+.ztab{flex:1;padding:6px;border:1px solid var(--border);background:var(--surface);color:var(--muted);border-radius:8px;cursor:pointer;font-size:12.5px;font-family:inherit}
+.ztab.on{background:var(--green-700);border-color:var(--green-700);color:#fff;font-weight:600}
+.zlist{flex:1;overflow-y:auto}
+.zitem{display:flex;gap:9px;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;align-items:flex-start}
+.zitem:hover{background:var(--surface-2)}
+.zitem.on{background:var(--green-50);border-left:3px solid var(--green-700);padding-left:9px}
+.ava,.pava{width:34px;height:34px;flex:0 0 34px;border-radius:50%;background:var(--green-700);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.zmid{min-width:0;flex:1}
+.ztop{display:flex;justify-content:space-between;gap:6px;font-size:13px}
+.zgio{color:var(--muted);font-size:11px;white-space:nowrap}
+.zprev{color:var(--muted);font-size:12px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zdot{background:#e11d48;color:#fff;font-size:10.5px;font-weight:700;border-radius:999px;padding:1px 6px;height:17px}
+.zcol2{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+.zchead{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px}
+.zmsgs{flex:1;overflow-y:auto;padding:14px;background:var(--surface-2);display:flex;flex-direction:column;gap:10px}
+.zm{max-width:70%}
+.zm.in{align-self:flex-start}.zm.out{align-self:flex-end;text-align:right}
+.zbub{padding:8px 12px;border-radius:12px;background:var(--surface);border:1px solid var(--border);font-size:13.2px;line-height:1.45;text-align:left;display:inline-block}
+.zm.out .zbub{background:var(--green-100);border-color:transparent;color:var(--text)}
+.zmeta{font-size:10.5px;color:var(--muted);margin-top:3px}
+.zinput{border-top:1px solid var(--border);padding:10px 12px;background:var(--surface)}
+.zbar{display:flex;gap:6px;align-items:center;margin-top:7px;flex-wrap:wrap}
+.zcol3{width:326px;flex:0 0 326px;border-left:1px solid var(--border);padding:12px;overflow-y:auto}
+.prof{display:flex;gap:10px;align-items:center;padding-bottom:11px;border-bottom:1px solid var(--border);margin-bottom:6px}
+.pf{padding:8px 0;border-bottom:1px dashed var(--border)}
+.pl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.pv{font-size:13px;line-height:1.5}
+/* ---------- LỊCH ---------- */
+.calwrap{overflow:auto;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+.cal{display:grid;min-width:900px}
+.cal .hd{position:sticky;top:0;background:var(--surface-2);border-bottom:1px solid var(--border);padding:9px;font-size:12.5px;font-weight:700;text-align:center;z-index:2}
+.cal .tm{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:4px 8px;font-size:11px;color:var(--muted);background:var(--surface-2)}
+.cal .cell{border-right:1px solid var(--border);border-bottom:1px solid var(--border);min-height:34px;position:relative}
+.ev{margin:2px;border-radius:7px;padding:5px 7px;font-size:11.5px;line-height:1.35;cursor:pointer;border-left:3px solid;height:calc(100% - 4px);overflow:hidden}
+.ev b{display:block;font-size:12px}
+.ev:hover{filter:brightness(.97)}
+/* ---------- KHÁC ---------- */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap}
+.tabs button{background:none;border:none;border-bottom:2px solid transparent;padding:8px 12px;cursor:pointer;color:var(--muted);font-size:13px;font-family:inherit}
+.tabs button.on{color:var(--green-700);border-bottom-color:var(--green-700);font-weight:700}
+.bar{height:9px;border-radius:999px;background:var(--border);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--green-600)}
+.fun{display:flex;align-items:center;gap:10px;margin-bottom:7px}
+.fun .fl{width:120px;font-size:12.5px;flex:0 0 120px}
+.fun .fb{flex:1;height:24px;background:var(--surface-2);border-radius:6px;overflow:hidden}
+.fun .fb i{display:block;height:100%;background:linear-gradient(90deg,var(--green-700),var(--green-600))}
+.fun .fn{width:86px;text-align:right;font-size:12.5px;font-weight:600}
+.cols{display:flex;gap:38px;align-items:flex-end;height:150px;padding:8px 4px}
+.colb{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end}
+.colb .pair{display:flex;gap:3px;align-items:flex-end;height:100%;width:100%;justify-content:center}
+.colb .b1,.colb .b2{width:13px;border-radius:4px 4px 0 0}
+.colb .b1{background:var(--green-700)}.colb .b2{background:var(--green-100);border:1px solid var(--green-600)}
+.colb small{color:var(--muted);font-size:10.5px}
+.alert{padding:8px 10px;border-radius:8px;font-size:12.5px;margin-bottom:6px;border-left:3px solid}
+.alert.dg{background:rgba(220,38,38,.1);border-color:var(--danger)}
+.alert.wr{background:rgba(217,119,6,.12);border-color:var(--warn)}
+.drawer{position:fixed;top:0;right:0;width:420px;max-width:92vw;height:100vh;background:var(--surface);border-left:1px solid var(--border);box-shadow:-8px 0 24px rgba(0,0,0,.13);padding:16px;overflow-y:auto;z-index:50}
+.ovl{position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:49}
+.ck{display:flex;gap:8px;align-items:flex-start;padding:6px 0;font-size:12.5px;border-bottom:1px dashed var(--border)}
+.ck .m{width:17px;flex:0 0 17px;font-weight:700}
+.ck .m.y{color:#16a34a}.ck .m.n{color:var(--danger)}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111c17;color:#fff;padding:10px 16px;border-radius:9px;font-size:13px;z-index:99;max-width:70vw;box-shadow:0 6px 20px rgba(0,0,0,.3)}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ===== TRẠNG THÁI PHỄU ===== */
+var STAGES={
+  MOI:{t:'Mới',bg:'#EEF2FF',fg:'#4338CA'},
+  LIENHE:{t:'Đã liên hệ',bg:'#FEF3C7',fg:'#B45309'},
+  HEN:{t:'Đã hẹn',bg:'#DBEAFE',fg:'#1D4ED8'},
+  DEN:{t:'Đã đến',bg:'#CFFAFE',fg:'#0E7490'},
+  CHOT:{t:'Đã chốt',bg:'#DCFCE7',fg:'#15803D'},
+  PT:{t:'Đã phẫu thuật',bg:'#D1FAE5',fg:'#047857'},
+  HAUPHAU:{t:'Hậu phẫu',bg:'#E0F2FE',fg:'#0369A1'},
+  HOANTAT:{t:'Hoàn tất',bg:'#F1F5F9',fg:'#475569'},
+  TAIMUA:{t:'Tái mua',bg:'#FAE8FF',fg:'#A21CAF'},
+  MAT:{t:'Mất khách',bg:'#FEE2E2',fg:'#B91C1C'}
+};
+/* ===== MENU ===== */
+var MENU=[
+  {group:null,items:[{id:'dashboard',ic:'▤',t:'Tổng quan'}]},
+  {group:'Hành chính phòng khám',items:[
+    {id:'lichhen',ic:'📅',t:'Lễ tân · Lịch hẹn'},
+    {id:'daden',ic:'🚶',t:'Lễ tân · Khách đã đến'},
+    {id:'phanlich',ic:'🗓',t:'Phân lịch làm việc'},
+    {id:'phongmo',ic:'🏥',t:'Phòng mổ · Lịch mổ'},
+    {id:'kpidd',ic:'📈',t:'KPI điều dưỡng'},
+    {id:'kpitv',ic:'📊',t:'KPI tư vấn viên'}]},
+  {group:'Chuyên môn thẩm mỹ',items:[
+    {id:'tuvan',ic:'💬',t:'Tư vấn & Phác đồ'},
+    {id:'hspt',ic:'📋',t:'Hồ sơ phẫu thuật'},
+    {id:'anh',ic:'🖼',t:'Ảnh trước - sau'},
+    {id:'hauphau',ic:'🩺',t:'Hậu phẫu & Tái khám'},
+    {id:'case',ic:'📚',t:'Thư viện case'}]},
+  {group:'Kinh doanh',items:[
+    {id:'zalo',ic:'✉',t:'Hộp thư Zalo',badge:5},
+    {id:'khach',ic:'👤',t:'Khách hàng'},
+    {id:'lead',ic:'🎯',t:'Lead & Chiến dịch'},
+    {id:'donhang',ic:'🧾',t:'Đơn hàng · Hợp đồng'},
+    {id:'dhtelesale',ic:'📞',t:'Đơn hàng telesale'},
+    {id:'congno',ic:'💰',t:'Thanh toán & Công nợ'}]},
+  {group:'Kho & vật tư',items:[
+    {id:'tonkho',ic:'📦',t:'Tồn kho'},
+    {id:'xuatnhap',ic:'🔁',t:'Xuất - Nhập kho'},
+    {id:'truyvet',ic:'🔎',t:'Truy vết implant / lô'},
+    {id:'ncc',ic:'🚚',t:'Nhà cung cấp'}]},
+  {group:'Nhân sự',items:[
+    {id:'hsnv',ic:'🧑‍⚕️',t:'Hồ sơ nhân viên'},
+    {id:'chamcong',ic:'⏱',t:'Chấm công & Ca trực'},
+    {id:'luong',ic:'💵',t:'Lương & Hoa hồng'},
+    {id:'daotao',ic:'🎓',t:'Đào tạo & Chứng chỉ'}]},
+  {group:'Kế toán & báo cáo',items:[
+    {id:'dashboard2',ic:'📉',t:'Dashboard chủ đầu tư'},
+    {id:'thuchi',ic:'🏦',t:'Doanh thu & Chi phí'},
+    {id:'bcdv',ic:'📄',t:'Báo cáo dịch vụ'},
+    {id:'bcmkt',ic:'📢',t:'Báo cáo marketing'},
+    {id:'xuatdl',ic:'⬇',t:'Xuất dữ liệu'}]},
+  {group:'Cài đặt',items:[
+    {id:'banggia',ic:'🏷',t:'Danh mục dịch vụ & Bảng giá'},
+    {id:'phong',ic:'🚪',t:'Phòng & Thiết bị'},
+    {id:'nguoidung',ic:'🔐',t:'Người dùng & Phân quyền'},
+    {id:'ketnoi',ic:'🔗',t:'Kết nối Zalo / Tổng đài'},
+    {id:'maubieu',ic:'🖨',t:'Mẫu biểu & Cam kết'},
+    {id:'nhatky',ic:'📜',t:'Nhật ký hệ thống'}]}
+];
+var TITLES={};MENU.forEach(function(g){g.items.forEach(function(i){TITLES[i.id]=i.t})});
+/* ===== HỘI THOẠI ZALO ===== */
+var CHATS=[
+ {id:'c1',ten:'Nguyễn Thị Lan Anh',hoso:'Nguyễn Thị Lan Anh',sdt:'0912 345 678',tab:'khach',gio:'16:02',chua:3,stage:'DEN',
+  dv:['Nâng mũi cấu trúc','Cắt mí trên'],tv:'Trần Thu Hà',ts:'Phạm Minh Ngọc',hen:'14/08/2026 · 09:30 · BS Lê Anh Tuấn',
+  nono:0,tong:'0đ',nguon:'TikTok',
+  tin:[{d:'in',t:'Em chào chị, chị cho em hỏi nâng mũi cấu trúc bên mình giá bao nhiêu ạ?',g:'15:41'},
+       {d:'out',t:'Dạ em chào chị Lan Anh, nâng mũi cấu trúc tại phòng khám hiện từ 38.000.000đ ạ. Mức giá tuỳ vào chất liệu sụn và tình trạng mũi hiện tại của chị.',g:'15:44',by:'Trần Thu Hà'},
+       {d:'in',t:'Vậy chị muốn qua khám trực tiếp thì đặt lịch thế nào em?',g:'15:52'},
+       {d:'out',t:'Dạ chị qua phòng khám bác sĩ soi mũi và tư vấn miễn phí ạ. Chị rảnh sáng thứ 5 ngày 14/08 lúc 9h30 được không ạ?',g:'15:55',by:'Trần Thu Hà'},
+       {d:'in',t:'9h30 thứ 5 được em nhé. Cho chị xin địa chỉ với',g:'16:00'},
+       {d:'in',t:'Mà chị hơi sợ đau, có gây mê không em?',g:'16:01'},
+       {d:'in',t:'Alo em ơi?',g:'16:02'}]},
+ {id:'c2',ten:'Trần Bảo Ngọc',hoso:'Trần Bảo Ngọc',sdt:'0938 221 004',tab:'khach',gio:'15:37',chua:1,stage:'CHOT',
+  dv:['Hút mỡ bụng'],tv:'Trần Thu Hà',ts:'Phạm Minh Ngọc',hen:'16/08/2026 · 08:00 · Khám tiền phẫu',
+  nono:24000000,tong:'56.000.000đ',nguon:'Facebook',
+  tin:[{d:'out',t:'Dạ chị Ngọc ơi, em xác nhận ca hút mỡ bụng của chị đã xếp ngày 18/08 lúc 8h ở Phòng mổ 1 ạ.',g:'14:10',by:'Trần Thu Hà'},
+       {d:'in',t:'Ok em. Trước mổ chị cần chuẩn bị gì không?',g:'15:30'},
+       {d:'out',t:'Dạ chị nhịn ăn uống từ 22h đêm trước, ngưng thuốc chống đông 7 ngày và mang theo kết quả xét nghiệm ạ. Còn 24.000.000đ chị thanh toán trước mổ giúp em nhé.',g:'15:34',by:'Trần Thu Hà'},
+       {d:'in',t:'Chị chuyển khoản chiều mai nhé',g:'15:37'}]},
+ {id:'c3',ten:'Lê Minh Châu',hoso:'Lê Minh Châu',sdt:'0987 654 321',tab:'khach',gio:'14:20',chua:0,stage:'HAUPHAU',
+  dv:['Cắt mí trên'],tv:'Đỗ Khánh Linh',ts:'Phạm Minh Ngọc',hen:'13/08/2026 · 10:00 · Cắt chỉ (N7)',
+  nono:0,tong:'18.000.000đ',nguon:'Giới thiệu',
+  tin:[{d:'out',t:'Chị Châu ơi hôm nay ngày thứ 5 sau cắt mí rồi, mắt chị còn sưng nhiều không ạ?',g:'09:15',by:'Điều dưỡng Vũ Hồng Nhung'},
+       {d:'in',t:'Đỡ nhiều rồi em, chỉ còn hơi cộm thôi',g:'14:12'},
+       {d:'in',t:'Chị gửi ảnh em xem nhé [Hình ảnh]',g:'14:18'},
+       {d:'out',t:'Dạ vết mổ khô đẹp ạ. Mai 10h chị qua cắt chỉ đúng hẹn giúp em nhé.',g:'14:20',by:'Điều dưỡng Vũ Hồng Nhung'}]},
+ {id:'c4',ten:'Phạm Thuỳ Dương',hoso:'(chưa cập nhật)',sdt:'0906 778 112',tab:'khach',gio:'11:48',chua:1,stage:'MOI',
+  dv:['Tiêm filler cằm'],tv:'— Chưa phân công —',ts:'—',hen:'',
+  nono:0,tong:'0đ',nguon:'Facebook',
+  tin:[{d:'in',t:'Cho mình hỏi tiêm filler cằm bao nhiêu tiền vậy shop?',g:'11:48'}]},
+ {id:'c5',ten:'Hoàng Thị Mai',hoso:'Hoàng Thị Mai',sdt:'0977 010 234',tab:'khach',gio:'Hôm qua',chua:0,stage:'TAIMUA',
+  dv:['Nâng ngực nội soi','Trẻ hoá da'],tv:'Đỗ Khánh Linh',ts:'Nguyễn Hải Yến',hen:'20/08/2026 · 15:00 · Tư vấn lại',
+  nono:0,tong:'132.000.000đ',nguon:'Khách sản khoa',
+  tin:[{d:'in',t:'Em ơi chị sinh xong 8 tháng rồi, giờ muốn làm ngực thì được chưa?',g:'Hôm qua'},
+       {d:'out',t:'Dạ chị Mai, sau sinh 6 tháng và ngừng cho con bú là làm được ạ. Chị qua để bác sĩ khám và đo trực tiếp nhé.',g:'Hôm qua',by:'Đỗ Khánh Linh'}]},
+ {id:'c6',ten:'Đặng Quốc Hưng',hoso:'Đặng Quốc Hưng',sdt:'0913 559 887',tab:'khach',gio:'Hôm qua',chua:0,stage:'LIENHE',
+  dv:['Cấy tóc'],tv:'Trần Thu Hà',ts:'Nguyễn Hải Yến',hen:'',
+  nono:0,tong:'0đ',nguon:'Google',
+  tin:[{d:'out',t:'Dạ em chào anh Hưng, em gọi anh 2 lần chưa được. Anh cho em xin thời gian thuận tiện để tư vấn cấy tóc ạ.',g:'Hôm qua',by:'Trần Thu Hà'}]},
+ {id:'g1',ten:'Nhóm — Kíp mổ Thứ 5',hoso:'Nhóm nội bộ',sdt:'6 thành viên',tab:'nhom',gio:'16:05',chua:2,stage:'HOANTAT',
+  dv:[],tv:'—',ts:'—',hen:'',nono:0,tong:'—',nguon:'Nội bộ',
+  tin:[{d:'in',t:'BS Tuấn: Ca 8h mai chuyển sang Phòng mổ 2 nhé, phòng 1 đang bảo trì đèn.',g:'15:58'},
+       {d:'in',t:'ĐD Nhung: Dạ em đã chuẩn bị dụng cụ sang phòng 2 ạ.',g:'16:05'}]},
+ {id:'g2',ten:'Nhóm — Chăm sóc khách VIP',hoso:'Nhóm nội bộ',sdt:'4 thành viên',tab:'nhom',gio:'09:12',chua:0,stage:'HOANTAT',
+  dv:[],tv:'—',ts:'—',hen:'',nono:0,tong:'—',nguon:'Nội bộ',
+  tin:[{d:'in',t:'QL: Chị Hoàng Thị Mai là khách cũ bên Y học bào thai, ưu tiên xếp bác sĩ trưởng khoa.',g:'09:12'}]}
+];
+/* ===== LỊCH HẸN (12/08/2026) ===== */
+var COTS=['BS Lê Anh Tuấn','BS Trịnh Quang Huy','Phòng tư vấn 1','Phòng tư vấn 2'];
+var GIO=['07:30','08:00','08:30','09:00','09:30','10:00','10:30','11:00','13:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00'];
+var HEN=[
+ {g:'08:00',c:0,sl:2,ten:'Vũ Thị Kim Chi',dv:'Khám tiền phẫu — Nâng mũi',tv:'Trần Thu Hà',tt:'den'},
+ {g:'09:30',c:0,sl:2,ten:'Nguyễn Thị Lan Anh',dv:'Tư vấn lần đầu — Nâng mũi cấu trúc',tv:'Trần Thu Hà',tt:'xacnhan'},
+ {g:'10:30',c:0,sl:2,ten:'Bùi Hồng Vân',dv:'Tái khám T1 — Cắt mí',tv:'Đỗ Khánh Linh',tt:'xacnhan'},
+ {g:'14:00',c:0,sl:3,ten:'Trần Bảo Ngọc',dv:'Khám tiền phẫu — Hút mỡ bụng',tv:'Trần Thu Hà',tt:'chuaxacnhan'},
+ {g:'08:30',c:1,sl:2,ten:'Lê Minh Châu',dv:'Thay băng — Cắt mí trên',tv:'ĐD Vũ Hồng Nhung',tt:'den'},
+ {g:'10:00',c:1,sl:3,ten:'Đặng Thu Trang',dv:'Tư vấn lần đầu — Hút mỡ đùi',tv:'Đỗ Khánh Linh',tt:'vangmat'},
+ {g:'15:00',c:1,sl:2,ten:'Hoàng Thị Mai',dv:'Tư vấn lại — Nâng ngực nội soi',tv:'Đỗ Khánh Linh',tt:'xacnhan'},
+ {g:'09:00',c:2,sl:2,ten:'Phạm Thuỳ Dương',dv:'Tư vấn — Tiêm filler cằm',tv:'Nguyễn Hải Yến',tt:'chuaxacnhan'},
+ {g:'13:30',c:2,sl:2,ten:'Ngô Bích Phượng',dv:'Tư vấn — Trẻ hoá da công nghệ cao',tv:'Nguyễn Hải Yến',tt:'xacnhan'},
+ {g:'16:00',c:2,sl:2,ten:'Đặng Quốc Hưng',dv:'Tư vấn — Cấy tóc tự thân',tv:'Trần Thu Hà',tt:'chuaxacnhan'},
+ {g:'10:00',c:3,sl:2,ten:'Lý Thanh Thảo',dv:'Tư vấn — Cắt mí + nhấn mí',tv:'Phạm Minh Ngọc',tt:'xacnhan'},
+ {g:'15:30',c:3,sl:3,ten:'Trịnh Thu Hằng',dv:'Tư vấn gói — Combo trẻ hoá',tv:'Phạm Minh Ngọc',tt:'den'}
+];
+var TTHEN={den:{t:'Đã đến',bg:'#CFFAFE',fg:'#0E7490'},xacnhan:{t:'Đã xác nhận',bg:'#DBEAFE',fg:'#1D4ED8'},
+  chuaxacnhan:{t:'Chưa xác nhận',bg:'#F1F5F9',fg:'#475569'},vangmat:{t:'Vắng mặt',bg:'#FEE2E2',fg:'#B91C1C'}};
+/* ===== CA MỔ ===== */
+var PHONGMO=['Phòng mổ 1','Phòng mổ 2','Phòng tiểu phẫu'];
+var CAMO=[
+ {g:'08:00',p:0,sl:6,ten:'Vũ Thị Kim Chi',tt:'Nâng mũi cấu trúc sụn sườn',bs:'BS Lê Anh Tuấn',me:'Mê toàn thân',muc:'ok',
+  kip:'BS Lê Anh Tuấn (chính) · BS Trịnh Quang Huy (phụ) · BS Đinh Văn Sơn (gây mê) · ĐD Vũ Hồng Nhung · ĐD Cao Thị Hạnh',
+  vt:'Sụn sườn tự thân · Sụn nhân tạo Surgiform (lô SF-2451) · Bộ chỉ PDS 5-0',
+  ck:[1,1,1,1,1,1,1]},
+ {g:'13:00',p:0,sl:4,ten:'Trần Bảo Ngọc',tt:'Hút mỡ bụng + tạo hình thành bụng',bs:'BS Trịnh Quang Huy',me:'Mê toàn thân',muc:'thieu',
+  kip:'BS Trịnh Quang Huy (chính) · BS Đinh Văn Sơn (gây mê) · ĐD Cao Thị Hạnh',
+  vt:'Canuyn hút mỡ · Dịch Klein · Gen định hình size M',
+  ck:[1,1,0,1,1,1,1]},
+ {g:'09:00',p:1,sl:3,ten:'Lý Thanh Thảo',tt:'Cắt mí trên 2 bên',bs:'BS Lê Anh Tuấn',me:'Tê tại chỗ',muc:'ok',
+  kip:'BS Lê Anh Tuấn (chính) · ĐD Vũ Hồng Nhung',vt:'Chỉ Nylon 6-0 · Bộ tiểu phẫu mí',ck:[1,1,1,1,1,1,1]},
+ {g:'14:30',p:1,sl:4,ten:'Hoàng Thị Mai',tt:'Nâng ngực nội soi đường nách',bs:'BS Lê Anh Tuấn',me:'Mê toàn thân',muc:'canh',
+  kip:'BS Lê Anh Tuấn (chính) · BS Đinh Văn Sơn (gây mê) · ĐD Cao Thị Hạnh',
+  vt:'Túi ngực Motiva 275cc (lô MT-88120) — KHO CHỈ CÒN 1/2 TÚI',ck:[1,1,1,0,1,1,0]},
+ {g:'10:30',p:2,sl:2,ten:'Ngô Bích Phượng',tt:'Tiêm filler cằm 2ml',bs:'BS Trịnh Quang Huy',me:'Tê tại chỗ',muc:'ok',
+  kip:'BS Trịnh Quang Huy (chính) · ĐD Vũ Hồng Nhung',vt:'Filler Juvederm Volux 2ml (lô JV-7712)',ck:[1,1,1,1,1,1,1]}
+];
+var CHECKLIST=['Đã đặt cọc tối thiểu theo quy định','Đã ký cam kết phẫu thuật','Đã có xét nghiệm tiền phẫu (30 ngày)',
+ 'Đã khám tiền mê (nếu mê toàn thân)','Đã chụp ảnh trước mổ','Đã dặn nhịn ăn / ngưng thuốc chống đông','Đã xác nhận vật tư/implant có sẵn'];
+/* ===== DASHBOARD ===== */
+var DASH={
+ kpi:[{l:'Doanh số ký',v:'1.482.000.000đ',d:'+18,4% so kỳ trước',u:1},
+      {l:'Tiền thực thu',v:'1.106.500.000đ',d:'+12,1% so kỳ trước',u:1},
+      {l:'Công nợ còn lại',v:'375.500.000đ',d:'+9,3% — cần thúc thu',u:0},
+      {l:'Khách mới',v:'214',d:'+31 khách so kỳ trước',u:1},
+      {l:'Số ca mổ',v:'46',d:'-3 ca so kỳ trước',u:0},
+      {l:'Giá trị đơn trung bình',v:'42.340.000đ',d:'+6,8% so kỳ trước',u:1}],
+ phieu:[{t:'Mới',n:214},{t:'Đã liên hệ',n:186},{t:'Đã hẹn',n:112},{t:'Đã đến',n:74},{t:'Đã chốt',n:39},{t:'Đã phẫu thuật',n:35}],
+ ngay:[[ '01',62,48],['04',88,71],['05',54,40],['06',96,77],['07',120,88],['08',74,60],['11',134,102],['12',110,84]],
+ congsuat:[['T2',72],['T3',85],['T4',63],['T5',91],['T6',78],['T7',96],['CN',34]],
+ dv:[['Nâng mũi cấu trúc',18,'612.000.000đ'],['Nâng ngực nội soi',7,'428.000.000đ'],['Hút mỡ bụng',9,'244.000.000đ'],
+     ['Cắt mí trên',14,'112.000.000đ'],['Tiêm filler / botox',26,'86.000.000đ']],
+ tv:[['Trần Thu Hà','412.000.000đ','38%'],['Đỗ Khánh Linh','356.500.000đ','34%'],['Phạm Minh Ngọc','218.000.000đ','29%'],['Nguyễn Hải Yến','120.000.000đ','22%']],
+ nguon:[['TikTok','7,4x'],['Giới thiệu','—'],['Facebook','4,1x'],['Google','3,2x'],['Khách sản khoa','—']],
+ canhbao:[['dg','4 đơn công nợ quá hạn trên 7 ngày — tổng 96.000.000đ'],
+          ['dg','Ca mổ 14:30 mai (Hoàng Thị Mai): kho chỉ còn 1/2 túi ngực Motiva 275cc'],
+          ['wr','Ca 13:00 (Trần Bảo Ngọc) chưa có xét nghiệm tiền phẫu'],
+          ['wr','3 tin nhắn Zalo chưa trả lời quá 60 phút'],
+          ['wr','2 khách hậu phẫu quá hạn liên hệ mốc N3']]
+};
+var VND=function(n){return n.toLocaleString('vi-VN')+'đ'};
+var esc=function(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')};
+var tagHTML=function(o){return '<span class="tag" style="background:'+o.bg+';color:'+o.fg+'">'+o.t+'</span>'};
+</script>
+<script>
+var ST={chat:'c1',tab:'khach',q:'',henLoc:'all',ca:null,ktab:'tq',ky:'Tháng này'};
+/* ================= 1. HỘP THƯ ZALO ================= */
+function viewZalo(){
+  var list=CHATS.filter(function(c){
+    if(c.tab!==ST.tab)return false;
+    if(!ST.q)return true;
+    var k=ST.q.toLowerCase();return c.ten.toLowerCase().indexOf(k)>-1||c.sdt.replace(/\s/g,'').indexOf(k.replace(/\s/g,''))>-1;
+  });
+  var cur=CHATS.filter(function(c){return c.id===ST.chat})[0]||list[0];
+  var h='<div class="zalo">';
+  /* cột 1 */
+  h+='<div class="zcol1"><div class="zc1-head"><div class="sec-title" style="margin:0 0 8px">Hộp thư</div>'+
+     '<div class="ztabs"><button class="ztab '+(ST.tab==='khach'?'on':'')+'" onclick="setTab(\'khach\')">Khách</button>'+
+     '<button class="ztab '+(ST.tab==='nhom'?'on':'')+'" onclick="setTab(\'nhom\')">Nhóm</button></div>'+
+     '<input class="input" style="margin-top:8px" placeholder="Tìm theo tên hoặc số điện thoại" value="'+esc(ST.q)+'" oninput="setQ(this.value)"></div>'+
+     '<div class="zlist">';
+  if(!list.length)h+='<div class="empty">Không tìm thấy khách nào khớp «'+esc(ST.q)+'».<br>Thử tìm bằng số điện thoại.</div>';
+  list.forEach(function(c){
+    var last=c.tin[c.tin.length-1];
+    h+='<div class="zitem '+(cur&&c.id===cur.id?'on':'')+'" onclick="pick(\''+c.id+'\')">'+
+       '<div class="ava">'+esc(c.ten.trim().split(' ').pop().charAt(0))+'</div>'+
+       '<div class="zmid"><div class="ztop"><b>'+esc(c.ten)+'</b><span class="zgio">'+esc(c.gio)+'</span></div>'+
+       '<div class="zprev">'+esc(last.t)+'</div>'+
+       '<div style="margin-top:4px">'+(c.tab==='khach'?tagHTML(STAGES[c.stage]):'<span class="tag out">Nội bộ</span>')+
+       (c.tv.indexOf('Chưa')>-1?' <span class="tag" style="background:#FEF3C7;color:#B45309">Chưa phân công</span>':'')+'</div></div>'+
+       (c.chua?'<span class="zdot">'+c.chua+'</span>':'')+'</div>';
+  });
+  h+='</div></div>';
+  /* cột 2 */
+  if(!cur){h+='<div class="zcol2"><div class="empty">Chọn một hội thoại ở bên trái để bắt đầu trả lời.</div></div>';}
+  else{
+    h+='<div class="zcol2"><div class="zchead"><div><b>'+esc(cur.ten)+'</b> <span class="muted">· '+esc(cur.sdt)+'</span><br>'+
+       (cur.tab==='khach'?tagHTML(STAGES[cur.stage]):'<span class="tag out">Nhóm nội bộ</span>')+'</div>'+
+       '<button class="btn sec sm" style="margin-left:auto" onclick="say(\'Đã gán bạn phụ trách hội thoại này.\')">Gán tôi phụ trách</button></div>'+
+       '<div class="zmsgs" id="zmsgs">';
+    cur.tin.forEach(function(m){
+      h+='<div class="zm '+(m.d==='in'?'in':'out')+'"><div class="zbub">'+esc(m.t)+'</div>'+
+         '<div class="zmeta">'+esc(m.g)+(m.by?' · '+esc(m.by):'')+'</div></div>';
+    });
+    h+='</div><div class="zinput"><textarea class="input" id="zbox" rows="2" placeholder="Nhập tin nhắn…" onkeydown="keySend(event)"></textarea>'+
+       '<div class="zbar"><span class="muted" style="font-size:11.5px">Enter gửi · Shift+Enter xuống dòng</span>'+
+       '<button class="btn sec sm" onclick="say(\'Chọn ảnh để đính kèm (mô phỏng).\')">📎 Ảnh</button>'+
+       '<button class="btn sec sm" onclick="say(\'Chọn tệp để đính kèm (mô phỏng).\')">📄 Tệp</button>'+
+       '<button class="btn sec sm" onclick="say(\'Mẫu tin nhanh: xác nhận lịch hẹn, nhắc tái khám, gửi báo giá.\')">⚡ Mẫu</button>'+
+       '<button class="btn sm" style="margin-left:auto" onclick="send()">Gửi</button></div></div></div>';
+    /* cột 3 */
+    h+='<div class="zcol3"><div class="sec-title">Hồ sơ khách</div>'+
+       '<div class="prof"><div class="pava">'+esc(cur.ten.trim().split(' ').pop().charAt(0))+'</div>'+
+       '<div><b>'+esc(cur.ten)+'</b><div class="muted" style="font-size:12px">'+esc(cur.sdt)+'</div></div></div>'+
+       f('Tên trong hồ sơ',esc(cur.hoso))+
+       f('Dịch vụ quan tâm',cur.dv.length?cur.dv.map(function(d){return '<span class="tag" style="background:var(--green-50);color:var(--green-700)">'+esc(d)+'</span>'}).join(' '):'<span class="muted">Chưa ghi nhận</span>')+
+       f('Giai đoạn phễu',tagHTML(STAGES[cur.stage]))+
+       f('Tư vấn viên phụ trách','<select class="input">'+['Trần Thu Hà','Đỗ Khánh Linh','Nguyễn Hải Yến','— Chưa phân công —'].map(function(x){return '<option'+(x===cur.tv?' selected':'')+'>'+x+'</option>'}).join('')+'</select>')+
+       f('Telesale phụ trách','<select class="input">'+['Phạm Minh Ngọc','Nguyễn Hải Yến','—'].map(function(x){return '<option'+(x===cur.ts?' selected':'')+'>'+x+'</option>'}).join('')+'</select>')+
+       f('Lịch hẹn kế tiếp',cur.hen?esc(cur.hen):'<span class="muted">Chưa có lịch</span>')+
+       f('Công nợ',cur.nono?'<b style="color:var(--danger)">'+VND(cur.nono)+'</b> <span class="muted">· hạn 16/08</span>':'<span class="muted">Không có công nợ</span>')+
+       f('Tổng đã chi tiêu',esc(cur.tong))+
+       f('Nguồn khách','<span class="tag out">'+esc(cur.nguon)+'</span>')+
+       '<div style="display:grid;gap:7px;margin-top:12px">'+
+       '<button class="btn block" onclick="go(\'khachhang\')">Mở hồ sơ khách →</button>'+
+       '<button class="btn sec block" onclick="go(\'lichhen\')">Đặt lịch khám →</button>'+
+       '<button class="btn sec block" onclick="say(\'Mở màn Tư vấn &amp; Báo giá (chưa dựng trong prototype).\')">Tạo báo giá →</button>'+
+       '<button class="btn sec block" onclick="say(\'Chuyển giai đoạn phễu: Mới → Đã liên hệ → Đã hẹn → Đã đến → Đã chốt…\')">Chuyển giai đoạn ▾</button>'+
+       '</div></div>';
+  }
+  return h+'</div>';
+}
+function f(l,v){return '<div class="pf"><div class="pl">'+l+'</div><div class="pv">'+v+'</div></div>'}
+/* ================= 2. LỄ TÂN · LỊCH HẸN ================= */
+function viewLichHen(){
+  var ds=HEN.filter(function(x){return ST.henLoc==='all'||x.tt===ST.henLoc});
+  var dem={all:HEN.length,xacnhan:0,chuaxacnhan:0,den:0,vangmat:0};
+  HEN.forEach(function(x){dem[x.tt]++});
+  var h='<div class="row" style="flex-wrap:wrap;margin-bottom:12px">'+
+    '<button class="btn sec sm" onclick="say(\'Xem ngày trước đó.\')">◀</button>'+
+    '<b>Thứ Tư, 12/08/2026</b>'+
+    '<button class="btn sec sm" onclick="say(\'Xem ngày kế tiếp.\')">▶</button>'+
+    '<button class="btn sec sm" onclick="say(\'Về hôm nay.\')">Hôm nay</button>'+
+    '<select class="input" style="width:auto"><option>Ngày</option><option>Tuần</option></select>'+
+    '<select class="input" style="width:auto"><option>Tất cả bác sĩ</option><option>BS Lê Anh Tuấn</option><option>BS Trịnh Quang Huy</option></select>'+
+    '<input class="input" style="width:210px" placeholder="Tìm khách theo tên / SĐT">'+
+    '<button class="btn" style="margin-left:auto" onclick="say(\'Mở biểu mẫu Đặt lịch hẹn mới.\')">+ Đặt lịch hẹn</button></div>';
+  h+='<div class="grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px">'+
+    chip('all','Tổng hẹn hôm nay',dem.all)+chip('xacnhan','Đã xác nhận',dem.xacnhan)+
+    chip('chuaxacnhan','Chưa xác nhận',dem.chuaxacnhan)+chip('den','Đã đến',dem.den)+chip('vangmat','Vắng mặt',dem.vangmat)+'</div>';
+  if(!ds.length)return h+'<div class="card"><div class="empty">Chưa có lịch hẹn nào khớp bộ lọc ngày 12/08.<br>Bấm vào khung giờ trống để đặt lịch.</div></div>';
+  h+='<div class="calwrap"><div class="cal" style="grid-template-columns:64px repeat('+COTS.length+',1fr)">';
+  h+='<div class="hd"></div>'+COTS.map(function(c){return '<div class="hd">'+c+'</div>'}).join('');
+  GIO.forEach(function(g,ri){
+    h+='<div class="tm" style="grid-row:'+(ri+2)+';grid-column:1">'+g+'</div>';
+    COTS.forEach(function(c,ci){
+      var ev=ds.filter(function(x){return x.g===g&&x.c===ci})[0];
+      if(ev){
+        var s=TTHEN[ev.tt];
+        h+='<div class="cell" style="grid-row:'+(ri+2)+' / span '+ev.sl+';grid-column:'+(ci+2)+'">'+
+          '<div class="ev" style="background:'+s.bg+';color:'+s.fg+';border-left-color:'+s.fg+'" onclick="say(\''+esc(ev.ten)+' — '+esc(ev.dv)+' — '+s.t+'\')">'+
+          '<b>'+esc(ev.g)+' · '+esc(ev.ten)+'</b>'+esc(ev.dv)+'<div style="opacity:.8;margin-top:2px">TV: '+esc(ev.tv)+' · '+s.t+'</div></div></div>';
+      } else {
+        var occ=ds.some(function(x){return x.c===ci&&GIO.indexOf(x.g)<ri&&GIO.indexOf(x.g)+x.sl>ri});
+        if(!occ)h+='<div class="cell" style="grid-row:'+(ri+2)+';grid-column:'+(ci+2)+'" onclick="say(\'Đặt lịch '+g+' — '+esc(c)+'\')"></div>';
+      }
+    });
+  });
+  h+='</div></div>';
+  h+='<div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn sec sm" onclick="say(\'Đã gửi tin Zalo nhắc lịch cho 4 khách chưa xác nhận.\')">Gửi nhắc qua Zalo</button>'+
+    '<button class="btn sec sm" onclick="say(\'Check-in khách — chuyển sang màn Khách đã đến, giai đoạn phễu chuyển: Đã hẹn → Đã đến.\')">Check-in (khách đã đến)</button>'+
+    '<button class="btn sec sm" onclick="say(\'Huỷ hẹn — bắt buộc chọn lý do.\')">Huỷ hẹn</button>'+
+    '<button class="btn sec sm" onclick="say(\'In danh sách hẹn hôm nay.\')">In danh sách</button>'+
+    '<span class="muted" style="font-size:12px">Ca Phẫu thuật không đặt tại đây — phải qua Phòng mổ · Lịch mổ để kiểm tra checklist tiền phẫu.</span></div>';
+  return h;
+}
+function chip(k,l,n){
+  return '<div class="kpi" style="cursor:pointer'+(ST.henLoc===k?';border-color:var(--green-600);box-shadow:0 0 0 2px var(--green-100)':'')+'" onclick="setHen(\''+k+'\')">'+
+    '<div class="lab">'+l+'</div><div class="val">'+n+'</div></div>';
+}
+/* ================= 3. HỒ SƠ KHÁCH HÀNG THẨM MỸ ================= */
+function viewKhachHang(){
+  var k=CHATS.filter(function(c){return c.id==='c2'})[0];
+  var h='<div class="card" style="margin-bottom:12px"><div class="row" style="flex-wrap:wrap">'+
+   '<div class="pava" style="width:46px;height:46px;flex:0 0 46px;font-size:18px">N</div>'+
+   '<div><div style="font-size:17px;font-weight:700">Trần Bảo Ngọc <span class="muted" style="font-weight:400;font-size:13px">· 34 tuổi · Nữ</span></div>'+
+   '<div class="muted" style="font-size:12.5px">0938 221 004 · Hà Nội · Mã KH: KH-2606-0187</div>'+
+   '<div style="margin-top:6px">'+tagHTML(STAGES.CHOT)+' <span class="tag out">Nguồn: Facebook</span> <span class="tag" style="background:#FAE8FF;color:#A21CAF">Khách Y học bào thai</span></div></div>'+
+   '<div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">'+
+   '<button class="btn sec sm" onclick="go(\'zalo\')">Nhắn Zalo</button>'+
+   '<button class="btn sec sm" onclick="say(\'Gọi 0938 221 004 qua tổng đài.\')">Gọi</button>'+
+   '<button class="btn sec sm" onclick="go(\'lichhen\')">Đặt lịch</button>'+
+   '<button class="btn sec sm" onclick="say(\'Mở màn Tư vấn &amp; Báo giá.\')">Tạo báo giá</button>'+
+   '<button class="btn sm" onclick="say(\'Ghi nhận thanh toán — còn lại 24.000.000đ.\')">Thu tiền</button></div></div>'+
+   '<div class="grid" style="grid-template-columns:repeat(4,1fr);margin-top:12px">'+
+   mini('Tổng đã chi tiêu','56.000.000đ')+mini('Công nợ','<span style="color:var(--danger)">24.000.000đ</span>')+
+   mini('Tư vấn viên','Trần Thu Hà')+mini('Lần chạm gần nhất','Hôm nay 15:37 (Zalo)')+'</div></div>';
+  var tabs=[['tq','Tổng quan'],['tl','Dòng thời gian'],['pd','Nhu cầu & Phác đồ'],['bg','Báo giá & Đơn hàng'],
+            ['yk','Hồ sơ y khoa'],['anh','Ảnh trước-sau'],['hp','Hậu phẫu'],['tc','Tài chính']];
+  h+='<div class="tabs">'+tabs.map(function(t){return '<button class="'+(ST.ktab===t[0]?'on':'')+'" onclick="setKTab(\''+t[0]+'\')">'+t[1]+'</button>'}).join('')+'</div>';
+  h+='<div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap"><div style="flex:1;min-width:420px">'+ktab()+'</div>'+
+   '<div style="width:290px;flex:0 0 290px;display:grid;gap:12px">'+
+   '<div class="card"><div class="sec-title">Việc cần làm với khách này</div>'+
+   '<div class="alert dg">Thu 24.000.000đ trước mổ — hạn 16/08</div>'+
+   '<div class="alert wr">Chưa có kết quả xét nghiệm tiền phẫu</div>'+
+   '<div class="alert wr">Chưa chụp ảnh trước mổ</div></div>'+
+   '<div class="card"><div class="sec-title">Lịch hẹn sắp tới</div>'+
+   '<div style="font-size:12.5px;line-height:1.6">16/08 · 08:00 — Khám tiền phẫu<br><span class="muted">BS Trịnh Quang Huy</span><hr style="border:none;border-top:1px dashed var(--border);margin:8px 0">'+
+   '18/08 · 13:00 — <b>Ca mổ</b> Hút mỡ bụng<br><span class="muted">Phòng mổ 1 · BS Trịnh Quang Huy</span></div></div></div></div>';
+  return h;
+}
+function mini(l,v){return '<div><div class="lab" style="font-size:11px;color:var(--muted);text-transform:uppercase">'+l+'</div><div style="font-weight:700;margin-top:3px">'+v+'</div></div>'}
+function ktab(){
+  var t=ST.ktab;
+  if(t==='tl')return '<div class="card"><div class="sec-title">Dòng thời gian</div>'+
+    ['15:37 hôm nay · Khách nhắn Zalo: "Chị chuyển khoản chiều mai nhé"',
+     '10:12 11/08 · Trần Thu Hà đổi giai đoạn: Đã đến → <b>Đã chốt</b>',
+     '10:05 11/08 · Thu cọc 32.000.000đ — phiếu PT-2608-0091 (tiền mặt)',
+     '09:50 11/08 · Chốt báo giá BG-2608-0143: Hút mỡ bụng + tạo hình thành bụng — 56.000.000đ',
+     '09:10 11/08 · Lễ tân check-in — giai đoạn: Đã hẹn → Đã đến',
+     '16:40 08/08 · Đặt lịch tư vấn 11/08 09:00 với BS Trịnh Quang Huy',
+     '14:02 07/08 · Lead từ chiến dịch Facebook "Hút mỡ hè 2026"'
+    ].map(function(x){return '<div style="padding:8px 0;border-bottom:1px dashed var(--border);font-size:12.8px">'+x+'</div>'}).join('')+'</div>';
+  if(t==='pd')return '<div class="card"><div class="sec-title">Nhu cầu & Phác đồ</div><table><tbody>'+
+    tr('Vùng quan tâm','Bụng · Eo')+tr('Mong muốn của khách','"Sau sinh bụng chảy xệ, muốn lấy lại vòng eo trước Tết"')+
+    tr('Ngân sách dự kiến','50 – 60 triệu')+tr('Mức sẵn sàng','Sẵn sàng làm ngay')+
+    tr('Phương pháp chỉ định','Hút mỡ bụng công nghệ Vaser + tạo hình thành bụng mini')+
+    tr('Chống chỉ định / lưu ý','Không. Đã ngừng cho con bú 10 tháng.')+
+    tr('Thời gian nghỉ dưỡng','7 – 10 ngày')+'</tbody></table></div>';
+  if(t==='bg')return '<div class="card"><div class="sec-title">Báo giá & Đơn hàng</div><table><thead><tr><th>Mã</th><th>Nội dung</th><th>Giá trị</th><th>Trạng thái</th></tr></thead><tbody>'+
+    '<tr><td>DH-2608-0142</td><td>Hút mỡ bụng + tạo hình thành bụng mini</td><td>56.000.000đ</td><td>'+tagHTML({t:'Đã cọc',bg:'#DBEAFE',fg:'#1D4ED8'})+'</td></tr>'+
+    '<tr><td>BG-2608-0143</td><td>Báo giá đã chốt (giảm 5% ưu đãi hè)</td><td>56.000.000đ</td><td>'+tagHTML({t:'Đã chốt',bg:'#DCFCE7',fg:'#15803D'})+'</td></tr>'+
+    '<tr><td>BG-2608-0121</td><td>Báo giá gói combo bụng + đùi</td><td>84.000.000đ</td><td>'+tagHTML({t:'Không chọn',bg:'#F1F5F9',fg:'#475569'})+'</td></tr></tbody></table></div>';
+  if(t==='yk')return '<div class="card"><div class="sec-title">Hồ sơ y khoa</div>'+
+    '<div class="alert wr">Thiếu: kết quả xét nghiệm tiền phẫu, ảnh trước mổ — chưa đủ điều kiện xác nhận ca mổ.</div>'+
+    '<table><tbody>'+tr('Nhóm máu','O (Rh+)')+tr('Dị ứng','Không')+tr('Bệnh nền','Không')+
+    tr('Thuốc đang dùng','Vitamin tổng hợp')+tr('Tiền sử PTTM','Chưa từng')+tr('Hút thuốc','Không')+
+    tr('Mang thai / cho con bú','Đã ngừng cho con bú 10 tháng')+'</tbody></table></div>';
+  if(t==='anh')return '<div class="card"><div class="sec-title">Ảnh trước - sau</div>'+
+    '<div class="empty">Chưa có ảnh. Chụp ảnh hiện trạng trước khi phẫu thuật để so sánh về sau.<br><br>'+
+    '<button class="btn sm" onclick="say(\'Mở khung chụp ảnh theo mốc chuẩn: trước mổ · N1 · N7 · T1 · T3 · T6.\')">Thêm ảnh trước mổ</button></div></div>';
+  if(t==='hp')return '<div class="card"><div class="sec-title">Hậu phẫu</div><div class="empty">Khách chưa phẫu thuật. Lịch theo dõi hậu phẫu sẽ tự sinh sau khi bấm Kết thúc mổ.</div></div>';
+  if(t==='tc')return '<div class="card"><div class="sec-title">Tài chính</div><table><thead><tr><th>Đợt</th><th>Số tiền</th><th>Hạn</th><th>Trạng thái</th></tr></thead><tbody>'+
+    '<tr><td>Cọc 30% (khi ký)</td><td>32.000.000đ</td><td>11/08/2026</td><td>'+tagHTML({t:'Đã thu',bg:'#DCFCE7',fg:'#15803D'})+'</td></tr>'+
+    '<tr><td>Trước mổ</td><td>16.800.000đ</td><td>16/08/2026</td><td>'+tagHTML({t:'Chờ thu',bg:'#FEF3C7',fg:'#B45309'})+'</td></tr>'+
+    '<tr><td>Sau mổ</td><td>7.200.000đ</td><td>25/08/2026</td><td>'+tagHTML({t:'Chờ thu',bg:'#FEF3C7',fg:'#B45309'})+'</td></tr>'+
+    '</tbody></table><div class="row" style="margin-top:10px"><button class="btn sm" onclick="say(\'Lập phiếu thu — in và gửi Zalo cho khách.\')">Thu tiền</button>'+
+    '<button class="btn sec sm" onclick="say(\'Đã gửi tin nhắc thu qua Zalo.\')">Nhắc thu (Zalo)</button></div></div>';
+  return '<div class="card"><div class="sec-title">Tổng quan</div><table><tbody>'+
+    tr('Họ tên','Trần Bảo Ngọc')+tr('Ngày sinh','14/03/1992')+tr('Số điện thoại / Zalo','0938 221 004')+
+    tr('Địa chỉ','Số 12, ngõ 84 Trần Duy Hưng, Cầu Giấy, Hà Nội')+
+    tr('Dịch vụ quan tâm','<span class="tag" style="background:var(--green-50);color:var(--green-700)">Hút mỡ bụng</span>')+
+    tr('Giai đoạn phễu',tagHTML(STAGES.CHOT))+tr('Nguồn khách','Facebook — chiến dịch "Hút mỡ hè 2026"')+
+    tr('Tư vấn viên / Telesale','Trần Thu Hà / Phạm Minh Ngọc')+
+    tr('Ghi chú','Sợ đau, yêu cầu mê toàn thân. Muốn hoàn tất trước Tết Nguyên đán.')+'</tbody></table>'+
+    '<div class="row" style="margin-top:10px;flex-wrap:wrap"><button class="btn sec sm" onclick="say(\'Sửa thông tin khách.\')">Sửa thông tin</button>'+
+    '<button class="btn sec sm" onclick="say(\'Chuyển giai đoạn — bắt buộc ghi lý do khi lùi trạng thái.\')">Chuyển giai đoạn ▾</button>'+
+    '<button class="btn sec sm" onclick="say(\'Đổi người phụ trách — phải chọn lý do.\')">Đổi người phụ trách</button>'+
+    '<button class="btn sec sm" onclick="say(\'Không xoá được khách. Chỉ Quản lý/Chủ đầu tư được Ẩn kèm lý do.\')">Ẩn hồ sơ</button></div></div>';
+}
+function tr(a,b){return '<tr><td style="width:200px;color:var(--muted)">'+a+'</td><td>'+b+'</td></tr>'}
+/* ================= 4. LỊCH PHÒNG MỔ ================= */
+var MUC={ok:{t:'Đủ điều kiện',bg:'#DCFCE7',fg:'#15803D'},canh:{t:'Thiếu điều kiện',bg:'#FEF3C7',fg:'#B45309'},thieu:{t:'Thiếu điều kiện',bg:'#FEE2E2',fg:'#B91C1C'}};
+function viewPhongMo(){
+  var h='<div class="row" style="flex-wrap:wrap;margin-bottom:12px">'+
+    '<button class="btn sec sm" onclick="say(\'Tuần trước.\')">◀</button><b>Thứ Tư, 12/08/2026</b>'+
+    '<button class="btn sec sm" onclick="say(\'Tuần sau.\')">▶</button>'+
+    '<select class="input" style="width:auto"><option>Tất cả phòng mổ</option><option>Phòng mổ 1</option><option>Phòng mổ 2</option><option>Phòng tiểu phẫu</option></select>'+
+    '<select class="input" style="width:auto"><option>Tất cả bác sĩ mổ</option><option>BS Lê Anh Tuấn</option><option>BS Trịnh Quang Huy</option></select>'+
+    '<button class="btn" style="margin-left:auto" onclick="say(\'Xếp ca mổ mới — chỉ chọn được khách đã ở giai đoạn Đã chốt và có đơn hàng hiệu lực.\')">+ Xếp ca mổ</button></div>';
+  h+='<div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">'+
+    '<div class="kpi"><div class="lab">Số ca hôm nay</div><div class="val">5</div></div>'+
+    '<div class="kpi"><div class="lab">Tổng giờ mổ</div><div class="val">9,5 giờ</div></div>'+
+    '<div class="kpi"><div class="lab">Công suất phòng</div><div class="val">78%</div><div class="dt up">+6% so tuần trước</div></div>'+
+    '<div class="kpi"><div class="lab">Ca thiếu điều kiện</div><div class="val" style="color:var(--danger)">2</div><div class="dt down">Chưa xác nhận được</div></div></div>';
+  var gm=['07:30','08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','13:00','13:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00'];
+  h+='<div class="calwrap"><div class="cal" style="grid-template-columns:64px repeat(3,1fr)">';
+  h+='<div class="hd"></div>'+PHONGMO.map(function(p){return '<div class="hd">'+p+'</div>'}).join('');
+  gm.forEach(function(g,ri){
+    h+='<div class="tm" style="grid-row:'+(ri+2)+';grid-column:1">'+g+'</div>';
+    PHONGMO.forEach(function(p,ci){
+      var ca=CAMO.filter(function(x){return x.g===g&&x.p===ci})[0];
+      if(ca){
+        var s=MUC[ca.muc],i=CAMO.indexOf(ca);
+        h+='<div class="cell" style="grid-row:'+(ri+2)+' / span '+ca.sl+';grid-column:'+(ci+2)+'">'+
+          '<div class="ev" style="background:'+s.bg+';color:'+s.fg+';border-left-color:'+s.fg+'" onclick="openCa('+i+')">'+
+          '<b>'+ca.g+' · '+esc(ca.ten)+'</b>'+esc(ca.tt)+'<div style="opacity:.85;margin-top:2px">'+esc(ca.bs)+' · '+ca.me+'</div>'+
+          '<div style="margin-top:3px;font-weight:700">'+s.t+'</div></div></div>';
+      } else {
+        var occ=CAMO.some(function(x){return x.p===ci&&gm.indexOf(x.g)<ri&&gm.indexOf(x.g)+x.sl>ri});
+        if(!occ)h+='<div class="cell" style="grid-row:'+(ri+2)+';grid-column:'+(ci+2)+'" onclick="say(\'Xếp ca mổ '+g+' — '+esc(p)+'\')"></div>';
+      }
+    });
+  });
+  h+='</div></div><div class="muted" style="font-size:12px;margin-top:9px">Hệ thống tự chèn 30 phút dọn phòng giữa hai ca · Cọc tối thiểu 30% mới xác nhận được ca · Bấm vào một ca để xem checklist tiền phẫu.</div>';
+  if(ST.ca!==null)h+=drawerCa(CAMO[ST.ca]);
+  return h;
+}
+function drawerCa(ca){
+  var s=MUC[ca.muc],thieu=ca.ck.filter(function(x){return !x}).length;
+  var h='<div class="ovl" onclick="closeCa()"></div><div class="drawer">'+
+    '<div class="row"><b style="font-size:15px">Ca mổ · '+ca.g+'</b><button class="btn sec sm" style="margin-left:auto" onclick="closeCa()">Đóng ✕</button></div>'+
+    '<div style="margin:9px 0">'+tagHTML(s)+' <span class="tag out">'+esc(PHONGMO[ca.p])+'</span></div>'+
+    '<table><tbody>'+tr('Khách hàng',esc(ca.ten))+tr('Thủ thuật',esc(ca.tt))+tr('Bác sĩ chính',esc(ca.bs))+
+    tr('Loại vô cảm',esc(ca.me))+tr('Thời lượng dự kiến',(ca.sl*0.5)+' giờ')+tr('Kíp mổ',esc(ca.kip))+
+    tr('Vật tư dự trù',esc(ca.vt))+'</tbody></table>'+
+    '<div class="sec-title" style="margin-top:14px">Checklist tiền phẫu ('+(7-thieu)+'/7)</div>';
+  CHECKLIST.forEach(function(c,i){
+    h+='<div class="ck"><span class="m '+(ca.ck[i]?'y':'n')+'">'+(ca.ck[i]?'✔':'✕')+'</span><span>'+c+'</span></div>';
+  });
+  if(thieu)h+='<div class="alert dg" style="margin-top:10px">Còn '+thieu+' mục chưa đạt — chưa xác nhận được ca mổ.</div>';
+  h+='<div style="display:grid;gap:7px;margin-top:12px">'+
+    '<button class="btn block" '+(thieu?'style="opacity:.5;cursor:not-allowed"':'')+' onclick="'+(thieu?'say(\'Chưa đủ điều kiện — hãy xử lý các mục còn thiếu.\')':'say(\'Đã xác nhận ca mổ và gửi tin nhắc khách trước 1 ngày.\')')+'">Xác nhận ca</button>'+
+    '<button class="btn sec block" onclick="say(\'Bắt đầu mổ — ghi giờ vào phòng.\')">Bắt đầu mổ</button>'+
+    '<button class="btn sec block" onclick="say(\'Kết thúc mổ — bắt buộc mở Hồ sơ phẫu thuật ghi tường trình và số lô vật tư. Khách tự chuyển sang Đã phẫu thuật và sinh lịch tái khám N1/N7/T1/T3.\')">Kết thúc mổ</button>'+
+    '<button class="btn sec block" onclick="say(\'Dời ca — bắt buộc chọn lý do nếu trong vòng 48 giờ.\')">Dời ca</button>'+
+    '<button class="btn sec block" onclick="say(\'In phiếu mổ.\')">In phiếu mổ</button></div></div>';
+  return h;
+}
+/* ================= 5. DASHBOARD CHỦ ĐẦU TƯ ================= */
+function viewDashboard(){
+  var h='<div class="row" style="flex-wrap:wrap;margin-bottom:12px">';
+  ['Hôm nay','7 ngày','Tháng này','Quý','Tuỳ chọn'].forEach(function(k){
+    h+='<button class="btn '+(ST.ky===k?'':'sec')+' sm" onclick="setKy(\''+k+'\')">'+k+'</button>';
+  });
+  h+='<select class="input" style="width:auto;margin-left:8px"><option>Cơ sở: Phẫu thuật Thẩm mỹ</option><option>Cơ sở: Y học bào thai</option><option>Gộp toàn công ty</option></select>'+
+    '<span class="muted" style="font-size:12px;margin-left:auto">Cập nhật lúc 16:05 · so sánh với kỳ trước</span></div>';
+  h+='<div class="grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">';
+  DASH.kpi.forEach(function(k){
+    h+='<div class="kpi"><div class="lab">'+k.l+'</div><div class="val">'+k.v+'</div><div class="dt '+(k.u?'up':'down')+'">'+k.d+'</div></div>';
+  });
+  h+='</div>';
+  h+='<div class="grid" style="grid-template-columns:1.2fr 1fr;margin-bottom:12px">';
+  /* phễu */
+  var max=DASH.phieu[0].n;
+  h+='<div class="card"><div class="sec-title">Phễu chuyển đổi</div>';
+  DASH.phieu.forEach(function(p,i){
+    var pre=i?DASH.phieu[i-1].n:p.n,roi=i?Math.round((1-p.n/pre)*100):0;
+    h+='<div class="fun"><div class="fl">'+p.t+'</div><div class="fb"><i style="width:'+Math.round(p.n/max*100)+'%"></i></div>'+
+      '<div class="fn">'+p.n+(i?' <span class="'+(roi>45?'down':'muted')+'" style="font-weight:400">(-'+roi+'%)</span>':'')+'</div></div>';
+  });
+  h+='<div class="muted" style="font-size:12px;margin-top:8px">Tỉ lệ đến 66% · Tỉ lệ chốt 53% · Rơi nhiều nhất ở bước Đã hẹn → Đã đến.</div></div>';
+  /* cảnh báo */
+  h+='<div class="card"><div class="sec-title">Cảnh báo cần xử lý ngay</div>';
+  DASH.canhbao.forEach(function(c){h+='<div class="alert '+c[0]+'">'+c[1]+'</div>'});
+  h+='</div></div>';
+  /* biểu đồ */
+  h+='<div class="grid" style="grid-template-columns:1fr 1fr;margin-bottom:12px">';
+  h+='<div class="card"><div class="sec-title">Doanh thu theo ngày (triệu đồng)</div><div class="cols">';
+  DASH.ngay.forEach(function(d){
+    h+='<div class="colb"><div class="pair"><div class="b1" style="height:'+Math.round(d[1]/140*100)+'%" title="Ký '+d[1]+'tr"></div>'+
+      '<div class="b2" style="height:'+Math.round(d[2]/140*100)+'%" title="Thực thu '+d[2]+'tr"></div></div><small>'+d[0]+'</small></div>';
+  });
+  h+='</div><div class="muted" style="font-size:11.5px">■ Doanh số ký · □ Tiền thực thu</div></div>';
+  h+='<div class="card"><div class="sec-title">Công suất phòng mổ theo ngày</div>';
+  DASH.congsuat.forEach(function(c){
+    h+='<div class="row" style="margin-bottom:7px"><span style="width:34px;font-size:12px">'+c[0]+'</span>'+
+      '<div class="bar" style="flex:1"><i style="width:'+c[1]+'%"></i></div><b style="width:42px;text-align:right;font-size:12.5px">'+c[1]+'%</b></div>';
+  });
+  h+='</div></div>';
+  /* bảng xếp hạng */
+  h+='<div class="grid" style="grid-template-columns:repeat(3,1fr)">'+
+    rank('Top dịch vụ theo doanh thu',['Dịch vụ','Ca','Doanh thu'],DASH.dv)+
+    rank('Top tư vấn viên (tiền thực thu)',['Tư vấn viên','Thực thu','Tỉ lệ chốt'],DASH.tv)+
+    rank('Nguồn khách theo ROAS',['Nguồn','ROAS'],DASH.nguon)+'</div>'+
+    '<div class="row" style="margin-top:12px"><button class="btn sec sm" onclick="say(\'Xuất báo cáo PDF.\')">Xuất báo cáo PDF</button>'+
+    '<button class="btn sec sm" onclick="say(\'Đã bật gửi báo cáo Zalo lúc 20:00 hằng ngày.\')">Gửi báo cáo qua Zalo</button>'+
+    '<span class="muted" style="font-size:12px">Mọi con số đều bấm được để mở danh sách chi tiết phía sau.</span></div>';
+  return h;
+}
+function rank(t,head,rows){
+  var h='<div class="card" style="padding:0;overflow:hidden"><div class="sec-title" style="padding:12px 14px 0">'+t+'</div><table><thead><tr>'+
+    head.map(function(x){return '<th>'+x+'</th>'}).join('')+'</tr></thead><tbody>';
+  rows.forEach(function(r){h+='<tr>'+r.map(function(c){return '<td>'+c+'</td>'}).join('')+'</tr>'});
+  return h+'</tbody></table></div>';
+}
+/* ================= TRANG CHƯA DỰNG ================= */
+function viewSoon(id){
+  return '<div class="card"><div class="empty"><div style="font-size:34px">🚧</div>'+
+   '<h3 style="margin-top:10px">'+esc(TITLES[id]||'Màn hình')+'</h3>'+
+   '<p>Màn hình này đã được đặc tả trong tài liệu sản phẩm nhưng chưa dựng trong bản prototype.</p>'+
+   '<p class="muted">Prototype tập trung 5 màn hình lõi: Hộp thư Zalo · Lễ tân · Lịch hẹn · Hồ sơ khách hàng · Lịch phòng mổ · Dashboard chủ đầu tư.</p>'+
+   '<div class="row" style="justify-content:center;margin-top:14px">'+
+   '<button class="btn sm" onclick="go(\'zalo\')">Hộp thư Zalo</button>'+
+   '<button class="btn sec sm" onclick="go(\'lichhen\')">Lịch hẹn</button>'+
+   '<button class="btn sec sm" onclick="go(\'khachhang\')">Hồ sơ khách</button>'+
+   '<button class="btn sec sm" onclick="go(\'phongmo\')">Lịch phòng mổ</button>'+
+   '<button class="btn sec sm" onclick="go(\'dashboard\')">Dashboard</button></div></div></div>';
+}
+</script>
+<script>
+var CUR='zalo';
+var SUB={zalo:'Toàn bộ hội thoại của phòng khám. Khách nhắn là hiện ngay, không cần bấm làm mới.',
+ lichhen:'Đặt, dời, xác nhận lịch tư vấn và khám trong ngày.',
+ khachhang:'Toàn bộ đời sống của khách tại phòng khám trong một trang.',
+ phongmo:'Tài nguyên đắt nhất của phòng khám — chỉ ca đủ điều kiện tiền phẫu mới được xác nhận.',
+ dashboard:'Bức tranh kinh doanh một màn hình cho chủ đầu tư.'};
+function sidebar(){
+  var h='<aside class="sidebar"><div class="side-head"><div class="role">Quản trị</div>'+
+   '<div class="clinic">Phòng khám Phẫu thuật Thẩm mỹ</div>'+
+   '<select onchange="say(\'Đã chuyển cơ sở: \'+this.value)"><option>Cơ sở: Phẫu thuật Thẩm mỹ</option>'+
+   '<option>Cơ sở: Dr. Tú — Y học bào thai</option><option>Gộp toàn công ty</option></select></div><nav class="side-nav">';
+  MENU.forEach(function(g){
+    if(g.group)h+='<div class="nav-group">'+g.group+'</div>';
+    g.items.forEach(function(i){
+      var id=i.id==='dashboard2'?'dashboard':(i.id==='khach'?'khachhang':i.id);
+      h+='<div class="nav-item'+(id===CUR&&i.id!=='dashboard2'?' active':'')+'" onclick="go(\''+id+'\')">'+
+        '<span class="ic">'+i.ic+'</span><span>'+i.t+'</span>'+(i.badge?'<span class="badge">'+i.badge+'</span>':'')+'</div>';
+    });
+  });
+  h+='</nav><div class="side-foot"><div class="me">Ths. BS Nguyễn Ngọc Tú<small>Chủ đầu tư · Quản trị hệ thống</small></div>'+
+   '<div class="acts"><button onclick="toggleDark()" id="btnDark">🌙 Chuyển nền tối</button>'+
+   '<button onclick="say(\'Mở biểu mẫu Đổi mật khẩu.\')">🔑 Đổi mật khẩu</button>'+
+   '<button onclick="say(\'Đã đăng xuất khỏi hệ thống (mô phỏng).\')">⎋ Đăng xuất</button></div></div></aside>';
+  return h;
+}
+function screen(){
+  if(CUR==='zalo')return viewZalo();
+  if(CUR==='lichhen')return viewLichHen();
+  if(CUR==='khachhang')return viewKhachHang();
+  if(CUR==='phongmo')return viewPhongMo();
+  if(CUR==='dashboard')return viewDashboard();
+  return viewSoon(CUR);
+}
+function render(){
+  var t=CUR==='khachhang'?'Hồ sơ khách hàng thẩm mỹ':(CUR==='dashboard'?'Dashboard chủ đầu tư':(TITLES[CUR]||'Màn hình'));
+  var flush=CUR==='zalo';
+  document.getElementById('app').innerHTML=sidebar()+
+   '<div class="main"><div class="topbar"><div><h1>'+t+'</h1>'+
+   (SUB[CUR]?'<div class="sub">'+SUB[CUR]+'</div>':'')+'</div>'+
+   '<div class="right"><span class="muted" style="font-size:12px">12/08/2026 · 16:05</span>'+
+   '<button class="btn sec sm" onclick="say(\'Không có thông báo mới.\')">🔔</button></div></div>'+
+   '<div class="content'+(flush?' flush':'')+'">'+screen()+'</div></div>';
+  var m=document.getElementById('zmsgs');if(m)m.scrollTop=m.scrollHeight;
+  var b=document.getElementById('btnDark');
+  if(b)b.textContent=document.body.classList.contains('dark')?'☀ Chuyển nền sáng':'🌙 Chuyển nền tối';
+}
+function go(id){CUR=id;ST.ca=null;render();window.scrollTo(0,0)}
+function setTab(t){ST.tab=t;var l=CHATS.filter(function(c){return c.tab===t});if(l.length)ST.chat=l[0].id;render()}
+function setQ(v){ST.q=v;render()}
+function pick(id){ST.chat=id;var c=CHATS.filter(function(x){return x.id===id})[0];if(c)c.chua=0;render()}
+function setHen(k){ST.henLoc=k;render()}
+function setKTab(t){ST.ktab=t;render()}
+function setKy(k){ST.ky=k;render()}
+function openCa(i){ST.ca=i;render()}
+function closeCa(){ST.ca=null;render()}
+function send(){
+  var b=document.getElementById('zbox');if(!b||!b.value.trim())return;
+  var c=CHATS.filter(function(x){return x.id===ST.chat})[0];
+  if(c){c.tin.push({d:'out',t:b.value.trim(),g:'16:0'+(5+c.tin.length%4),by:'Ths. BS Nguyễn Ngọc Tú'});
+    if(c.stage==='MOI')c.stage='LIENHE';}
+  b.value='';render();
+}
+function keySend(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}
+function toggleDark(){document.body.classList.toggle('dark');render()}
+var tmr;
+function say(m){
+  var old=document.getElementById('tst');if(old)old.remove();
+  var d=document.createElement('div');d.className='toast';d.id='tst';d.textContent=m;document.body.appendChild(d);
+  clearTimeout(tmr);tmr=setTimeout(function(){var x=document.getElementById('tst');if(x)x.remove()},3200);
+}
+render();
+</script>
+</body>
+</html>

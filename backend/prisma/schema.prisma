@@ -1,0 +1,1931 @@
+// =============================================================================
+// CRM PHÒNG KHÁM PHẪU THUẬT THẨM MỸ — SCHEMA ĐANG CHẠY (Giai đoạn 1 / MVP)
+// =============================================================================
+//
+// Nguồn thiết kế:
+//   - crm-app/docs/schema_tmv.prisma            (bản nháp đầy đủ ~140 model, PostgreSQL)
+//   - wiki/Phong_Kham_Tham_My/Kien_Truc_CRM_Tham_My.md  (mục 7 — phạm vi Giai đoạn 1)
+//   - crm-app/docs/prototype_tmv.html           (màn hình)
+//
+// Tệp này là tập con Giai đoạn 1 của bản nháp đó, đã hạ xuống SQLite để chạy
+// được ngay trên máy không có PostgreSQL/Docker (xem README). Quy ước giữ
+// nguyên để đổi sang PostgreSQL chỉ là việc đổi `provider` + thay các cột
+// String-enum bằng enum thật:
+//
+//   1. SQLite không có enum  -> các cột trạng thái là String, giá trị hợp lệ
+//      khai báo tại src/types/enums.ts và ép bằng zod ở tầng route.
+//   2. SQLite không có Decimal an toàn -> TIỀN LƯU BẰNG Int, ĐƠN VỊ ĐỒNG
+//      (VND không dùng phần lẻ). TUYỆT ĐỐI KHÔNG dùng Float cho tiền.
+//   3. SQLite không có array -> các trường danh sách lưu JSON dạng String.
+//   4. Mọi bảng nghiệp vụ theo cơ sở đều có branchId.
+//   5. Bảng y khoa (MedicalRecord, ConsentForm, PhotoSet, PhotoAsset,
+//      ProcedureRecord) có branchId NOT NULL và bị CÁCH LY theo cơ sở ở tầng
+//      truy vấn (src/lib/scope.ts) — trả 404 thay vì 403 khi vượt phạm vi.
+//   6. onDelete: Restrict cho dữ liệu y tế/tài chính, Cascade cho dữ liệu con
+//      thuần tuý, SetNull cho tham chiếu người dùng.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// 1. TỔ CHỨC — CƠ SỞ, PHÒNG BAN
+// =============================================================================
+
+model Branch {
+  id        String   @id @default(uuid())
+  code      String   @unique // PK_TMV, PK_SAN
+  name      String
+  shortName String?
+  address   String?
+  phone     String?
+  timezone  String   @default("Asia/Ho_Chi_Minh")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  departments   Department[]
+  userBranches  UserBranch[]
+  customerLinks CustomerBranchLink[]
+  rooms         Room[]
+  appointments  Appointment[]
+  visits        Visit[]
+  conversations Conversation[]
+  zaloConfigs   ZaloOAConfig[]
+  leads         Lead[]
+  campaigns     Campaign[]
+  servicePrices ServicePrice[]
+  quotations    Quotation[]
+  contracts     Contract[]
+  invoices      Invoice[]
+  payments      Payment[]
+  medicalRecords MedicalRecord[]
+  consentForms  ConsentForm[]
+  photoSets     PhotoSet[]
+  procedures    ProcedureRecord[]
+  shiftTemplates ShiftTemplate[]
+  shiftAssignments ShiftAssignment[]
+  auditLogs     AuditLog[]
+  dataAccessLogs DataAccessLog[]
+  tasks         Task[]
+  warehouses     Warehouse[]
+  productUsages  ProductUsage[]
+  purchaseOrders PurchaseOrder[]
+  attendances      Attendance[]
+  leaveRequests    LeaveRequest[]
+  commissionRules  CommissionRule[]
+  commissionEntries CommissionEntry[]
+  kpiTargets       KpiTarget[]
+  kpiActuals       KpiActual[]
+  payrollPeriods   PayrollPeriod[]
+  consultationSessions ConsultationSession[]
+  treatmentPlans       TreatmentPlan[]
+  caseStudies          CaseStudy[]
+  pancakeConfigs PancakeConfig[]
+  pancakePages   PancakePage[]
+  stockTransfers StockTransfer[]
+
+  @@map("branches")
+}
+
+model Department {
+  id       String  @id @default(uuid())
+  branchId String
+  branch   Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  code     String
+  name     String
+  active   Boolean @default(true)
+
+  users User[]
+
+  @@unique([branchId, code])
+  @@map("departments")
+}
+
+// =============================================================================
+// 2. NGƯỜI DÙNG, VAI TRÒ ĐỘNG, PHIÊN LÀM VIỆC
+// =============================================================================
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  phone        String?
+  title        String? // "BS.", "ĐD.", "Ths. BS"
+  avatarColor  String? // màu avatar trong UI
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  status       String    @default("ACTIVE") // UserStatus
+  mustChangePassword Boolean @default(false)
+  lastLoginAt  DateTime?
+  resignedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  branches      UserBranch[]
+  roleLinks     UserRoleLink[]
+  sessions      AuthSession[]
+  profile       EmployeeProfile?
+
+  assignedCustomers Customer[]     @relation("CustomerAssignedTo")
+  telesaleCustomers Customer[]     @relation("CustomerTelesale")
+  assignedLeads     Lead[]         @relation("LeadAssignedTo")
+  assignedConversations Conversation[] @relation("ConversationAssignedTo")
+  sentMessages      ChatMessage[]  @relation("ChatMessageSender")
+  activities        Activity[]     @relation("ActivityUser")
+  ownedTasks        Task[]         @relation("TaskAssignee")
+  createdTasks      Task[]         @relation("TaskCreator")
+  doctorAppointments Appointment[] @relation("AppointmentDoctor")
+  createdAppointments Appointment[] @relation("AppointmentCreatedBy")
+  consultantVisits  Visit[]        @relation("VisitConsultant")
+  receptionVisits   Visit[]        @relation("VisitReceptionist")
+  quotations        Quotation[]    @relation("QuotationCreatedBy")
+  contracts         Contract[]     @relation("ContractConsultant")
+  payments          Payment[]      @relation("PaymentReceivedBy")
+  medicalRecords    MedicalRecord[] @relation("MedicalRecordDoctor")
+  medicalEntries    MedicalRecordEntry[] @relation("MedicalEntryAuthor")
+  procedures        ProcedureRecord[] @relation("ProcedureSurgeon")
+  photoSets         PhotoSet[]     @relation("PhotoSetTakenBy")
+  shiftAssignments  ShiftAssignment[] @relation("ShiftAssignee")
+  auditLogs         AuditLog[]     @relation("AuditActor")
+  dataAccessLogs    DataAccessLog[] @relation("AccessActor")
+  breakGlassGrants  BreakGlassGrant[] @relation("BreakGlassUser")
+  handoversFrom     CustomerHandover[] @relation("HandoverFrom")
+  handoversTo       CustomerHandover[] @relation("HandoverTo")
+  notifications     Notification[]
+  consentWitnessed  ConsentForm[]  @relation("ConsentStaff")
+
+  @@index([status])
+  stockMovements   StockMovement[] @relation("StockMovementActor")
+  productUsages    ProductUsage[]  @relation("ProductUsageRecorder")
+  purchaseOrders   PurchaseOrder[] @relation("PurchaseOrderCreator")
+  stockCounts      StockCount[]    @relation("StockCountCreator")
+  attendances       Attendance[]      @relation("AttendanceUser")
+  leaveRequests     LeaveRequest[]    @relation("LeaveUser")
+  leavesApproved    LeaveRequest[]    @relation("LeaveApprover")
+  commissionEntries CommissionEntry[] @relation("CommissionUser")
+  kpiTargets        KpiTarget[]       @relation("KpiTargetUser")
+  kpiActuals        KpiActual[]       @relation("KpiActualUser")
+  payrollLines      PayrollLine[]     @relation("PayrollUser")
+  payrollsClosed    PayrollPeriod[]   @relation("PayrollCloser")
+  consultationsAsConsultant ConsultationSession[] @relation("ConsultationConsultant")
+  consultationsAsDoctor     ConsultationSession[] @relation("ConsultationDoctor")
+  treatmentPlans            TreatmentPlan[]       @relation("TreatmentPlanDoctor")
+  caseStudiesCreated        CaseStudy[]           @relation("CaseStudyCreator")
+  caseStudiesAsDoctor       CaseStudy[]           @relation("CaseStudyDoctor")
+  casesMedicalApproved      CaseStudy[]           @relation("CaseMedicalApprover")
+  casesMarketingApproved    CaseStudy[]           @relation("CaseMarketingApprover")
+  transfersRequested StockTransfer[] @relation("TransferRequester")
+  transfersApproved  StockTransfer[] @relation("TransferApprover")
+  @@map("users")
+}
+
+model EmployeeProfile {
+  id           String    @id @default(uuid())
+  userId       String    @unique
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  employeeCode String?   @unique
+  dob          DateTime?
+  gender       String? // Gender
+  idNumber     String? // CCCD — cân nhắc mã hoá khi lên production
+  address      String?
+  hiredAt      DateTime?
+  licenseNo    String? // chứng chỉ hành nghề
+  licenseExpiry DateTime?
+  specialties  String? // JSON string[]
+  baseSalary   Int? // đồng
+  note         String?
+
+  @@map("employee_profiles")
+}
+
+model UserBranch {
+  id        String  @id @default(uuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branchId  String
+  branch    Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  isPrimary Boolean @default(false)
+
+  @@unique([userId, branchId])
+  @@index([branchId])
+  @@map("user_branches")
+}
+
+model Role {
+  id          String  @id @default(uuid())
+  code        String  @unique // QUAN_LY_HE_THONG, LE_TAN, TELESALE...
+  name        String
+  description String?
+  isSystem    Boolean @default(false) // vai trò lõi, không cho xoá
+  createdAt   DateTime @default(now())
+
+  permissions RolePermission[]
+  userLinks   UserRoleLink[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id       String  @id @default(uuid())
+  code     String  @unique // "customer.read", "medical.break_glass"
+  module   String // "C1", "B2"...
+  action   String // read | create | update | delete | approve | export...
+  name     String
+  isSpecial Boolean @default(false) // 4 quyền đặc biệt tách khỏi CRUD
+
+  roles RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid())
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  scope        String     @default("BRANCH") // PermissionScope: ALL | BRANCH | OWN
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRoleLink {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@map("user_role_links")
+}
+
+// Phiên làm việc THU HỒI ĐƯỢC. Access token sống 15 phút; refresh token
+// lưu ở đây dạng hash, xoay vòng mỗi lần refresh và phát hiện tái sử dụng.
+model AuthSession {
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String    @unique
+  userAgent        String?
+  ipAddress        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  revokedReason    String?
+  replacedById     String? // chuỗi xoay vòng — phát hiện tái dùng token cũ
+  createdAt        DateTime  @default(now())
+  lastUsedAt       DateTime  @default(now())
+
+  @@index([userId])
+  @@map("auth_sessions")
+}
+
+// =============================================================================
+// 3. KIỂM TOÁN — GHI THAY ĐỔI VÀ GHI HÀNH VI ĐỌC
+// =============================================================================
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorName  String? // giữ lại tên kể cả khi user bị xoá
+  branchId   String?
+  branch     Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  action     String // AuditAction
+  entity     String // "Customer", "Contract"...
+  entityId   String?
+  summary    String
+  changes    String? // JSON { field: [before, after] }
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// Ghi cả hành vi CHỈ ĐỌC với bệnh án / ảnh / SĐT — bắt buộc theo mục 6.6.
+model DataAccessLog {
+  id           String   @id @default(uuid())
+  actorId      String?
+  actor        User?    @relation("AccessActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorName    String?
+  branchId     String?
+  branch       Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customerId   String?
+  customer     Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  resourceType String // AccessResourceType
+  resourceId   String?
+  severity     String   @default("NORMAL") // AccessSeverity
+  reason       String? // bắt buộc khi break-glass
+  rowCount     Int? // với export
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+
+  @@index([customerId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([severity, createdAt])
+  @@map("data_access_logs")
+}
+
+// Cấp quyền xem bệnh án ngoài phạm vi trong 30 phút, có lý do.
+model BreakGlassGrant {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation("BreakGlassUser", fields: [userId], references: [id], onDelete: Cascade)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  branchId   String?
+  reason     String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([userId, customerId, expiresAt])
+  @@map("break_glass_grants")
+}
+
+// Bàn giao khách khi nhân viên nghỉ việc / đổi người phụ trách.
+model CustomerHandover {
+  id         String   @id @default(uuid())
+  fromUserId String?
+  fromUser   User?    @relation("HandoverFrom", fields: [fromUserId], references: [id], onDelete: SetNull)
+  toUserId   String
+  toUser     User     @relation("HandoverTo", fields: [toUserId], references: [id], onDelete: Restrict)
+  reason     String
+  customerCount Int   @default(0)
+  createdAt  DateTime @default(now())
+
+  @@map("customer_handovers")
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String?
+  level     String   @default("INFO") // INFO | WARN | DANGER
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+// =============================================================================
+// 4. MARKETING — KÊNH, CHIẾN DỊCH, LEAD
+// =============================================================================
+
+model Channel {
+  id     String  @id @default(uuid())
+  key    String  @unique // "facebook", "tiktok"
+  name   String
+  kind   String // ChannelKind
+  active Boolean @default(true)
+
+  campaigns Campaign[]
+  leads     Lead[]
+  customers Customer[]
+  pancakePages PancakePage[]
+
+  @@map("channels")
+}
+
+model Campaign {
+  id        String    @id @default(uuid())
+  branchId  String?
+  branch    Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  channelId String?
+  channel   Channel?  @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  code      String    @unique
+  name      String
+  utmSource String?
+  utmMedium String?
+  utmCampaign String?
+  budget    Int? // đồng
+  startDate DateTime?
+  endDate   DateTime?
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+
+  costs CampaignCost[]
+  leads Lead[]
+  customers Customer[]
+
+  @@map("campaigns")
+}
+
+model CampaignCost {
+  id         String   @id @default(uuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  date       DateTime
+  amount     Int // đồng
+  note       String?
+
+  @@unique([campaignId, date])
+  @@map("campaign_costs")
+}
+
+model Lead {
+  id           String    @id @default(uuid())
+  branchId     String?
+  branch       Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  channelId    String?
+  channel      Channel?  @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  campaignId   String?
+  campaign     Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  name         String
+  phone        String?
+  zaloUserId   String?
+  interest     String? // dịch vụ quan tâm
+  stage        String    @default("NEW") // LeadStage
+  lostReason   String?
+  note         String?
+  assignedToId String?
+  assignedTo   User?     @relation("LeadAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+  convertedCustomerId String? @unique
+  convertedCustomer   Customer? @relation("LeadConverted", fields: [convertedCustomerId], references: [id], onDelete: SetNull)
+  externalId   String? // id từ Facebook Lead Ads — dùng để chống trùng
+  firstContactAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([externalId])
+  @@index([stage, createdAt])
+  @@index([assignedToId])
+  @@map("leads")
+}
+
+// =============================================================================
+// 5. KHÁCH HÀNG — LIÊN THÔNG TOÀN CÔNG TY
+// =============================================================================
+
+model Customer {
+  id           String    @id @default(uuid())
+  code         String    @unique // KH-2608-0187
+  name         String
+  phone        String?
+  email        String?
+  zaloUserId   String?   @unique
+  dob          DateTime?
+  gender       String? // Gender
+  address      String?
+  city         String?
+  status       String    @default("LEAD") // CustomerStatus
+  stage        String    @default("MOI") // giai đoạn phễu, xem types/enums.ts FunnelStage
+  channelId    String?
+  channel      Channel?  @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  campaignId   String?
+  campaign     Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  interest     String? // JSON string[] — dịch vụ quan tâm
+  budgetNote   String?
+  note         String?
+  assignedToId String? // tư vấn viên
+  assignedTo   User?     @relation("CustomerAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+  telesaleId   String?
+  telesale     User?     @relation("CustomerTelesale", fields: [telesaleId], references: [id], onDelete: SetNull)
+  hidden       Boolean   @default(false) // "ẩn hồ sơ" thay cho xoá
+  hiddenReason String?
+  lastContactAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  branchLinks   CustomerBranchLink[]
+  tags          CustomerTag[]
+  activities    Activity[]
+  tasks         Task[]
+  conversations Conversation[]
+  appointments  Appointment[]
+  visits        Visit[]
+  quotations    Quotation[]
+  contracts     Contract[]
+  invoices      Invoice[]
+  payments      Payment[]
+  medicalRecords MedicalRecord[]
+  consentForms  ConsentForm[]
+  photoSets     PhotoSet[]
+  procedures    ProcedureRecord[]
+  dataAccessLogs DataAccessLog[]
+  breakGlass    BreakGlassGrant[]
+  leadOrigin    Lead?     @relation("LeadConverted")
+
+  @@index([status])
+  @@index([stage])
+  @@index([assignedToId])
+  @@index([phone])
+  productUsages ProductUsage[]
+  consultationSessions ConsultationSession[]
+  treatmentPlans       TreatmentPlan[]
+  caseStudies          CaseStudy[]
+  @@map("customers")
+}
+
+// Khách liên thông toàn công ty nhưng có ghi nhận từng cơ sở đã phục vụ.
+model CustomerBranchLink {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  branchId   String
+  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  isPrimary  Boolean  @default(false)
+  firstSeenAt DateTime @default(now())
+
+  @@unique([customerId, branchId])
+  @@map("customer_branch_links")
+}
+
+model Tag {
+  id    String @id @default(uuid())
+  name  String @unique
+  color String @default("#177f4d")
+
+  customers CustomerTag[]
+
+  @@map("tags")
+}
+
+model CustomerTag {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tagId      String
+  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, tagId])
+  @@map("customer_tags")
+}
+
+model Activity {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?    @relation("ActivityUser", fields: [userId], references: [id], onDelete: SetNull)
+  userName   String?
+  type       String // ActivityType
+  content    String
+  meta       String? // JSON
+  createdAt  DateTime @default(now())
+
+  @@index([customerId, createdAt])
+  @@map("activities")
+}
+
+model Task {
+  id          String    @id @default(uuid())
+  branchId    String?
+  branch      Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  status      String    @default("OPEN") // TaskStatus
+  priority    String    @default("NORMAL") // TaskPriority
+  dueAt       DateTime?
+  completedAt DateTime?
+  assigneeId  String?
+  assignee    User?     @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdById String?
+  createdBy   User?     @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+
+  @@index([assigneeId, status])
+  @@index([dueAt])
+  @@map("tasks")
+}
+
+// =============================================================================
+// 6. HỘP THƯ ZALO — MÀN HÌNH LÕI
+// =============================================================================
+
+model ZaloOAConfig {
+  id             String    @id @default(uuid())
+  branchId       String?
+  branch         Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  label          String    @default("OA chính")
+  oaId           String
+  appId          String
+  appSecretEnc   String // mã hoá AES-256-GCM, xem src/lib/crypto.ts
+  accessTokenEnc String?
+  refreshTokenEnc String?
+  webhookSecretEnc String?
+  tokenExpiresAt DateTime?
+  active         Boolean   @default(true)
+  updatedAt      DateTime  @updatedAt
+
+  conversations Conversation[]
+
+  @@map("zalo_oa_configs")
+}
+
+model Conversation {
+  id           String    @id @default(uuid())
+  branchId     String?
+  branch       Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  oaConfigId   String?
+  oaConfig     ZaloOAConfig? @relation(fields: [oaConfigId], references: [id], onDelete: SetNull)
+  kind         String    @default("CUSTOMER") // ConversationKind: CUSTOMER | GROUP
+  channel      String    @default("ZALO_OA") // ConversationChannel
+  title        String
+  externalId   String? // zalo user id / group id
+  memberCount  Int?
+  customerId   String?
+  customer     Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  assignedToId String?
+  assignedTo   User?     @relation("ConversationAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+  unreadCount  Int       @default(0)
+  lastMessageAt DateTime?
+  lastMessagePreview String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  messages ChatMessage[]
+
+  @@unique([externalId, oaConfigId])
+  @@index([kind, lastMessageAt])
+  @@index([assignedToId])
+  pancakePageId String?
+  pancakePage   PancakePage? @relation(fields: [pancakePageId], references: [id], onDelete: SetNull)
+  /// ID hội thoại bên Pancake — khoá khử trùng lặp khi đồng bộ lại.
+  pancakeConversationId String? @unique
+  @@map("conversations")
+}
+
+model ChatMessage {
+  id             String   @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction      String // MessageDirection: IN | OUT
+  type           String   @default("TEXT") // MessageType
+  content        String
+  senderUserId   String?
+  senderUser     User?    @relation("ChatMessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+  senderName     String?
+  status         String   @default("SENT") // MessageStatus
+  externalId     String?  @unique // zalo message id — chống ghi trùng webhook
+  errorMessage   String?
+  createdAt      DateTime @default(now())
+
+  attachments MessageAttachment[]
+
+  @@index([conversationId, createdAt])
+  @@map("chat_messages")
+}
+
+model MessageAttachment {
+  id        String  @id @default(uuid())
+  messageId String
+  message   ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  kind      String // IMAGE | FILE
+  fileName  String
+  mimeType  String?
+  size      Int?
+  storageKey String // khoá trong kho tệp cục bộ/S3
+  createdAt DateTime @default(now())
+
+  @@map("message_attachments")
+}
+
+model QuickReply {
+  id       String  @id @default(uuid())
+  title    String
+  content  String
+  category String?
+  active   Boolean @default(true)
+  createdAt DateTime @default(now())
+
+  @@map("quick_replies")
+}
+
+// Bảo đảm webhook Zalo xử lý ĐÚNG MỘT LẦN (idempotent).
+model ZaloWebhookEvent {
+  id          String   @id @default(uuid())
+  eventId     String   @unique
+  eventName   String
+  payload     String
+  processedAt DateTime?
+  error       String?
+  createdAt   DateTime @default(now())
+
+  @@map("zalo_webhook_events")
+}
+
+// =============================================================================
+// 7. LỄ TÂN — PHÒNG, LỊCH HẸN, CHECK-IN
+// =============================================================================
+
+model Room {
+  id       String  @id @default(uuid())
+  branchId String
+  branch   Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  code     String
+  name     String
+  type     String  @default("CONSULT") // RoomType: CONSULT | OPERATING | MINOR_OP | TREATMENT | RECOVERY
+  capacity Int     @default(1)
+  active   Boolean @default(true)
+
+  appointments Appointment[]
+  procedures   ProcedureRecord[]
+
+  @@unique([branchId, code])
+  @@map("rooms")
+}
+
+model Appointment {
+  id          String    @id @default(uuid())
+  branchId    String
+  branch      Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  type        String    @default("CONSULT") // AppointmentType
+  title       String
+  serviceId   String?
+  service     Service?  @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  doctorId    String?
+  doctor      User?     @relation("AppointmentDoctor", fields: [doctorId], references: [id], onDelete: SetNull)
+  roomId      String?
+  room        Room?     @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  startAt     DateTime
+  endAt       DateTime
+  status      String    @default("PENDING") // AppointmentStatus
+  note        String?
+  cancelReason String?
+  createdById String?
+  createdBy   User?     @relation("AppointmentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  reminders AppointmentReminder[]
+  visit     Visit?
+
+  @@index([branchId, startAt])
+  @@index([customerId])
+  @@index([status])
+  @@map("appointments")
+}
+
+model AppointmentReminder {
+  id            String   @id @default(uuid())
+  appointmentId String
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  channel       String   @default("ZALO_ZNS") // NotificationChannel
+  scheduledAt   DateTime
+  sentAt        DateTime?
+  status        String   @default("PENDING")
+  error         String?
+
+  @@index([status, scheduledAt])
+  @@map("appointment_reminders")
+}
+
+// CHECK-IN: khách đã đến — hàng đợi thời gian thực của lễ tân.
+model Visit {
+  id            String    @id @default(uuid())
+  branchId      String
+  branch        Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId    String
+  customer      Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  appointmentId String?   @unique
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  queueNumber   Int
+  status        String    @default("WAITING") // VisitStatus
+  consultantId  String?
+  consultant    User?     @relation("VisitConsultant", fields: [consultantId], references: [id], onDelete: SetNull)
+  /// Lễ tân đã tiếp đón. Không có trường này thì không quy được năng suất
+  /// tiếp đón về từng người — bảng hiệu suất lễ tân chỉ ra số tổng.
+  receptionistId String?
+  receptionist   User?    @relation("VisitReceptionist", fields: [receptionistId], references: [id], onDelete: SetNull)
+  purpose       String?
+  note          String?
+  checkedInAt   DateTime  @default(now())
+  calledAt      DateTime?
+  finishedAt    DateTime?
+
+  @@index([branchId, status])
+  @@index([checkedInAt])
+  @@map("visits")
+}
+
+// =============================================================================
+// 8. PHÂN LỊCH LÀM VIỆC
+// =============================================================================
+
+model ShiftTemplate {
+  id        String  @id @default(uuid())
+  branchId  String
+  branch    Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  code      String
+  name      String
+  kind      String  @default("FULL_DAY") // ShiftKind
+  startTime String // "07:30"
+  endTime   String // "16:30"
+  color     String  @default("#177f4d")
+  active    Boolean @default(true)
+
+  assignments ShiftAssignment[]
+
+  @@unique([branchId, code])
+  @@map("shift_templates")
+}
+
+model ShiftAssignment {
+  id         String   @id @default(uuid())
+  branchId   String
+  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation("ShiftAssignee", fields: [userId], references: [id], onDelete: Cascade)
+  templateId String?
+  template   ShiftTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  date       DateTime
+  status     String   @default("PLANNED") // ShiftAssignmentStatus
+  note       String?
+
+  @@unique([userId, date, templateId])
+  @@index([branchId, date])
+  attendances Attendance[]
+  @@map("shift_assignments")
+}
+
+// =============================================================================
+// 9. DỊCH VỤ, BÁO GIÁ, HỢP ĐỒNG, TIỀN
+// =============================================================================
+
+model ServiceCategory {
+  id       String  @id @default(uuid())
+  code     String  @unique
+  name     String
+  sortOrder Int    @default(0)
+  active   Boolean @default(true)
+
+  services Service[]
+
+  @@map("service_categories")
+}
+
+model Service {
+  id           String   @id @default(uuid())
+  categoryId   String?
+  category     ServiceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  code         String   @unique
+  name         String
+  kind         String   @default("SURGERY") // ServiceKind
+  description  String?
+  durationMin  Int      @default(60)
+  recoveryDays Int? // thời gian nghỉ dưỡng
+  requiresConsent Boolean @default(true)
+  requiresPreOpLab Boolean @default(false)
+  anesthesia   String? // AnesthesiaType mặc định
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  prices        ServicePrice[]
+  appointments  Appointment[]
+  quotationItems QuotationItem[]
+  contractItems ContractItem[]
+  procedures    ProcedureRecord[]
+  commissionRules CommissionRule[]
+  treatmentPlanItems TreatmentPlanItem[]
+  caseStudies        CaseStudy[]
+  materials ServiceMaterial[]
+
+  @@map("services")
+}
+
+// Giá theo CƠ SỞ và theo hiệu lực thời gian.
+model ServicePrice {
+  id        String    @id @default(uuid())
+  serviceId String
+  service   Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  branchId  String
+  branch    Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  price     Int // đồng
+  minPrice  Int? // sàn được phép giảm
+  validFrom DateTime  @default(now())
+  validTo   DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([serviceId, branchId, validFrom])
+  @@map("service_prices")
+}
+
+model Quotation {
+  id          String   @id @default(uuid())
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  code        String   @unique // BG-2608-0143
+  status      String   @default("DRAFT") // QuotationStatus
+  subtotal    Int      @default(0)
+  discount    Int      @default(0)
+  total       Int      @default(0)
+  note        String?
+  validUntil  DateTime?
+  createdById String?
+  createdBy   User?    @relation("QuotationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  sentAt      DateTime?
+  decidedAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items    QuotationItem[]
+  contract Contract?
+
+  @@index([customerId])
+  @@map("quotations")
+}
+
+model QuotationItem {
+  id          String    @id @default(uuid())
+  quotationId String
+  quotation   Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  serviceId   String?
+  service     Service?  @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  name        String
+  quantity    Int       @default(1)
+  unitPrice   Int
+  discount    Int       @default(0)
+  amount      Int
+
+  @@map("quotation_items")
+}
+
+model Contract {
+  id           String    @id @default(uuid())
+  branchId     String
+  branch       Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId   String
+  customer     Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  quotationId  String?   @unique
+  quotation    Quotation? @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  code         String    @unique // DH-2608-0142
+  status       String    @default("DRAFT") // ContractStatus
+  subtotal     Int       @default(0)
+  discount     Int       @default(0)
+  total        Int       @default(0)
+  paidAmount   Int       @default(0)
+  consultantId String?
+  consultant   User?     @relation("ContractConsultant", fields: [consultantId], references: [id], onDelete: SetNull)
+  signedAt     DateTime?
+  cancelReason String?
+  note         String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  items      ContractItem[]
+  invoices   Invoice[]
+  payments   Payment[]
+  procedures ProcedureRecord[]
+
+  @@index([customerId])
+  @@index([branchId, signedAt])
+  commissionEntries CommissionEntry[]
+  @@map("contracts")
+}
+
+model ContractItem {
+  id         String   @id @default(uuid())
+  contractId String
+  contract   Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  serviceId  String?
+  service    Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  name       String
+  quantity   Int      @default(1)
+  unitPrice  Int
+  discount   Int      @default(0)
+  amount     Int
+  deliveredQty Int    @default(0)
+
+  @@map("contract_items")
+}
+
+model Invoice {
+  id         String   @id @default(uuid())
+  branchId   String
+  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  contractId String?
+  contract   Contract? @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  code       String   @unique // HD-2608-0071
+  status     String   @default("DRAFT") // InvoiceStatus
+  title      String? // "Cọc 30% (khi ký)"
+  amount     Int
+  paidAmount Int      @default(0)
+  dueDate    DateTime?
+  issuedAt   DateTime?
+  voidReason String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  payments Payment[]
+
+  @@index([customerId])
+  @@index([status, dueDate])
+  @@map("invoices")
+}
+
+model Payment {
+  id           String   @id @default(uuid())
+  branchId     String
+  branch       Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId   String
+  customer     Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  contractId   String?
+  contract     Contract? @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  invoiceId    String?
+  invoice      Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  code         String   @unique // PT-2608-0091
+  amount       Int
+  method       String   @default("CASH") // PaymentMethod
+  reference    String? // mã giao dịch ngân hàng
+  note         String?
+  receivedById String?
+  receivedBy   User?    @relation("PaymentReceivedBy", fields: [receivedById], references: [id], onDelete: SetNull)
+  paidAt       DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@index([branchId, paidAt])
+  @@index([customerId])
+  commissionEntries CommissionEntry[]
+  @@map("payments")
+}
+
+// =============================================================================
+// 10. Y KHOA — CÁCH LY THEO CƠ SỞ
+// =============================================================================
+
+model MedicalRecord {
+  id           String   @id @default(uuid())
+  branchId     String // NOT NULL — cách ly theo cơ sở
+  branch       Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId   String
+  customer     Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  code         String   @unique // BA-2608-0044
+  bloodType    String?
+  chronicDisease String?
+  currentMedication String?
+  smoking      Boolean  @default(false)
+  pregnancyNote String?
+  pastAesthetic String? // tiền sử PTTM
+  doctorId     String?
+  doctor       User?    @relation("MedicalRecordDoctor", fields: [doctorId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  entries          MedicalRecordEntry[]
+  allergies        Allergy[]
+  contraindications Contraindication[]
+  procedures       ProcedureRecord[]
+
+  @@unique([customerId, branchId])
+  @@index([branchId])
+  @@map("medical_records")
+}
+
+model MedicalRecordEntry {
+  id       String   @id @default(uuid())
+  recordId String
+  record   MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  kind     String   @default("EXAM") // EXAM | DIAGNOSIS | NOTE | PLAN
+  content  String
+  authorId String?
+  author   User?    @relation("MedicalEntryAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  authorName String?
+  createdAt DateTime @default(now())
+
+  @@index([recordId, createdAt])
+  @@map("medical_record_entries")
+}
+
+model Allergy {
+  id       String @id @default(uuid())
+  recordId String
+  record   MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  substance String
+  reaction String?
+  severity String @default("NORMAL")
+  note     String?
+
+  @@map("allergies")
+}
+
+model Contraindication {
+  id       String  @id @default(uuid())
+  recordId String
+  record   MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  content  String
+  blocking Boolean @default(false) // chặn xác nhận ca mổ
+  note     String?
+
+  @@map("contraindications")
+}
+
+model ConsentForm {
+  id         String    @id @default(uuid())
+  branchId   String
+  branch     Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId String
+  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  procedureId String?
+  procedure  ProcedureRecord? @relation(fields: [procedureId], references: [id], onDelete: SetNull)
+  type       String    @default("SURGERY") // ConsentType
+  title      String
+  bodyText   String
+  status     String    @default("DRAFT") // ConsentStatus
+  signedAt   DateTime?
+  signatureKey String? // ảnh chữ ký trong kho tệp (đã mã hoá)
+  staffId    String?
+  staff      User?     @relation("ConsentStaff", fields: [staffId], references: [id], onDelete: SetNull)
+  createdAt  DateTime  @default(now())
+
+  @@index([customerId])
+  @@index([branchId])
+  @@map("consent_forms")
+}
+
+model PhotoSet {
+  id         String   @id @default(uuid())
+  branchId   String
+  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  procedureId String?
+  procedure  ProcedureRecord? @relation(fields: [procedureId], references: [id], onDelete: SetNull)
+  stage      String // PhotoStage: PRE_OP | D1 | D7 | M1 | M3 | M6
+  takenAt    DateTime @default(now())
+  takenById  String?
+  takenBy    User?    @relation("PhotoSetTakenBy", fields: [takenById], references: [id], onDelete: SetNull)
+  note       String?
+
+  photos PhotoAsset[]
+
+  @@index([customerId, stage])
+  @@index([branchId])
+  @@map("photo_sets")
+}
+
+// Tệp ảnh KHÔNG nằm trong DB. storageKey trỏ tới tệp đã mã hoá AES-256-GCM
+// trong kho tệp; chỉ phát URL ký hạn ngắn và luôn ghi DataAccessLog.
+model PhotoAsset {
+  id         String   @id @default(uuid())
+  photoSetId String
+  photoSet   PhotoSet @relation(fields: [photoSetId], references: [id], onDelete: Cascade)
+  storageKey String
+  fileName   String
+  mimeType   String   @default("image/jpeg")
+  size       Int      @default(0)
+  angle      String? // "front" | "left45" | "profile"
+  encIv      String // IV của AES-GCM
+  encTag     String // auth tag
+  createdAt  DateTime @default(now())
+
+  @@map("photo_assets")
+}
+
+// Phiếu phẫu thuật / thủ thuật + lịch phòng mổ (mức Giai đoạn 1).
+model ProcedureRecord {
+  id          String    @id @default(uuid())
+  branchId    String
+  branch      Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  recordId    String?
+  record      MedicalRecord? @relation(fields: [recordId], references: [id], onDelete: SetNull)
+  contractId  String?
+  contract    Contract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  serviceId   String?
+  service     Service?  @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  code        String    @unique // PM-2608-0033
+  title       String
+  roomId      String?
+  room        Room?     @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  surgeonId   String?
+  surgeon     User?     @relation("ProcedureSurgeon", fields: [surgeonId], references: [id], onDelete: SetNull)
+  teamNote    String? // ê-kíp dạng văn bản (Giai đoạn 2 tách bảng riêng)
+  materialNote String? // vật tư dự trù (Giai đoạn 2 nối kho theo lô)
+  anesthesia  String    @default("LOCAL") // AnesthesiaType
+  status      String    @default("SCHEDULED") // ProcedureStatus
+  scheduledAt DateTime
+  durationMin Int       @default(60)
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  report      String? // tường trình
+  checklist   String? // JSON boolean[7] theo CHECKLIST tiền phẫu
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  consentForms ConsentForm[]
+  photoSets    PhotoSet[]
+
+  @@index([branchId, scheduledAt])
+  @@index([customerId])
+  productUsages ProductUsage[]
+  caseStudies CaseStudy[]
+  @@map("procedure_records")
+}
+
+// =============================================================================
+// KHO VẬT TƯ THEO LÔ  (Giai đoạn 2, mục 3.3 nhóm E1)
+// =============================================================================
+//
+// Điểm sống còn của phân hệ này KHÔNG phải là biết còn bao nhiêu hàng, mà là
+// TRUY VẾT: khi nhà sản xuất thu hồi một lô túi ngực hay filler, phòng khám
+// phải trả lời trong vài phút "lô đó đã dùng cho những khách nào".
+//
+// Vì vậy mọi lần xuất dùng cho khách đều ghi ProductUsage gắn CHẶT vào StockLot
+// và Customer — không cộng trừ số lượng suông.
+
+model Warehouse {
+  id        String   @id @default(uuid())
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  code      String
+  name      String
+  /// MAIN = kho tổng (nhập hàng từ nhà cung cấp), SUB = kho con của khoa/phòng
+  /// (nhận hàng từ kho tổng qua phiếu chuyển kho).
+  kind      String   @default("MAIN")
+  /// Kho tổng của kho con này. Null với kho tổng.
+  parentId  String?
+  parent    Warehouse?  @relation("WarehouseTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Warehouse[] @relation("WarehouseTree")
+  isDefault Boolean  @default(false)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  lots      StockLot[]
+  movements StockMovement[]
+  counts    StockCount[]
+  transfersOut StockTransfer[] @relation("TransferFrom")
+  transfersIn  StockTransfer[] @relation("TransferTo")
+
+  @@unique([branchId, code])
+  @@map("warehouses")
+}
+
+model Supplier {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  taxCode   String?
+  phone     String?
+  email     String?
+  address   String?
+  contactName String?
+  note      String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lots           StockLot[]
+  purchaseOrders PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+model Product {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  kind        String   @default("CONSUMABLE") // ProductKind
+  unit        String   @default("cái")
+  /// Vật tư cấy ghép (túi ngực, sụn nhân tạo) BẮT BUỘC theo lô và bắt buộc ghi
+  /// mã lô vào hồ sơ khách — đây là yêu cầu truy vết, không phải tuỳ chọn.
+  isImplant   Boolean  @default(false)
+  requiresLot Boolean  @default(true)
+  /// Định mức tối thiểu — dưới mức này cảnh báo để bổ sung kịp thời.
+  minStock    Int      @default(0)
+  /// Định mức tối đa — vượt mức này cảnh báo ứ đọng vốn và rủi ro hết hạn.
+  maxStock    Int      @default(0)
+  note        String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lots      StockLot[]
+  movements StockMovement[]
+  usages    ProductUsage[]
+  poItems   PurchaseOrderItem[]
+  countItems StockCountItem[]
+  serviceMaterials ServiceMaterial[]
+  transferItems    StockTransferItem[]
+
+  @@map("products")
+}
+
+model StockLot {
+  id          String    @id @default(uuid())
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  supplierId  String?
+  supplier    Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  lotNumber   String // mã lô của nhà sản xuất
+  serialNumber String? // số seri riêng từng cái (túi ngực có)
+  expiryDate  DateTime?
+  /// Số lượng còn lại của LÔ này. Không bao giờ sửa tay — chỉ đổi qua
+  /// StockMovement để luôn đối chiếu được với sổ.
+  quantity    Int       @default(0)
+  unitCost    Int       @default(0) // đồng
+  receivedAt  DateTime  @default(now())
+  note        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  movements StockMovement[]
+  usages    ProductUsage[]
+
+  @@unique([productId, warehouseId, lotNumber])
+  @@index([expiryDate])
+  transferItems StockTransferItem[]
+  @@map("stock_lots")
+}
+
+model StockMovement {
+  id          String    @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lotId       String?
+  lot         StockLot? @relation(fields: [lotId], references: [id], onDelete: SetNull)
+
+  type        String // StockMoveType: IN | OUT | TRANSFER | ADJUST | DISPOSE
+  /// Dương là nhập, âm là xuất. Cộng dồn cột này phải khớp StockLot.quantity.
+  quantity    Int
+  reason      String?
+  referenceId String? // procedureId / purchaseOrderId / stockCountId
+  actorId     String?
+  actor       User?     @relation("StockMovementActor", fields: [actorId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+
+  @@index([warehouseId, createdAt])
+  @@index([productId])
+  @@map("stock_movements")
+}
+
+model ProductUsage {
+  id          String   @id @default(uuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lotId       String?
+  lot         StockLot? @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  /// Gắn vào KHÁCH và CA MỔ — đây là mắt xích cho phép truy vết ngược từ lô ra khách.
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  procedureId String?
+  procedure   ProcedureRecord? @relation(fields: [procedureId], references: [id], onDelete: SetNull)
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  quantity    Int      @default(1)
+  usedAt      DateTime @default(now())
+  recordedById String?
+  recordedBy  User?    @relation("ProductUsageRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([lotId])
+  @@index([customerId])
+  @@map("product_usages")
+}
+
+model PurchaseOrder {
+  id          String   @id @default(uuid())
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  supplierId  String
+  supplier    Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  code        String   @unique
+  status      String   @default("DRAFT") // PurchaseOrderStatus
+  total       Int      @default(0)
+  orderedAt   DateTime @default(now())
+  receivedAt  DateTime?
+  note        String?
+  createdById String?
+  createdBy   User?    @relation("PurchaseOrderCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items PurchaseOrderItem[]
+
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id        String        @id @default(uuid())
+  orderId   String
+  order     PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lotNumber String?
+  expiryDate DateTime?
+  quantity  Int
+  unitCost  Int           @default(0)
+  amount    Int           @default(0)
+
+  @@map("purchase_order_items")
+}
+
+model StockCount {
+  id          String    @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  code        String    @unique
+  status      String    @default("DRAFT") // DRAFT | FINALIZED
+  countedAt   DateTime  @default(now())
+  finalizedAt DateTime?
+  note        String?
+  createdById String?
+  createdBy   User?     @relation("StockCountCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+
+  items StockCountItem[]
+
+  @@map("stock_counts")
+}
+
+model StockCountItem {
+  id           String     @id @default(uuid())
+  stockCountId String
+  stockCount   StockCount @relation(fields: [stockCountId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lotId        String?
+  systemQty    Int        @default(0) // sổ sách
+  countedQty   Int        @default(0) // đếm thực tế
+  note         String?
+
+  @@map("stock_count_items")
+}
+
+// =============================================================================
+// NHÂN SỰ: CHẤM CÔNG · HOA HỒNG · KPI   (Giai đoạn 2, mục 3.3 nhóm E2/A4)
+// =============================================================================
+
+model Attendance {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation("AttendanceUser", fields: [userId], references: [id], onDelete: Cascade)
+  branchId   String
+  branch     Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  /// Ca đã xếp để đối chiếu đi muộn / về sớm. Null = chấm công ngoài ca.
+  shiftId    String?
+  shift      ShiftAssignment? @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+
+  date       DateTime
+  checkInAt  DateTime?
+  checkOutAt DateTime?
+  status     String    @default("PRESENT") // AttendanceStatus
+  lateMinutes  Int     @default(0)
+  earlyMinutes Int     @default(0)
+  workedMinutes Int    @default(0)
+  note       String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([userId, date])
+  @@index([branchId, date])
+  @@map("attendances")
+}
+
+model LeaveRequest {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation("LeaveUser", fields: [userId], references: [id], onDelete: Cascade)
+  branchId   String
+  branch     Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  type       String    @default("ANNUAL") // LeaveType
+  fromDate   DateTime
+  toDate     DateTime
+  days       Int       @default(1)
+  reason     String
+  status     String    @default("PENDING") // LeaveStatus
+  approverId String?
+  approver   User?     @relation("LeaveApprover", fields: [approverId], references: [id], onDelete: SetNull)
+  decidedAt  DateTime?
+  decisionNote String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([userId, fromDate])
+  @@map("leave_requests")
+}
+
+model CommissionRule {
+  id        String   @id @default(uuid())
+  branchId  String?
+  branch    Branch?  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name      String
+  /// Vai trò được hưởng: TU_VAN_VIEN | TELESALE | BAC_SI …
+  roleCode  String
+  /// COLLECTED = tính trên TIỀN THỰC THU (mặc định, đúng nguyên tắc trong tài
+  /// liệu), SIGNED = tính trên doanh số ký — chỉ mở khi chủ đầu tư chấp nhận
+  /// rủi ro trả hoa hồng cho hợp đồng chưa thu được tiền.
+  basis     String   @default("COLLECTED") // CommissionBasis
+  percent   Int      @default(0) // phần nghìn (‰) để tránh số thực: 35 = 3,5%
+  serviceId String?
+  service   Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  minAmount Int      @default(0)
+  active    Boolean  @default(true)
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries CommissionEntry[]
+
+  @@map("commission_rules")
+}
+
+model CommissionEntry {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation("CommissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  branchId   String
+  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  ruleId     String?
+  rule       CommissionRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  /// Nguồn phát sinh: phiếu thu nào sinh ra khoản hoa hồng này.
+  paymentId  String?
+  payment    Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  contractId String?
+  contract   Contract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+
+  periodKey  String   // "2026-08" — khoá kỳ để chốt
+  baseAmount Int      @default(0) // tiền thực thu làm căn cứ
+  percent    Int      @default(0) // ‰
+  amount     Int      @default(0) // tiền hoa hồng
+  status     String   @default("PENDING") // CommissionStatus
+  note       String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, periodKey])
+  @@index([branchId, periodKey])
+  @@map("commission_entries")
+}
+
+model KpiDefinition {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  /// SALES | NURSING | DOCTOR | RECEPTION — KPI điều dưỡng CỐ Ý tách khỏi
+  /// nhóm SALES để không gắn tiền vào tay người chỉ định chuyên môn.
+  group     String   @default("SALES") // KpiGroup
+  unit      String   @default("số")
+  higherIsBetter Boolean @default(true)
+  description String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  targets KpiTarget[]
+  actuals KpiActual[]
+
+  @@map("kpi_definitions")
+}
+
+model KpiTarget {
+  id           String        @id @default(uuid())
+  definitionId String
+  definition   KpiDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  userId       String?
+  user         User?         @relation("KpiTargetUser", fields: [userId], references: [id], onDelete: Cascade)
+  branchId     String?
+  branch       Branch?       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  periodKey    String // "2026-08"
+  targetValue  Int           @default(0)
+  createdAt    DateTime      @default(now())
+
+  @@unique([definitionId, userId, periodKey])
+  @@map("kpi_targets")
+}
+
+model KpiActual {
+  id           String        @id @default(uuid())
+  definitionId String
+  definition   KpiDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  userId       String?
+  user         User?         @relation("KpiActualUser", fields: [userId], references: [id], onDelete: Cascade)
+  branchId     String?
+  branch       Branch?       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  periodKey    String
+  actualValue  Int           @default(0)
+  note         String?
+  recordedAt   DateTime      @default(now())
+
+  @@unique([definitionId, userId, periodKey])
+  @@map("kpi_actuals")
+}
+
+model PayrollPeriod {
+  id          String   @id @default(uuid())
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  periodKey   String   // "2026-08"
+  status      String   @default("OPEN") // OPEN | CLOSED
+  closedAt    DateTime?
+  closedById  String?
+  closedBy    User?    @relation("PayrollCloser", fields: [closedById], references: [id], onDelete: SetNull)
+  note        String?
+  createdAt   DateTime @default(now())
+
+  lines PayrollLine[]
+
+  @@unique([branchId, periodKey])
+  @@map("payroll_periods")
+}
+
+model PayrollLine {
+  id         String        @id @default(uuid())
+  periodId   String
+  period     PayrollPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User          @relation("PayrollUser", fields: [userId], references: [id], onDelete: Restrict)
+
+  baseSalary   Int @default(0)
+  commission   Int @default(0)
+  allowance    Int @default(0)
+  deduction    Int @default(0)
+  total        Int @default(0)
+  workedDays   Int @default(0)
+  note         String?
+
+  @@unique([periodId, userId])
+  @@map("payroll_lines")
+}
+
+// =============================================================================
+// TƯ VẤN & PHÁC ĐỒ · THƯ VIỆN CASE · MẪU BIỂU  (Giai đoạn 2, nhóm B1/B5)
+// =============================================================================
+
+model ConsultationSession {
+  id           String    @id @default(uuid())
+  branchId     String
+  branch       Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId   String
+  customer     Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  consultantId String?
+  consultant   User?     @relation("ConsultationConsultant", fields: [consultantId], references: [id], onDelete: SetNull)
+  doctorId     String?
+  doctor       User?     @relation("ConsultationDoctor", fields: [doctorId], references: [id], onDelete: SetNull)
+
+  concernArea  String? // vùng quan tâm: "Bụng · Eo"
+  expectation  String? // mong muốn bằng lời của khách
+  budgetNote   String?
+  readiness    String? // mức sẵn sàng
+  recoveryNote String? // thời gian nghỉ dưỡng khách chấp nhận được
+  contraindicationNote String?
+  note         String?
+  heldAt       DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  plans TreatmentPlan[]
+
+  @@index([customerId])
+  @@map("consultation_sessions")
+}
+
+model TreatmentPlan {
+  id            String   @id @default(uuid())
+  branchId      String
+  branch        Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  sessionId     String?
+  session       ConsultationSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  doctorId      String?
+  doctor        User?    @relation("TreatmentPlanDoctor", fields: [doctorId], references: [id], onDelete: SetNull)
+
+  title         String
+  method        String? // phương pháp chỉ định
+  expectedResult String?
+  riskNote      String?
+  recoveryDays  Int?
+  status        String   @default("DRAFT") // DRAFT | PROPOSED | ACCEPTED | REJECTED
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  items TreatmentPlanItem[]
+
+  @@index([customerId])
+  @@map("treatment_plans")
+}
+
+model TreatmentPlanItem {
+  id        String        @id @default(uuid())
+  planId    String
+  plan      TreatmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  serviceId String?
+  service   Service?      @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  name      String
+  stepOrder Int           @default(1)
+  note      String?
+
+  @@map("treatment_plan_items")
+}
+
+model CaseStudy {
+  id          String   @id @default(uuid())
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  /// Giữ liên kết khách để GỠ ĐƯỢC khi khách rút đồng ý — nhưng không bao giờ
+  /// hiển thị ra ngoài. Phần công bố chỉ dùng các trường đã ẩn danh bên dưới.
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  procedureId String?
+  procedure   ProcedureRecord? @relation(fields: [procedureId], references: [id], onDelete: SetNull)
+  serviceId   String?
+  service     Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  doctorId    String?
+  doctor      User?    @relation("CaseStudyDoctor", fields: [doctorId], references: [id], onDelete: SetNull)
+
+  title       String
+  /// Dữ liệu ĐÃ ẨN DANH: "Nữ, 32 tuổi" thay vì tên thật.
+  anonymLabel String
+  summary     String?
+  beforeNote  String?
+  afterNote   String?
+
+  status      String   @default("DRAFT") // CaseStudyStatus
+  /// Hai cổng duyệt: chuyên môn duyệt tính chính xác y khoa, truyền thông
+  /// duyệt tính tuân thủ quảng cáo. Thiếu một trong hai là không xuất bản được.
+  medicalApprovedById String?
+  medicalApprovedBy   User? @relation("CaseMedicalApprover", fields: [medicalApprovedById], references: [id], onDelete: SetNull)
+  medicalApprovedAt   DateTime?
+  marketingApprovedById String?
+  marketingApprovedBy   User? @relation("CaseMarketingApprover", fields: [marketingApprovedById], references: [id], onDelete: SetNull)
+  marketingApprovedAt   DateTime?
+  publishedAt DateTime?
+  /// Khách rút đồng ý -> gỡ khỏi công bố, ghi lý do và thời điểm.
+  withdrawnAt DateTime?
+  withdrawReason String?
+
+  createdById String?
+  createdBy   User?    @relation("CaseStudyCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([branchId, status])
+  @@map("case_studies")
+}
+
+model ConsentTemplate {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  type      String   @default("SURGERY") // ConsentType
+  title     String
+  bodyText  String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("consent_templates")
+}
+
+// =============================================================================
+// PANCAKE — GOM FACEBOOK · INSTAGRAM · TIKTOK · ZALO VỀ MỘT HỘP THƯ
+// =============================================================================
+//
+// Vì sao đi qua Pancake thay vì nối thẳng từng nền tảng:
+//   · TikTok KHÔNG có API nhắn tin công khai — nối thẳng là bất khả thi, không
+//     phải khó. Pancake là đường duy nhất lấy được tin nhắn TikTok.
+//   · Meta (Facebook/Instagram) đòi app review + xác minh doanh nghiệp, 2–6 tuần.
+//   · Phòng khám đã trả tiền dùng Pancake cho các trang Facebook hiện có.
+//
+// Token Pancake mã hoá y như secret Zalo — nó mở được toàn bộ hội thoại khách.
+
+model PancakeConfig {
+  id            String   @id @default(uuid())
+  branchId      String?
+  branch        Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  label         String
+  /// Token API Pancake, mã hoá AES-256-GCM. Không bao giờ trả về máy khách.
+  accessTokenEnc String
+  /// Bí mật ký webhook, nếu Pancake có cấu hình.
+  webhookSecretEnc String?
+  active        Boolean  @default(true)
+  lastSyncAt    DateTime?
+  lastSyncNote  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  pages PancakePage[]
+
+  @@map("pancake_configs")
+}
+
+model PancakePage {
+  id         String        @id @default(uuid())
+  configId   String
+  config     PancakeConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  branchId   String?
+  branch     Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  /// ID trang bên Pancake (ví dụ 172794895923921) — khoá để khử trùng lặp.
+  pageId     String        @unique
+  name       String
+  /// FACEBOOK | INSTAGRAM | TIKTOK | ZALO — nguồn thật của hội thoại, dùng để
+  /// quy doanh thu về đúng kênh khi tính ROAS.
+  platform   String        @default("FACEBOOK")
+  /// Gắn trang vào chiến dịch để nối tin nhắn ↔ chi phí quảng cáo.
+  channelId  String?
+  channel    Channel?      @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  active     Boolean       @default(true)
+  lastSyncAt DateTime?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  conversations Conversation[]
+
+  @@map("pancake_pages")
+}
+
+// -----------------------------------------------------------------------------
+// CHUYỂN KHO CÓ DUYỆT · ĐỊNH MỨC VẬT TƯ THEO DỊCH VỤ
+// -----------------------------------------------------------------------------
+
+model StockTransfer {
+  id            String    @id @default(uuid())
+  code          String    @unique
+  branchId      String
+  branch        Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  fromWarehouseId String
+  fromWarehouse Warehouse @relation("TransferFrom", fields: [fromWarehouseId], references: [id], onDelete: Restrict)
+  toWarehouseId String
+  toWarehouse   Warehouse @relation("TransferTo", fields: [toWarehouseId], references: [id], onDelete: Restrict)
+
+  /// PENDING -> APPROVED -> COMPLETED, hoặc REJECTED.
+  /// Hàng CHỈ rời kho khi COMPLETED — duyệt xong mà chưa xuất thì tồn chưa đổi,
+  /// nhờ vậy thẻ kho luôn khớp với hàng thật trên kệ.
+  status        String    @default("PENDING")
+  reason        String?
+  requestedById String?
+  requestedBy   User?     @relation("TransferRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  approvedById  String?
+  approvedBy    User?     @relation("TransferApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt    DateTime?
+  completedAt   DateTime?
+  rejectNote    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  items StockTransferItem[]
+
+  @@index([branchId, status])
+  @@map("stock_transfers")
+}
+
+model StockTransferItem {
+  id         String        @id @default(uuid())
+  transferId String
+  transfer   StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+  /// Chuyển theo LÔ chứ không chỉ theo số lượng — nếu không thì sang kho con
+  /// là mất dấu hạn dùng và mất luôn khả năng truy vết.
+  lotId      String?
+  lot        StockLot?     @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  quantity   Int
+
+  @@map("stock_transfer_items")
+}
+
+model ServiceMaterial {
+  id        String   @id @default(uuid())
+  serviceId String
+  service   Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  /// Định mức tiêu hao cho MỘT lần thực hiện dịch vụ.
+  quantity  Int      @default(1)
+  /// Bắt buộc: thiếu vật tư này thì cảnh báo trước khi mổ.
+  required  Boolean  @default(true)
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@unique([serviceId, productId])
+  @@map("service_materials")
+}
