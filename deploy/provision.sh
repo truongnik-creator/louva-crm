@@ -177,6 +177,20 @@ else
   fi
 fi
 
+if [ "$CF_PROXY" = "1" ]; then
+  echo "    proxy Cloudflare: nạp dải IP để lấy IP thật từ CF-Connecting-IP"
+  bash "$APP_DIR/deploy/cloudflare-realip.sh"
+  cat > /etc/cron.d/louva-cf-realip <<CFCRON
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+17 4 * * 1 root bash $APP_DIR/deploy/cloudflare-realip.sh >> /var/log/louva-cf-realip.log 2>&1
+CFCRON
+  chmod 644 /etc/cron.d/louva-cf-realip
+  echo "    cron nạp lại dải IP Cloudflare mỗi thứ Hai 4:17"
+  grep -q "set_real_ip_from" /etc/nginx/conf.d/cloudflare-realip.conf \
+    || { echo "khôi phục IP thật không hoạt động"; exit 1; }
+fi
+
 echo "==> 8/9 Tường lửa"
 ufw allow 22/tcp >/dev/null; ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null
 ufw deny 4000/tcp >/dev/null   # backend chỉ nghe qua nginx, không mở ra ngoài
