@@ -40,27 +40,70 @@ Kiểm tra vào được mà không cần mật khẩu:
 ssh -o BatchMode=yes louva-vps 'hostname; lsb_release -ds; free -h | head -2'
 ```
 
-## Bước 2 — Dựng máy chủ (một lần)
+## Bước 2 — Tên miền trên Cloudflare
 
-**Có tên miền** (khuyến nghị — bắt buộc nếu muốn cài PWA lên điện thoại và
-không muốn trình duyệt cảnh báo). Trỏ bản ghi A của tên miền về
-`221.132.16.132` trước, đợi DNS lan, rồi:
+Tên miền: `louva.vn`, zone đã tạo trên Cloudflare (`damian.ns.cloudflare.com`,
+`kenia.ns.cloudflare.com`). CRM đặt ở `crm.louva.vn` để apex còn dành cho web
+giới thiệu.
+
+Trong Cloudflare, **DNS → Records → Add record**:
+
+| Type | Name | IPv4 address | Proxy status |
+|---|---|---|---|
+| A | `crm` | `221.132.16.132` | **DNS only** (mây xám) |
+
+### Vì sao DNS only, không bật proxy
+
+Bật proxy (mây cam) thì Cloudflare giải mã TLS ở biên của họ, nên **toàn bộ
+bệnh án, ảnh trước-sau và số điện thoại khách đi qua hạ tầng Cloudflare ở nước
+ngoài**. Với dữ liệu sức khoẻ thuộc Nghị định 13/2023 đó là chuyển dữ liệu ra
+nước ngoài, phải có cơ sở pháp lý và ghi trong mẫu đồng ý. Để mây xám thì TLS
+đi thẳng từ trình duyệt tới máy chủ phòng khám, không ai ở giữa.
+
+Đổi lại, mây xám để lộ IP máy chủ và không có lớp chắn DDoS. Với một CRM nội bộ
+chỉ nhân viên phòng khám dùng, đánh đổi đó là hợp lý: đã có tường lửa và giới
+hạn đăng nhập.
+
+**Nếu vẫn muốn bật proxy** thì phải làm đủ ba việc, nếu không sẽ hỏng thật:
+
+1. **SSL/TLS → Overview → Full (strict)**. Để `Flexible` thì Cloudflare gọi
+   máy chủ bằng HTTP trong khi nginx đã chuyển hướng sang HTTPS, kết quả là
+   vòng lặp chuyển hướng vô tận.
+2. Dựng với `CF_PROXY=1` để nginx lấy IP khách từ `CF-Connecting-IP`. Thiếu
+   bước này, backend coi mọi người là IP biên Cloudflare: **giới hạn đăng nhập
+   10 lần / 15 phút sẽ tính gộp cả phòng khám vào vài IP, một người gõ sai mật
+   khẩu là khoá cả nhà**, và nhật ký kiểm toán ghi sai IP nên không truy vết
+   được ai đã xem bệnh án nào.
+3. Cloudflare giới hạn thân yêu cầu 100 MB ở gói miễn phí — ảnh trước-sau chụp
+   nhiều tấm một lượt có thể vượt.
+
+### Chờ nameserver lan xong
+
+Nameserver đang chuyển từ `tenten.vn` sang Cloudflare, chưa lan hết. Kiểm:
 
 ```bash
-ssh louva-vps 'curl -fsSL https://raw.githubusercontent.com/truongnik-creator/louva-crm/main/deploy/provision.sh -o /root/provision.sh && DOMAIN=crm.tenmien.vn ADMIN_EMAIL=ceo@tenmien.vn bash /root/provision.sh'
+dig @1.1.1.1 +short A crm.louva.vn   # phải ra 221.132.16.132
+dig @8.8.8.8 +short A crm.louva.vn   # phải ra 221.132.16.132
 ```
 
-**Chưa có tên miền**: bỏ `DOMAIN=`, script dùng chứng thư tự ký. Dữ liệu vẫn
-được mã hoá trên đường truyền, nhưng trình duyệt cảnh báo mỗi lần vào và PWA
-không cài được như app. Chạy lại script với `DOMAIN=` sau là đủ để nâng lên
-TLS thật, không mất dữ liệu.
+**Cả hai** phải trả về đúng IP trước khi sang bước 3. Certbot xác thực qua
+HTTP-01: tên miền chưa trỏ đúng thì nó không cấp được chứng thư.
+
+## Bước 3 — Dựng máy chủ (một lần)
+
+```bash
+ssh louva-vps 'curl -fsSL https://raw.githubusercontent.com/truongnik-creator/louva-crm/main/deploy/provision.sh -o /root/provision.sh && DOMAIN=crm.louva.vn ADMIN_EMAIL=truongnik@gmail.com bash /root/provision.sh'
+```
+
+Bật proxy Cloudflare thì thêm `CF_PROXY=1` vào trước `bash`.
 
 Script làm: cài Node 20 + nginx + ufw, tạo user `louva`, sinh khoá mã hoá và
-`JWT_SECRET`, clone repo, build backend và bản web, dựng systemd, cấu hình
-nginx + TLS, bật tường lửa, đặt cron sao lưu. Chạy lại được nhiều lần
-(idempotent): khoá và `.env` đã có thì giữ nguyên.
+`JWT_SECRET` tại chỗ, clone repo, build backend và bản web, dựng systemd, lấy
+chứng thư Let's Encrypt cho `crm.louva.vn` và bật tự gia hạn, bật tường lửa,
+đặt cron sao lưu 2 giờ sáng. Chạy lại được nhiều lần: khoá và `.env` đã có thì
+giữ nguyên.
 
-## Bước 3 — Lấy mật khẩu quản trị đầu tiên
+## Bước 4 — Lấy mật khẩu quản trị đầu tiên
 
 ```bash
 ssh louva-vps 'journalctl -u louva-crm --no-pager | grep -A4 "Khoi dong lan dau\|Khởi động lần đầu" | head'
@@ -70,10 +113,10 @@ In ra **một lần duy nhất** lúc khởi động đầu. Đăng nhập xong 
 mật khẩu ngay. Nếu đã trôi mất, tạo lại tài khoản quản trị:
 
 ```bash
-ssh louva-vps 'cd /opt/louva/app/backend && sudo -u louva npx tsx scripts/create-admin.ts --email ceo@tenmien.vn --name "Tên chủ phòng khám"'
+ssh louva-vps 'cd /opt/louva/app/backend && sudo -u louva npx tsx scripts/create-admin.ts --email truongnik@gmail.com --name "Tên chủ phòng khám"'
 ```
 
-## Bước 4 — Nạp danh mục (tuỳ chọn)
+## Bước 5 — Nạp danh mục (tuỳ chọn)
 
 Máy chủ mới chưa có dữ liệu nào. Nạp danh mục NOVA (phòng ban, phòng, ca, kênh,
 29 dịch vụ, bảng giá, mẫu tin) mà **không** tạo khách demo:

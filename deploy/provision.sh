@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Dựng máy chủ Louva CRM từ một VPS Ubuntu 22.04 trắng. Chạy MỘT LẦN, bằng root.
 #
-#   DOMAIN=crm.phongkham.vn ADMIN_EMAIL=ceo@phongkham.vn bash provision.sh
+#   DOMAIN=crm.louva.vn ADMIN_EMAIL=ceo@louva.vn bash provision.sh
+#
+# Sau proxy Cloudflare (mây cam) thì thêm CF_PROXY=1 để khôi phục IP thật của
+# khách, nếu không giới hạn đăng nhập và nhật ký kiểm toán sẽ ghi IP Cloudflare.
 #
 # Không có DOMAIN thì script dùng chứng thư tự ký: dữ liệu vẫn được mã hoá trên
 # đường truyền, nhưng trình duyệt sẽ cảnh báo và PWA không cài được như app.
@@ -17,6 +20,7 @@ ETC_DIR=/etc/louva
 BACKUP_DIR=/var/backups/louva
 ENV_FILE="$ETC_DIR/louva.env"
 DOMAIN="${DOMAIN:-}"
+CF_PROXY="${CF_PROXY:-0}"
 
 [ "$(id -u)" -eq 0 ] || { echo "Phải chạy bằng root"; exit 1; }
 
@@ -67,6 +71,11 @@ ADMIN_EMAIL=${ADMIN_EMAIL:-admin@louva.vn}
 # ADMIN_PASSWORD=
 # Chưa đặt thì sáu tính năng AI tự tắt, nghiệp vụ vẫn chạy đủ.
 # ANTHROPIC_API_KEY=
+# Giao diện và API cùng origin nên KHÔNG cần CORS_ORIGIN.
+# Zalo OA: khai đúng URL này trong bảng điều khiển Zalo khi kết nối OA.
+${DOMAIN:+ZALO_OAUTH_REDIRECT_URI=https://$DOMAIN/api/zalo/oauth/callback}
+# Pancake webhook trỏ về: https://${DOMAIN:-<ten-mien>}/api/pancake/webhook
+# PANCAKE_WEBHOOK_SECRET=
 ENVEOF
   echo "    đã sinh $ENV_FILE (JWT_SECRET ngẫu nhiên 64 ký tự)"
 else
@@ -133,6 +142,18 @@ else
   nginx -t && systemctl reload nginx
   echo "    TLS TỰ KÝ — trình duyệt sẽ cảnh báo, PWA không cài được như app."
   echo "    Trỏ một tên miền về $SERVER_NAME rồi chạy lại với DOMAIN=... để có TLS thật."
+fi
+
+if [ "$CF_PROXY" = "1" ]; then
+  echo "    proxy Cloudflare: nạp dải IP để lấy IP thật từ CF-Connecting-IP"
+  bash "$APP_DIR/deploy/cloudflare-realip.sh"
+  cat > /etc/cron.d/louva-cf-realip <<CFCRON
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+17 4 * * 1 root bash $APP_DIR/deploy/cloudflare-realip.sh >> /var/log/louva-cf-realip.log 2>&1
+CFCRON
+  chmod 644 /etc/cron.d/louva-cf-realip
+  echo "    cron nạp lại dải IP Cloudflare mỗi thứ Hai 4:17"
 fi
 
 echo "==> 8/9 Tường lửa"
