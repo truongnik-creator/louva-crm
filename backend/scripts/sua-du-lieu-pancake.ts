@@ -1,5 +1,5 @@
 import { prisma } from "../src/lib/prisma";
-import { MessageDirection, MessageType } from "../src/types/enums";
+import { MessageType } from "../src/types/enums";
 
 /**
  * SỬA MỘT LẦN dữ liệu Pancake đã đồng bộ về SAI, trước khi có bộ lọc đính kèm
@@ -74,7 +74,6 @@ async function main(): Promise<void> {
       id: true,
       type: true,
       content: true,
-      direction: true,
       attachments: { select: { id: true, kind: true } },
     },
   });
@@ -96,10 +95,11 @@ async function main(): Promise<void> {
         : left.length
           ? "[Tệp đính kèm]"
           : adMessageIds.has(m.id)
-            ? // Khách bấm quảng cáo rồi nhắn: Pancake gửi tin rỗng kèm ad_click.
-              m.direction === MessageDirection.IN
-              ? "Khách nhắn từ quảng cáo"
-              : "Tin tự động trả lời quảng cáo"
+            ? // Khách bấm quảng cáo rồi nhắn: Pancake gửi một tin RỖNG kèm
+              // ad_click, phía trang. Phải ra ĐÚNG chữ mà attachmentLabel
+              // (services/pancake.ts) sinh cho tin mới, nếu không tin cũ và tin
+              // mới cùng loại lại đọc khác nhau trong hộp thư.
+              "Khách nhắn từ quảng cáo"
             : "[Tin không có nội dung chữ]";
     }
 
