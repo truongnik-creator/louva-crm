@@ -22,6 +22,7 @@ import {
 } from "../src/services/pancake";
 import { runPancakeStatsSync, runPancakePullSync } from "../src/lib/pancake-jobs";
 import { buildPancakeAgentReport } from "../src/lib/pancake-report";
+import { discoverPagesAndAgents } from "../src/services/pancake-stats";
 import { startOfVnDay } from "../src/lib/datetime";
 
 // F35: HIỆU SUẤT NHÂN VIÊN TRÊN PANCAKE.
@@ -825,6 +826,44 @@ describe("F35: lượt kéo định kỳ tự nhận trang mới", () => {
     // Lượt sau không được báo "trang mới" nữa.
     const lan2 = await runPancakePullSync();
     expect(lan2.message).not.toContain("TRANG MỚI");
+  });
+
+  it("kênh CHƯA KÍCH HOẠT không nhận vào CSDL nhưng phải được kể tên", async () => {
+    await prisma.pancakeConfig.updateMany({ data: { active: false } });
+    await prisma.pancakePage.updateMany({ data: { active: false } });
+    const config = await prisma.pancakeConfig.create({
+      data: { label: `Chưa kích hoạt ${uid()}`, accessTokenEnc: encryptNullable("ut")!, branchId: ctx.branchId, active: true }
+    });
+    const idTat = `ttm_-${uid()}`;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        if (String(url).includes("/api/v1/pages")) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              categorized: {
+                activated: [{ id: `fb${uid()}`, name: "Trang chạy", platform: "facebook", settings: { page_access_token: "pat" }, users: [] }],
+                // Kênh TikTok chưa kích hoạt: KHÔNG có page_access_token.
+                inactivated: [{ id: idTat, name: "Vân Trần Douyin", platform: "tiktok_business_messaging", is_activated: false }]
+              }
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        return new Response(JSON.stringify({ conversations: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      })
+    );
+
+    const r = await discoverPagesAndAgents(config.id);
+    // Chỉ trang kích hoạt được nhận: trang chưa kích hoạt không có token nên
+    // nhận vào chỉ là một dòng chết, không kéo được gì.
+    expect(r.created).toBe(1);
+    expect(await prisma.pancakePage.findUnique({ where: { pageId: idTat } })).toBeNull();
+    // Nhưng PHẢI kể tên, nếu không người dùng lại tưởng CRM bỏ sót kênh.
+    expect(r.inactive.map((p) => p.name)).toContain("Vân Trần Douyin");
+    expect(r.inactive.find((p) => p.name === "Vân Trần Douyin")?.platform).toBe("TIKTOK");
   });
 
   it("dò trang lỗi KHÔNG chặn việc kéo tin của các trang đã có", async () => {

@@ -5,6 +5,7 @@ import { startOfVnDay, vnDayKey, BUSINESS_TZ } from "../lib/datetime";
 import { MessageDirection, UserStatus } from "../types/enums";
 import { encryptNullable } from "../lib/crypto";
 import {
+  fetchAllPageBuckets,
   fetchPages,
   fetchUserStatistics,
   normalizePlatform,
@@ -335,6 +336,16 @@ export interface DiscoverResult {
   tokens: number;
   agents: number;
   errors: string[];
+  /**
+   * Kênh Pancake biết nhưng CHƯA KÍCH HOẠT, nên CRM không kéo được gì.
+   *
+   * Pancake chia trang thành `activated` và `inactivated`; nhóm sau không có
+   * page_access_token và API thống kê trả rỗng, nên có nhận vào CRM cũng chỉ
+   * là một dòng chết. Nhưng PHẢI nói ra: đã mất một lượt hỏi đi hỏi lại vì
+   * "tôi nối 5 kênh mà CRM chỉ thấy 4" — kênh thứ năm là một tài khoản TikTok
+   * ở trạng thái chưa kích hoạt. Kích hoạt bên Pancake thì lượt kéo sau tự nhận.
+   */
+  inactive: Array<{ pageId: string; name: string; platform: string }>;
 }
 
 /**
@@ -350,9 +361,11 @@ export interface DiscoverResult {
  */
 export async function discoverPagesAndAgents(configId: string): Promise<DiscoverResult> {
   const token = await resolveToken(configId);
-  if (!token) return { found: 0, created: 0, tokens: 0, agents: 0, errors: ["Kết nối chưa có API token hoặc đã tắt"] };
+  if (!token) {
+    return { found: 0, created: 0, tokens: 0, agents: 0, errors: ["Kết nối chưa có API token hoặc đã tắt"], inactive: [] };
+  }
 
-  const pages = await fetchPages(token);
+  const { activated: pages, inactive } = await fetchAllPageBuckets(token);
   let created = 0;
   let tokens = 0;
 
@@ -395,6 +408,7 @@ export async function discoverPagesAndAgents(configId: string): Promise<Discover
     tokens,
     agents,
     errors: people.length ? [] : ["Pancake không trả nhân viên nào cho các trang đã đăng ký"],
+    inactive,
   };
 }
 

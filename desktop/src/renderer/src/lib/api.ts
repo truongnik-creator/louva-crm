@@ -1358,9 +1358,14 @@ export async function savePancakeConfig(payload: {
   return data
 }
 
-export async function discoverPancakePages(
-  configId: string
-): Promise<{ found: number; created: number; tokens?: number; agents?: number }> {
+export async function discoverPancakePages(configId: string): Promise<{
+  found: number
+  created: number
+  tokens?: number
+  agents?: number
+  /** Kênh Pancake biết nhưng chưa kích hoạt — CRM không kéo được gì. */
+  inactive?: Array<{ pageId: string; name: string; platform: string }>
+}> {
   const { data } = await api.post(`/pancake/${configId}/discover-pages`)
   return data
 }

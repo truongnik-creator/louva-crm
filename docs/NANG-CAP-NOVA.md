@@ -342,6 +342,14 @@ ngay trong cùng lượt đó. Trước đây phải có người vào bấm "D�
 nghĩ ra là phải bấm — đã có một trang TikTok nối thêm mà CRM im lặng không biết.
 Dò trang lỗi không chặn việc kéo tin của các trang đã có.
 
+**Kênh chưa kích hoạt:** Pancake chia trang thành `activated` và `inactivated`.
+Nhóm sau KHÔNG có `page_access_token` và API thống kê trả rỗng, nên nhận vào CRM
+chỉ là một dòng chết — tự-nhận-kênh cố tình bỏ qua. Nhưng `discoverPagesAndAgents`
+trả về danh sách đó (`inactive`) và màn Kết nối hiện thành cảnh báo, vì nếu im
+lặng thì người dùng tưởng CRM bỏ sót kênh. Chuyện đã xảy ra thật: một tài khoản
+TikTok ("Vân Trần Douyin") lúc 15h còn ở `activated` kèm token, hai tiếng sau đã
+rơi xuống `inactivated` — nên CRM đúng là không nhận, mà không ai hiểu vì sao.
+
 **Nói rõ trang nào đang ngủ:** bảng "Theo trang" chỉ liệt kê trang CÓ số liệu
 trong kỳ, nên người xem thấy thiếu trang mà không biết vì sao — trang ngủ hay
 kéo số bị lỗi? Nay báo cáo trả thêm `idlePages` (tên trang + mốc tin cuối + số

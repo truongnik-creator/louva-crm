@@ -56,6 +56,8 @@ function PancakePanel(): React.JSX.Element {
   const [editing, setEditing] = useState<PancakeConfigRow | 'new' | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  /** Kênh Pancake biết nhưng chưa kích hoạt (chỉ biết sau khi bấm Dò trang). */
+  const [inactive, setInactive] = useState<Array<{ pageId: string; name: string; platform: string }>>([])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -86,6 +88,7 @@ function PancakePanel(): React.JSX.Element {
           (r.agents ? `, ${r.agents} nhân viên` : '') +
           '.'
       )
+      setInactive(r.inactive ?? [])
       void load()
     } catch (err) {
       fail(getApiErrorMessage(err))
@@ -144,6 +147,20 @@ function PancakePanel(): React.JSX.Element {
         biến PANCAKE_WEBHOOK_SECRET trên máy chủ). Nút Đồng bộ chỉ là dự phòng khi webhook rớt, chạy nền. Trả lời hội thoại
         nguồn Pancake luôn gửi qua Pancake.
       </div>
+
+      {inactive.length ? (
+        <div className="alert wr">
+          <b>{inactive.length} kênh bên Pancake CHƯA KÍCH HOẠT</b> nên CRM không kéo được tin hay số liệu của chúng
+          (Pancake không cấp token cho kênh chưa kích hoạt). Kích hoạt bên Pancake thì lượt kéo sau CRM tự nhận:
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+            {inactive.map((p) => (
+              <li key={p.pageId}>
+                {p.name} <span className="muted">({p.platform})</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="row" style={{ marginBottom: 12 }}>
         <span className="muted" style={{ fontSize: 12.5 }}>

@@ -464,15 +464,39 @@ export async function generatePageAccessToken(userToken: string, pageId: string)
 
 // --------------------------------------------------------------------- TRANG
 
+interface PagesResponse {
+  categorized?: { activated?: PancakePageRaw[]; inactivated?: PancakePageRaw[] };
+  categorized_pages?: { activated?: PancakePageRaw[]; inactivated?: PancakePageRaw[] };
+  pages?: PancakePageRaw[];
+}
+
 export async function fetchPages(token: string): Promise<PancakePageRaw[]> {
-  const data = await callUserApi<{
-    categorized?: { activated?: PancakePageRaw[] };
-    categorized_pages?: { activated?: PancakePageRaw[] };
-    pages?: PancakePageRaw[];
-  }>(token, "/pages");
+  return (await fetchAllPageBuckets(token)).activated;
+}
+
+/**
+ * Cả hai nhóm trang mà Pancake trả về.
+ *
+ * `activated` là trang dùng được: có page_access_token, API thống kê có số.
+ * `inactivated` là trang Pancake biết nhưng chưa kích hoạt — KHÔNG có token nên
+ * CRM không kéo được gì, song vẫn cần kể tên để người dùng hiểu vì sao kênh
+ * mình vừa nối chưa thấy trong CRM.
+ */
+export async function fetchAllPageBuckets(token: string): Promise<{
+  activated: PancakePageRaw[];
+  inactive: Array<{ pageId: string; name: string; platform: string }>;
+}> {
+  const data = await callUserApi<PagesResponse>(token, "/pages");
   // API thật dùng `categorized`; `categorized_pages` giữ lại cho bản cũ.
   const bucket = data.categorized ?? data.categorized_pages;
-  return bucket?.activated ?? data.pages ?? [];
+  return {
+    activated: bucket?.activated ?? data.pages ?? [],
+    inactive: (bucket?.inactivated ?? []).map((p) => ({
+      pageId: String(p.id),
+      name: p.name || "(không tên)",
+      platform: normalizePlatform(p.platform),
+    })),
+  };
 }
 
 // ----------------------------------------------------------------- HỘI THOẠI
