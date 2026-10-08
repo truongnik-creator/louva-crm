@@ -136,7 +136,7 @@ Khai kết nối ở Cài đặt. Trả lời hội thoại nguồn Pancake đi 
 **Hai loại token** (theo tài liệu chính thức developer.pancake.biz):
 
 - `access_token` của NGƯỜI DÙNG — nhập ở ô "API token Pancake" của kết nối. Chỉ dùng cho `https://pages.fm/api/v1`: liệt kê trang và sinh token trang.
-- `page_access_token` của TỪNG TRANG — mọi API cấp trang (hội thoại, tin nhắn, thống kê, nhân viên) chỉ nhận token này. Để trống thì hệ thống tự sinh một lần rồi lưu mã hoá; muốn dùng token dán tay thì bấm "Dán token" ở bảng trang (lấy trong Pancake: Cài đặt trang › Công cụ).
+- `page_access_token` của TỪNG TRANG — mọi API cấp trang (hội thoại, tin nhắn, thống kê, nhân viên) chỉ nhận token này. **Bấm "Dò trang" là lấy xong**: phản hồi `GET /pages` mang sẵn token của từng trang. Muốn dán tay thì bấm "Dán token" ở bảng trang (Pancake: Cài đặt trang › Công cụ).
 
 Cả hai token đi bằng tham số URL, **không** có header `Authorization`.
 
@@ -147,7 +147,9 @@ Cả hai token đi bằng tham số URL, **không** có header `Authorization`.
 
 **Báo cáo hiệu suất nhân viên (F35)**: Đo lường › *Hiệu suất Pancake* — số tin một nhân viên xử lý, tốc độ phản hồi trung bình, số tin theo nền tảng và theo trang, theo ngày và theo giờ. Số do chính Pancake đo (`GET /pages/{page_id}/statistics/users`), nên tính cả tin nhân viên trả lời ngay trong app Pancake. Gắn nhân viên Pancake với tài khoản CRM ở Kết nối › *Nhân viên Pancake*.
 
-> **TODO-VERIFY**: đường dẫn API, hai loại token và cách đọc mốc thời gian đã đối chiếu bản OpenAPI chính thức, nhưng **chưa thử với tài khoản Pancake thật**. Còn phải xác minh: định dạng chữ ký webhook, trường nguồn quảng cáo, tải ảnh đính kèm (các chỗ `TODO-VERIFY` còn lại trong `backend/src/routes/pancake.ts`), và API thống kê có trong gói thuê bao của phòng khám.
+**Đã kiểm chứng với tài khoản thật** (08/10/2026): liệt kê trang, token trang, thống kê nhân viên, hội thoại, tin nhắn. Phát hiện **sáu chỗ tài liệu Pancake nói khác API thật** — mã nguồn đi theo API thật, chi tiết và căn cứ ở `docs/NANG-CAP-NOVA.md` mục F35.
+
+> **Còn phải thử với tài khoản thật**: định dạng chữ ký webhook (`TODO-VERIFY` trong `backend/src/routes/pancake.ts`) và tải ảnh đính kèm về kho mã hoá.
 
 ---
 

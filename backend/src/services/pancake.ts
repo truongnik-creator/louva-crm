@@ -96,6 +96,9 @@ export interface PancakeConversationRaw {
   type?: string;
   customer_name?: string;
   customer_phone?: string;
+  /** API thật: SĐT bắt được từ nội dung chat nằm ở đây, không ở customer_phone. */
+  recent_phone_numbers?: Array<{ phone_number?: string; captured?: string }>;
+  ad_ids?: Array<string | number>;
   snippet?: string;
   unread_count?: number;
   /** v2 dùng `seen`; chưa xem thì coi như 1 tin chưa đọc. */
@@ -119,10 +122,20 @@ export interface AdSource {
   adCampaign: string | null;
 }
 
+/** SĐT khách của một hội thoại. API thật để ở recent_phone_numbers. */
+export function conversationPhone(c: PancakeConversationRaw): string | null {
+  if (c.customer_phone?.trim()) return c.customer_phone.trim();
+  for (const p of c.recent_phone_numbers ?? []) {
+    const v = (p.phone_number ?? p.captured)?.trim();
+    if (v) return v;
+  }
+  return null;
+}
+
 /** Bóc nguồn quảng cáo (nếu có) từ bản ghi hội thoại Pancake. */
 export function extractAdSource(c: PancakeConversationRaw): AdSource {
   const ad = Array.isArray(c.ads) ? c.ads[0] : undefined;
-  const adId = c.ad_id ?? ad?.ad_id;
+  const adId = c.ad_id ?? ad?.ad_id ?? (Array.isArray(c.ad_ids) ? c.ad_ids[0] : undefined);
   const post = c.post_id ?? ad?.post_id;
   const campaign = c.campaign_name ?? ad?.campaign_name ?? (ad?.campaign_id != null ? String(ad.campaign_id) : undefined);
   return {
@@ -198,6 +211,58 @@ export function parsePancakeTime(raw: string | number | null | undefined, fallba
   return Number.isNaN(d.getTime()) ? fallback : d;
 }
 
+/**
+ * Mốc giờ của API THỐNG KÊ.
+ *
+ * Trái tài liệu: `hour` là giờ ĐỊA PHƯƠNG của trang (UTC+7 với trang Việt Nam),
+ * còn `hour_in_integer` ("20261007010000") mới là UTC. Kiểm trên dữ liệu thật:
+ * 206/206 ô lệch đúng 7 giờ. Nên ưu tiên `hour_in_integer`; chỉ khi thiếu mới
+ * đọc `hour` và trừ lệch giờ của trang.
+ */
+export function parseStatHour(
+  bucket: { hour?: string; hour_in_integer?: string },
+  pageTimezoneHours = 7
+): Date | null {
+  const hi = bucket.hour_in_integer;
+  if (hi && /^\d{14}$/.test(hi)) {
+    const iso = `${hi.slice(0, 4)}-${hi.slice(4, 6)}-${hi.slice(6, 8)}T${hi.slice(8, 10)}:${hi.slice(10, 12)}:${hi.slice(12, 14)}Z`;
+    const d = new Date(iso);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  if (!bucket.hour) return null;
+  // Giờ địa phương của trang -> UTC. Trang Việt Nam không có giờ mùa hè nên trừ
+  // một lệch cố định là đủ.
+  const local = new Date(`${bucket.hour.replace(" ", "T")}Z`);
+  if (Number.isNaN(local.getTime())) return null;
+  return new Date(local.getTime() - pageTimezoneHours * 3_600_000);
+}
+
+/**
+ * Nội dung tin để lưu vào CRM.
+ *
+ * `message` là HTML do Pancake dựng ("<div>Dạ em chào chị\r<br key='n_0' />…"),
+ * `original_message` là văn bản gốc sạch. Ưu tiên bản sạch; chỉ khi thiếu mới
+ * bóc thẻ khỏi HTML — để CRM không hiện "<div>" cho người dùng.
+ */
+export function messageText(m: PancakeMessageRaw): string | null {
+  const raw = m.original_message?.trim();
+  if (raw) return raw;
+  if (!m.message) return null;
+  const text = m.message
+    .replace(/<br\b[^>]*\/?>/gi, "\n")
+    .replace(/<\/(p|div)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return text || null;
+}
+
 /** Nền tảng Pancake trả về không thống nhất hoa/thường — chuẩn hoá một chỗ. */
 export function normalizePlatform(raw: string | undefined): string {
   const v = (raw ?? "").toLowerCase();
@@ -255,12 +320,17 @@ export interface PageTokenRef {
 }
 
 /**
- * Token của một trang. Lấy từ CSDL; chưa có thì sinh bằng token người dùng
- * (POST /pages/{page_id}/generate_page_access_token) rồi lưu mã hoá để lần sau
- * không gọi lại — token trang không hết hạn.
+ * Token của một trang, theo thứ tự ưu tiên:
  *
- * LƯU Ý: sinh lại token sẽ VÔ HIỆU token cũ bên Pancake, nên chỉ sinh khi thực
- * sự chưa có; quản trị muốn dùng token dán tay thì nhập ở màn Kết nối.
+ *   1. Token đã lưu trong CSDL — bình thường "Dò trang" đã lấy sẵn từ
+ *      `settings.page_access_token` của GET /pages, hoặc quản trị dán tay.
+ *   2. CỬA CUỐI: sinh mới bằng token người dùng
+ *      (POST /pages/{page_id}/generate_page_access_token).
+ *
+ * Vì sao bước 2 là cửa cuối chứ không phải đường chính: sinh token mới sẽ VÔ
+ * HIỆU token cũ bên Pancake. Nếu phòng khám đang dùng token đó cho một tích hợp
+ * khác (chatbot, phần mềm bán hàng) thì tích hợp đó đứt mà không ai biết vì sao.
+ * Đường chính là đọc token có sẵn ở bước 1.
  */
 export async function resolvePageToken(page: PageTokenRef): Promise<string | null> {
   const saved = decryptNullable(page.pageAccessTokenEnc);
@@ -347,8 +417,12 @@ export async function fetchMessages(
     pageToken,
     `/pages/${encodeURIComponent(pageId)}/conversations/${encodeURIComponent(conversationId)}/messages`
   );
-  // Pancake trả MỚI TRƯỚC; CRM ghi theo thứ tự thời gian.
-  const messages = [...(data.messages ?? [])].reverse();
+  // Tài liệu nói "mới trước", API thật trả "cũ trước" (12/12 hội thoại kiểm
+  // thật). Thay vì tin vào thứ tự, XẾP LẠI theo inserted_at — đúng với cả hai
+  // và không vỡ nếu Pancake đổi lần nữa.
+  const messages = [...(data.messages ?? [])].sort(
+    (a, b) => parsePancakeTime(a.inserted_at, new Date(0)).getTime() - parsePancakeTime(b.inserted_at, new Date(0)).getTime()
+  );
   return {
     messages,
     ...(data.conv_from?.id ? { convFromId: String(data.conv_from.id) } : {}),
@@ -430,40 +504,30 @@ export async function sendPancakeReply(
 
 // ---------------------------------------------- NHÂN VIÊN & THỐNG KÊ (F35)
 
-export interface PancakeUserRaw {
-  id: string;
-  name?: string;
-  fb_id?: string;
-  status?: string;
-  status_in_page?: string;
-  is_online?: boolean;
-}
-
-export interface PancakePageUsers {
-  users: PancakeUserRaw[];
-  disabledUsers: PancakeUserRaw[];
-}
-
-/** Danh sách nhân viên của một trang (GET /pages/{page_id}/users). */
-export async function fetchPageUsers(pageToken: string, pageId: string): Promise<PancakePageUsers> {
-  const data = await callPageApi<{ users?: PancakeUserRaw[]; disabled_users?: PancakeUserRaw[] }>(
-    PAGE_BASE_V1,
-    pageToken,
-    `/pages/${encodeURIComponent(pageId)}/users`
-  );
-  return { users: data.users ?? [], disabledUsers: data.disabled_users ?? [] };
-}
+/* Nhân viên của trang KHÔNG lấy qua /pages/{page_id}/users nữa: phản hồi
+ * GET /pages đã mang sẵn `users[]` (user_id, tên, fb_id, trạng thái) cho mọi
+ * trang trong một lượt gọi bằng token người dùng — ít lượt hơn, không cần token
+ * trang. Xem PancakePageUserRaw ở trên và discoverAgents trong pancake-stats.ts.
+ */
 
 /** Một ô số liệu Pancake trả về cho một nhân viên trong một mốc giờ. */
 export interface PancakeUserStatBucket {
+  /** Giờ ĐỊA PHƯƠNG của trang (xem parseStatHour). */
   hour?: string;
+  /** Cùng mốc đó theo UTC, "20261007010000" — đây mới là mốc đáng tin. */
+  hour_in_integer?: string;
+  page_id?: string;
   inbox_count?: number;
   comment_count?: number;
   unique_inbox_count?: number;
   unique_comment_count?: number;
   private_reply_count?: number;
   phone_number_count?: number;
-  /** Miligiây. */
+  order_count?: number;
+  /**
+   * GIÂY (tài liệu ghi miligiây là SAI — xem khối chú thích đầu tệp).
+   * 0 nghĩa là Pancake không đo được giờ đó, không phải trả lời tức thì.
+   */
   average_response_time?: number;
 }
 
@@ -479,7 +543,7 @@ export interface PancakeUserStats {
  *
  * `dateRange` theo đúng định dạng Pancake đòi: "DD/MM/YYYY HH:MM:SS -
  * DD/MM/YYYY HH:MM:SS", tính theo GIỜ ĐỊA PHƯƠNG CỦA TRANG (trang VN = UTC+7).
- * Mốc `hour` trong phản hồi lại là UTC+0.
+ * Mốc giờ trong phản hồi: đọc bằng parseStatHour, đừng tự parse.
  */
 export async function fetchUserStatistics(
   pageToken: string,

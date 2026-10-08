@@ -37,7 +37,7 @@ CREATE TABLE "pancake_agent_stats" (
     "uniqueCommentCount" INTEGER NOT NULL DEFAULT 0,
     "privateReplyCount" INTEGER NOT NULL DEFAULT 0,
     "phoneNumberCount" INTEGER NOT NULL DEFAULT 0,
-    "avgResponseMs" INTEGER NOT NULL DEFAULT 0,
+    "avgResponseSeconds" INTEGER NOT NULL DEFAULT 0,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "pancake_agent_stats_pageId_fkey" FOREIGN KEY ("pageId") REFERENCES "pancake_pages" ("id") ON DELETE CASCADE ON UPDATE CASCADE

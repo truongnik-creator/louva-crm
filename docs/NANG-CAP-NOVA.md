@@ -304,7 +304,7 @@ gửi — cột "số tin một nhân viên xử lý" trống.
 | Hạng mục | Nguồn |
 | --- | --- |
 | Số tin một nhân viên xử lý | `inbox_count` + `comment_count` của `GET /pages/{page_id}/statistics/users` |
-| Tốc độ phản hồi trung bình | `average_response_time` (miligiây) của cùng API |
+| Tốc độ phản hồi trung bình | `average_response_time` (**giây**) của cùng API |
 | Số tin theo nền tảng, kênh | gom theo `platform` và theo trang của `PancakePage` |
 
 **Hai tác vụ nền, mỗi 10 phút** (`backend/src/lib/pancake-jobs.ts`):
@@ -319,8 +319,9 @@ gửi — cột "số tin một nhân viên xử lý" trống.
 - Trung bình phản hồi của cả kỳ tính CÓ TRỌNG SỐ theo số tin trong từng ô giờ.
 - Ô Pancake trả `average_response_time = 0` coi là KHÔNG ĐO ĐƯỢC (hiện "—"),
   không phải trả lời tức thì; nhưng số tin của ô đó vẫn được cộng.
-- Mốc `hour` Pancake trả về là UTC+0; tham số `date_range` lại theo giờ Việt
-  Nam. Hai thứ không được trộn (xem `parsePancakeTime`, `pancakeDateRange`).
+- Tham số `date_range` GỬI ĐI theo giờ Việt Nam; mốc giờ NHẬN VỀ đọc từ
+  `hour_in_integer` (UTC), không đọc `hour` (giờ địa phương của trang). Hai thứ
+  không được trộn (xem `parseStatHour`, `pancakeDateRange`).
 
 **Gắn nhân viên:** bảng `pancake_agents` nối user Pancake với tài khoản CRM. Dò
 tự động ở Kết nối › Nhân viên Pancake, tự gắn khi tên khớp duy nhất (bỏ dấu);
@@ -329,23 +330,45 @@ trùng tên hai người thì để quản trị chọn tay. Tin gửi từ CRM 
 
 **Xem ở:** Đo lường › Hiệu suất Pancake (`GET /api/reports/pancake-agents`).
 
-### Sửa theo tài liệu API chính thức (developer.pancake.biz)
-
-Đối chiếu bản OpenAPI thật, ba điểm cũ sai đã được sửa:
+### Đối chiếu API thật — ba điểm tài liệu nói đúng
 
 1. **Token đi bằng tham số URL, không có header `Authorization`.** Mặc định
    `PANCAKE_TOKEN_MODE` đổi thành `query`.
 2. **Hai loại token, hai nhóm địa chỉ.** `access_token` của người dùng chỉ dùng
-   cho `https://pages.fm/api/v1` (liệt kê trang, sinh token trang); mọi API cấp
-   trang nằm ở `https://pages.fm/api/public_api/v1` và `/v2` và chỉ nhận
-   `page_access_token`. Trang chưa có token thì hệ thống tự sinh một lần
-   (`generate_page_access_token`) rồi lưu mã hoá.
-3. **Mốc thời gian là UTC không kèm hậu tố múi giờ.** `new Date(chuỗi)` hiểu là
-   giờ máy nên lệch 7 tiếng khi máy chủ đặt giờ Việt Nam; đã gom về
-   `parsePancakeTime`.
+   cho `https://pages.fm/api/v1`; mọi API cấp trang nằm ở
+   `https://pages.fm/api/public_api/v1` và `/v2`, chỉ nhận `page_access_token`.
+3. **Giới hạn 5 lượt gọi/trang/giây** (`PANCAKE_PACE_MS`), và phản hồi gửi tin
+   có thể trả HTTP 200 kèm `success: false`.
 
-Ngoài ra: giới hạn 5 lượt gọi/trang/giây (có nghỉ giữa các lượt, `PANCAKE_PACE_MS`),
-và phản hồi gửi tin có thể trả HTTP 200 kèm `success: false`.
+### Sáu điểm TÀI LIỆU NÓI SAI — mã nguồn đi theo API thật
+
+Đã gọi thật vào tài khoản phòng khám ngày 08/10/2026 (4 trang Facebook, 206 ô số
+liệu, 12 hội thoại). Sáu chỗ lệch, mỗi chỗ đều đủ để tính năng sai lặng lẽ:
+
+| # | Tài liệu nói | API thật | Nếu tin tài liệu |
+| --- | --- | --- | --- |
+| 1 | `GET /pages` trả `categorized_pages` | trả `categorized` | Dò ra **0 trang**, cả tính năng chết lặng |
+| 2 | Phải gọi `generate_page_access_token` | token nằm sẵn ở `settings.page_access_token` | Sinh token mới sẽ **vô hiệu token cũ**, làm đứt tích hợp khác của phòng khám |
+| 3 | `average_response_time` là miligiây | là **giây** | Báo "TB phản hồi 0,44 giây" thay vì 7,3 phút |
+| 4 | `hour` là UTC+0 | `hour` là giờ trang (UTC+7), `hour_in_integer` mới là UTC | Mọi mốc **lệch 7 tiếng**, số nhảy sang ngày khác |
+| 5 | `GET messages` trả mới trước | trả **cũ trước** (12/12 hội thoại) | Đảo ngược thứ tự tin, xem trước và mốc khách chờ sai |
+| 6 | `message` là nội dung tin | là **HTML**; `original_message` mới là văn bản sạch | Khách thấy `<div>…<br key='n_0' />` |
+
+Căn cứ của điểm 3 và 4 (chốt bằng số, không phải phỏng đoán):
+
+- `average_response_time` trên dữ liệu thật có trung vị **437**. Đọc là giây ra
+  7,3 phút (hợp lý với người tư vấn); đọc là miligiây ra 0,44 giây (không người
+  nào trả lời được).
+- `hour` trừ `hour_in_integer` bằng **đúng 7 giờ ở cả 206/206 ô** — tức `hour`
+  là giờ địa phương UTC+7, không phải UTC.
+
+Các khẳng định này được chốt bằng test (`tests/pancake-hieu-suat.test.ts`, khối
+"đọc đúng hình dạng API THẬT") với dữ liệu mẫu copy nguyên dạng từ tài khoản
+thật — ai "sửa cho giống tài liệu" thì test đổ ngay.
+
+Nhờ điểm 1 và 2, một lượt "Dò trang" lấy được cả ba thứ: danh sách trang, token
+riêng từng trang, và danh sách nhân viên — không cần gọi thêm, không cần sinh
+token mới.
 
 ## Tham số mặc định chủ phòng khám phải xác nhận
 

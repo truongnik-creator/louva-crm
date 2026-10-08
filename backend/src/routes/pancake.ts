@@ -12,12 +12,13 @@ import { writeAudit } from "../lib/audit";
 import {
   fetchPages,
   normalizePlatform,
+  pageTokenOf,
   resolveToken,
   type PancakeConversationRaw,
   type PancakeMessageRaw,
 } from "../services/pancake";
 import { ingestPancakeConversation, isSyncRunning, syncPancakeConfig } from "../services/pancake-sync";
-import { discoverAgents, isStatsSyncRunning, syncConfigStats } from "../services/pancake-stats";
+import { discoverAgents, isStatsSyncRunning, syncConfigStats, upsertAgents } from "../services/pancake-stats";
 import { AuditAction } from "../types/enums";
 
 // Cấu hình và đồng bộ Pancake.
@@ -188,7 +189,16 @@ router.put(
   })
 );
 
-/** POST /api/pancake/:id/discover-pages — hỏi Pancake xem tài khoản có trang nào. */
+/**
+ * POST /api/pancake/:id/discover-pages — hỏi Pancake xem tài khoản có trang nào.
+ *
+ * Một lượt gọi này lấy được ba thứ, nên làm luôn cả ba:
+ *   · danh sách trang (id, tên, nền tảng),
+ *   · TOKEN RIÊNG của từng trang (`settings.page_access_token`) — nhờ vậy không
+ *     phải gọi generate_page_access_token, lệnh đó sẽ VÔ HIỆU token cũ và có
+ *     thể làm sập tích hợp khác mà phòng khám đang dùng,
+ *   · danh sách NHÂN VIÊN của từng trang (F35).
+ */
 router.post(
   "/:id/discover-pages",
   requirePermission("settings.update"),
@@ -198,32 +208,68 @@ router.post(
 
     const pages = await fetchPages(token);
     let created = 0;
+    let tokens = 0;
 
     for (const p of pages) {
       const platform = normalizePlatform(p.platform);
+      const pageToken = pageTokenOf(p);
       const existing = await prisma.pancakePage.findUnique({ where: { pageId: String(p.id) } });
       if (existing) {
         await prisma.pancakePage.update({
           where: { id: existing.id },
-          data: { name: p.name, platform },
+          data: {
+            name: p.name,
+            platform,
+            // Token dán tay hay đã lưu thì giữ; chỉ ghi khi đang trống.
+            ...(pageToken && !existing.pageAccessTokenEnc
+              ? { pageAccessTokenEnc: encryptNullable(pageToken) }
+              : {}),
+          },
         });
+        if (pageToken && !existing.pageAccessTokenEnc) tokens++;
         continue;
       }
       await prisma.pancakePage.create({
-        data: { configId: req.params.id, pageId: String(p.id), name: p.name, platform },
+        data: {
+          configId: req.params.id,
+          pageId: String(p.id),
+          name: p.name,
+          platform,
+          pageAccessTokenEnc: pageToken ? encryptNullable(pageToken) : null,
+        },
       });
       created++;
+      if (pageToken) tokens++;
     }
+
+    // F35: nhân viên đi kèm ngay trong phản hồi, lấy luôn cho khỏi phải bấm thêm.
+    const mine = new Set((await prisma.pancakePage.findMany({ where: { configId: req.params.id }, select: { pageId: true } })).map((x) => x.pageId));
+    const people = new Map<string, { pancakeUserId: string; name: string; fbId?: string | null; active: boolean }>();
+    for (const p of pages) {
+      if (!mine.has(String(p.id))) continue;
+      for (const u of p.users ?? []) {
+        if (!u?.user_id) continue;
+        const active = (u.status ?? "active").toLowerCase() === "active";
+        const prev = people.get(String(u.user_id));
+        people.set(String(u.user_id), {
+          pancakeUserId: String(u.user_id),
+          name: u.name?.trim() || prev?.name || "",
+          fbId: u.fb_id ?? prev?.fbId ?? null,
+          active: active || Boolean(prev?.active),
+        });
+      }
+    }
+    const agents = await upsertAgents(req.params.id, [...people.values()]).catch(() => 0);
 
     await writeAudit({
       req,
       action: AuditAction.UPDATE,
       entity: "PancakeConfig",
       entityId: req.params.id,
-      summary: `Dò trang Pancake: tìm thấy ${pages.length}, thêm mới ${created}`,
+      summary: `Dò trang Pancake: tìm thấy ${pages.length}, thêm mới ${created}, lưu ${tokens} token trang, ${agents} nhân viên`,
     });
 
-    res.json({ found: pages.length, created });
+    res.json({ found: pages.length, created, tokens, agents });
   })
 );
 

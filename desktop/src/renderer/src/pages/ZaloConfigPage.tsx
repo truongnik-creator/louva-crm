@@ -78,7 +78,14 @@ function PancakePanel(): React.JSX.Element {
     setBusy(id)
     try {
       const r = await discoverPancakePages(id)
-      say(`Tìm thấy ${r.found} trang, thêm mới ${r.created}.`)
+      // Một lượt "Dò trang" lấy luôn token riêng của trang và danh sách nhân
+      // viên — phản hồi GET /pages của Pancake mang sẵn cả ba.
+      say(
+        `Tìm thấy ${r.found} trang, thêm mới ${r.created}` +
+          (r.tokens ? `, lưu ${r.tokens} token trang` : '') +
+          (r.agents ? `, ${r.agents} nhân viên` : '') +
+          '.'
+      )
       void load()
     } catch (err) {
       fail(getApiErrorMessage(err))
@@ -160,7 +167,8 @@ function PancakePanel(): React.JSX.Element {
             Chưa kết nối Pancake.
             <br />
             <span className="muted">
-              Lấy API token trong Pancake: Cấu hình › Ứng dụng › API, rồi bấm “+ Kết nối Pancake”.
+              Lấy API token trong Pancake: Tài khoản › Cài đặt cá nhân › API Access Token, rồi bấm “+ Kết nối
+              Pancake”. Token riêng của từng trang hệ thống tự lấy khi “Dò trang”.
             </span>
           </Empty>
         </div>

@@ -6,10 +6,12 @@ import { applyStageEventSafe } from "../lib/stages";
 import { scheduleMediaIngest } from "../lib/chat-media";
 import { autoAssignConversation, noteMessageBatch } from "../lib/inbox-routing";
 import {
+  conversationPhone,
   extractAdSource,
   fetchConversations,
   fetchMessages,
   isFromCustomer,
+  messageText,
   parsePancakeTime,
   resolvePageToken,
   staffUidOf,
@@ -94,7 +96,7 @@ export async function ingestPancakeConversation(opts: {
   const ad = extractAdSource(c);
 
   // Tìm khách theo SĐT chuẩn hoá (T4/B17), bằng cột có index.
-  const phoneNormalized = normalizeVnPhone(c.customer_phone);
+  const phoneNormalized = normalizeVnPhone(conversationPhone(c));
   const customer = phoneNormalized
     ? await prisma.customer.findFirst({
         where: { phoneNormalized, mergedIntoId: null },
@@ -105,7 +107,13 @@ export async function ingestPancakeConversation(opts: {
 
   const lastAt = parsePancakeTime(c.updated_at);
   const lastIn = [...opts.messages].reverse().find(fromCustomer);
-  const preview = (c.snippet ?? lastIn?.message ?? opts.messages[opts.messages.length - 1]?.message)?.slice(0, 160);
+  const lastAny = opts.messages[opts.messages.length - 1];
+  const preview = (
+    c.snippet ??
+    (lastIn ? messageText(lastIn) : null) ??
+    (lastAny ? messageText(lastAny) : null) ??
+    undefined
+  )?.slice(0, 160);
   const existing = await prisma.conversation.findUnique({ where: { pancakeConversationId: String(c.id) } });
 
   const conv = existing
@@ -157,7 +165,7 @@ export async function ingestPancakeConversation(opts: {
           externalId,
           campaignId: campaign?.id ?? null,
           name: title,
-          phone: c.customer_phone ?? null,
+          phone: conversationPhone(c),
           branchId: page.branchId ?? opts.configBranchId,
           channelId: page.channelId,
           stage: LeadStage.NEW,
@@ -197,7 +205,7 @@ export async function ingestPancakeConversation(opts: {
           externalId: String(m.id),
           direction: mine ? MessageDirection.OUT : MessageDirection.IN,
           type: files.some(isImage) ? MessageType.IMAGE : files.length ? MessageType.FILE : MessageType.TEXT,
-          content: m.message ?? m.original_message ?? (files.length ? "[Tệp đính kèm]" : "[Nội dung không đọc được]"),
+          content: messageText(m) ?? (files.length ? "[Tệp đính kèm]" : "[Nội dung không đọc được]"),
           // F35: tin nhân viên gửi bên Pancake quy về tài khoản CRM đã gắn.
           senderUserId: mine && uid ? (agents.get(uid) ?? null) : null,
           senderName: m.sender_name ?? m.from?.admin_name ?? m.from?.name ?? (mine ? null : title),

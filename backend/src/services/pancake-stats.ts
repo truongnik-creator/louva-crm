@@ -4,10 +4,11 @@ import { normalizeName } from "../lib/text";
 import { startOfVnDay, vnDayKey, BUSINESS_TZ } from "../lib/datetime";
 import { UserStatus } from "../types/enums";
 import {
-  fetchPageUsers,
+  fetchPages,
   fetchUserStatistics,
-  parsePancakeTime,
+  parseStatHour,
   resolvePageToken,
+  resolveToken,
   type PancakeUserStatBucket,
 } from "./pancake";
 
@@ -25,8 +26,10 @@ import {
 //      chạy một lần thì cùng một giờ sẽ được kéo lại nhiều lần.
 //   2. CỬA SỔ KÉO phủ cả hôm qua: chạy lúc 00h05 mà chỉ kéo "hôm nay" thì
 //      những giờ cuối của hôm qua sẽ chốt bằng số dở dang.
-//   3. `date_range` tính theo GIỜ VIỆT NAM (giờ địa phương của trang), nhưng mốc
-//      `hour` Pancake trả về là UTC+0. Đừng trộn hai thứ.
+//   3. `date_range` GỬI ĐI tính theo giờ Việt Nam (giờ địa phương của trang).
+//      Mốc giờ NHẬN VỀ đọc bằng parseStatHour: Pancake trả `hour` theo giờ địa
+//      phương và `hour_in_integer` theo UTC. Đừng trộn hai thứ.
+//   4. `average_response_time` là GIÂY (tài liệu ghi miligiây là sai).
 
 /** Số ngày trước hôm nay cũng kéo lại để chốt số (mặc định 1 = gồm hôm qua). */
 const LOOKBACK_DAYS = Math.max(0, Number(process.env.PANCAKE_STATS_LOOKBACK_DAYS ?? 1));
@@ -78,7 +81,7 @@ interface StatFields {
   uniqueCommentCount: number;
   privateReplyCount: number;
   phoneNumberCount: number;
-  avgResponseMs: number;
+  avgResponseSeconds: number;
 }
 
 const num = (v: unknown): number => {
@@ -94,7 +97,8 @@ function fieldsOf(b: PancakeUserStatBucket): StatFields {
     uniqueCommentCount: num(b.unique_comment_count),
     privateReplyCount: num(b.private_reply_count),
     phoneNumberCount: num(b.phone_number_count),
-    avgResponseMs: num(b.average_response_time),
+    // Pancake trả GIÂY, không phải miligiây — xem chú thích services/pancake.ts.
+    avgResponseSeconds: num(b.average_response_time),
   };
 }
 
@@ -105,7 +109,7 @@ const isEmpty = (f: StatFields): boolean =>
   f.uniqueCommentCount === 0 &&
   f.privateReplyCount === 0 &&
   f.phoneNumberCount === 0 &&
-  f.avgResponseMs === 0;
+  f.avgResponseSeconds === 0;
 
 const same = (a: StatFields, b: StatFields): boolean =>
   a.inboxCount === b.inboxCount &&
@@ -114,7 +118,7 @@ const same = (a: StatFields, b: StatFields): boolean =>
   a.uniqueCommentCount === b.uniqueCommentCount &&
   a.privateReplyCount === b.privateReplyCount &&
   a.phoneNumberCount === b.phoneNumberCount &&
-  a.avgResponseMs === b.avgResponseMs;
+  a.avgResponseSeconds === b.avgResponseSeconds;
 
 export interface PageRef {
   id: string;
@@ -123,6 +127,9 @@ export interface PageRef {
   configId: string;
   pageAccessTokenEnc: string | null;
 }
+
+/** Lệch giờ của trang so với UTC. Trang Việt Nam là 7. */
+const PAGE_TZ_HOURS = 7;
 
 export interface StatsSyncResult {
   pages: number;
@@ -167,7 +174,7 @@ export async function syncPageAgentStats(
       uniqueCommentCount: true,
       privateReplyCount: true,
       phoneNumberCount: true,
-      avgResponseMs: true,
+      avgResponseSeconds: true,
     },
   });
   const keyOf = (uid: string, hour: Date): string => `${uid}|${hour.getTime()}`;
@@ -179,8 +186,8 @@ export async function syncPageAgentStats(
   for (const [uid, buckets] of Object.entries(stats.statistics)) {
     if (!Array.isArray(buckets)) continue;
     for (const b of buckets) {
-      if (!b?.hour) continue;
-      const hour = parsePancakeTime(b.hour);
+      const hour = parseStatHour(b, PAGE_TZ_HOURS);
+      if (!hour) continue;
       if (hour < windowFrom || hour >= windowTo) continue;
       const f = fieldsOf(b);
       const prev = known.get(keyOf(uid, hour));
@@ -263,33 +270,50 @@ export async function upsertAgents(
   return touched;
 }
 
-/** Dò nhân viên của mọi trang đang bật trong một kết nối. */
+/**
+ * Dò nhân viên của một kết nối.
+ *
+ * Lấy từ GET /pages (một lượt gọi, token người dùng) chứ không gọi
+ * /pages/{id}/users cho từng trang: phản hồi /pages đã mang sẵn `users[]` với
+ * user_id, tên, fb_id và trạng thái, nên ít lượt gọi hơn và không cần token
+ * trang. Trang nào CRM chưa đăng ký thì bỏ qua — không ôm nhân viên của trang
+ * phòng khám không dùng.
+ */
 export async function discoverAgents(configId: string): Promise<{ found: number; errors: string[] }> {
   const config = await prisma.pancakeConfig.findUniqueOrThrow({
     where: { id: configId },
-    include: { pages: { where: { active: true } } },
+    include: { pages: { select: { pageId: true } } },
   });
+  const token = await resolveToken(configId);
+  if (!token) return { found: 0, errors: ["Kết nối chưa có API token hoặc đã tắt"] };
 
-  const people = new Map<string, { pancakeUserId: string; name: string; fbId?: string | null; active: boolean }>();
+  const mine = new Set(config.pages.map((p) => p.pageId));
   const errors: string[] = [];
-  for (const page of config.pages) {
-    try {
-      await sleep(PACE_MS);
-      const token = await resolvePageToken(page);
-      if (!token) throw new Error("Chưa lấy được token trang");
-      const { users, disabledUsers } = await fetchPageUsers(token, page.pageId);
-      for (const u of users) {
-        if (!u?.id) continue;
-        people.set(String(u.id), { pancakeUserId: String(u.id), name: u.name ?? "", fbId: u.fb_id ?? null, active: true });
-      }
-      for (const u of disabledUsers) {
-        if (!u?.id || people.has(String(u.id))) continue;
-        people.set(String(u.id), { pancakeUserId: String(u.id), name: u.name ?? "", fbId: u.fb_id ?? null, active: false });
-      }
-    } catch (err) {
-      errors.push(`${page.name}: ${err instanceof Error ? err.message : String(err)}`);
+  const people = new Map<string, { pancakeUserId: string; name: string; fbId?: string | null; active: boolean }>();
+
+  let raw: Awaited<ReturnType<typeof fetchPages>>;
+  try {
+    raw = await fetchPages(token);
+  } catch (err) {
+    return { found: 0, errors: [err instanceof Error ? err.message : String(err)] };
+  }
+
+  for (const p of raw) {
+    if (!mine.has(String(p.id))) continue;
+    for (const u of p.users ?? []) {
+      if (!u?.user_id) continue;
+      const active = (u.status ?? "active").toLowerCase() === "active";
+      const prev = people.get(String(u.user_id));
+      // Một người có thể ở nhiều trang: còn hoạt động ở một trang là còn dùng.
+      people.set(String(u.user_id), {
+        pancakeUserId: String(u.user_id),
+        name: u.name?.trim() || prev?.name || "",
+        fbId: u.fb_id ?? prev?.fbId ?? null,
+        active: active || Boolean(prev?.active),
+      });
     }
   }
+  if (!people.size) errors.push("Pancake không trả nhân viên nào cho các trang đã đăng ký");
 
   const found = await upsertAgents(configId, [...people.values()]);
   return { found, errors };

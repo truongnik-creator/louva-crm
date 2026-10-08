@@ -15,7 +15,7 @@ import { nullableBranchWhere } from "./report-scope";
 //
 // MỘT QUY ƯỚC QUAN TRỌNG VỀ TỐC ĐỘ PHẢN HỒI:
 //
-// Pancake trả về trung bình theo từng ô giờ (miligiây), KHÔNG trả về tổng thời
+// Pancake trả về trung bình theo từng ô giờ (GIÂY), KHÔNG trả về tổng thời
 // gian. Nên trung bình của cả kỳ phải tính CÓ TRỌNG SỐ theo số tin trong ô đó —
 // cộng rồi chia đều số ô sẽ cho một giờ chỉ có 1 tin cùng sức nặng với giờ có
 // 200 tin. Ô nào Pancake trả 0 thì coi là KHÔNG ĐO ĐƯỢC (không phải trả lời tức
@@ -103,7 +103,7 @@ interface Acc {
   conversations: number;
   phones: number;
   privateReplyCount: number;
-  /** Tổng (avgResponseMs × trọng số) của các ô ĐO ĐƯỢC. */
+  /** Tổng (avgResponseSeconds × trọng số) của các ô ĐO ĐƯỢC. */
   responseWeighted: number;
   /** Tổng trọng số của các ô đo được. */
   responseWeight: number;
@@ -130,7 +130,7 @@ interface StatRow {
   uniqueCommentCount: number;
   privateReplyCount: number;
   phoneNumberCount: number;
-  avgResponseMs: number;
+  avgResponseSeconds: number;
 }
 
 function add(a: Acc, row: StatRow): void {
@@ -143,8 +143,8 @@ function add(a: Acc, row: StatRow): void {
   a.phones += row.phoneNumberCount;
   // Trọng số là số tin đã xử lý trong ô; ô không có tin thì trung bình của nó
   // không đại diện cho gì cả.
-  if (row.avgResponseMs > 0 && handled > 0) {
-    a.responseWeighted += row.avgResponseMs * handled;
+  if (row.avgResponseSeconds > 0 && handled > 0) {
+    a.responseWeighted += row.avgResponseSeconds * handled;
     a.responseWeight += handled;
   }
   a.agents.add(row.pancakeUserId);
@@ -156,10 +156,10 @@ function bump(map: Map<string, Acc>, key: string, row: StatRow): void {
   map.set(key, a);
 }
 
-/** Trung bình có trọng số, đổi ms sang giây. null = không ô nào đo được. */
+/** Trung bình có trọng số, GIÂY. null = không ô nào đo được. */
 function avgSeconds(a: Acc): number | null {
   if (a.responseWeight <= 0) return null;
-  return Math.round(a.responseWeighted / a.responseWeight / 1000);
+  return Math.round(a.responseWeighted / a.responseWeight);
 }
 
 function groupRow(key: string, label: string, a: Acc): GroupRow {
@@ -218,7 +218,7 @@ export async function buildPancakeAgentReport(
       uniqueCommentCount: true,
       privateReplyCount: true,
       phoneNumberCount: true,
-      avgResponseMs: true,
+      avgResponseSeconds: true,
     },
   });
 

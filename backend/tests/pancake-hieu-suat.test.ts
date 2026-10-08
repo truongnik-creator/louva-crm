@@ -2,7 +2,20 @@ import crypto from "node:crypto";
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { setupTestContext, prisma, type TestContext } from "./helpers";
 import { encryptNullable } from "../src/lib/crypto";
+import { vnDayKey } from "../src/lib/datetime";
 import { syncConfigStats, pancakeDateRange, defaultStatsWindow } from "../src/services/pancake-stats";
+import {
+  conversationPhone,
+  extractAdSource,
+  fetchMessages,
+  fetchPages,
+  isFromCustomer,
+  messageText,
+  normalizePlatform,
+  pageTokenOf,
+  parsePancakeTime,
+  parseStatHour,
+} from "../src/services/pancake";
 import { runPancakeStatsSync } from "../src/lib/pancake-jobs";
 
 // F35: HIỆU SUẤT NHÂN VIÊN TRÊN PANCAKE.
@@ -13,8 +26,13 @@ import { runPancakeStatsSync } from "../src/lib/pancake-jobs";
 //   · Trung bình tốc độ phản hồi tính CÓ TRỌNG SỐ theo số tin, và ô Pancake
 //     trả 0 bị coi là KHÔNG ĐO ĐƯỢC chứ không phải "trả lời tức thì".
 //   · Nhân viên Pancake tự gắn với tài khoản CRM khi tên khớp duy nhất.
-//   · `date_range` gửi cho Pancake theo giờ Việt Nam, còn mốc `hour` nhận về
-//     đọc là UTC.
+//   · `date_range` gửi cho Pancake theo giờ Việt Nam; mốc giờ nhận về đọc từ
+//     `hour_in_integer` (UTC), KHÔNG đọc `hour` (giờ địa phương của trang).
+//   · `average_response_time` là GIÂY.
+//
+// Hình dạng phản hồi trong các stub dưới đây lấy đúng từ tài khoản thật
+// (08/10/2026): có `hour_in_integer`, `page_id`, `order_count`, và `hour` lệch
+// đúng 7 giờ so với `hour_in_integer`.
 
 const uid = () => crypto.randomBytes(4).toString("hex");
 let ctx: TestContext;
@@ -27,12 +45,27 @@ beforeAll(async () => {
 
 afterEach(() => vi.unstubAllGlobals());
 
-/** Mốc giờ tròn của hiện tại, định dạng Pancake trả về: UTC, không có "Z". */
-function utcHourStamp(offsetHours = 0): string {
+/** Mốc giờ tròn, UTC. */
+function utcHour(offsetHours = 0): Date {
   const d = new Date();
   d.setUTCMinutes(0, 0, 0);
   d.setUTCHours(d.getUTCHours() - offsetHours);
-  return d.toISOString().slice(0, 19);
+  return d;
+}
+
+/**
+ * Hai trường mốc giờ ĐÚNG NHƯ PANCAKE TRẢ: `hour` là giờ địa phương của trang
+ * (UTC+7), `hour_in_integer` là UTC. Test phải đọc ra cùng một mốc UTC dù hai
+ * trường lệch nhau 7 tiếng.
+ */
+function hourFields(offsetHours = 0): { hour: string; hour_in_integer: string } {
+  const utc = utcHour(offsetHours);
+  const local = new Date(utc.getTime() + 7 * 3_600_000);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return {
+    hour: local.toISOString().slice(0, 19),
+    hour_in_integer: `${utc.getUTCFullYear()}${pad(utc.getUTCMonth() + 1)}${pad(utc.getUTCDate())}${pad(utc.getUTCHours())}0000`
+  };
 }
 
 async function fixture() {
@@ -87,14 +120,14 @@ function stubStatistics(opts: {
       const statistics = forFb
         ? {
             [opts.saleA.uid]: [
-              { hour: utcHourStamp(1), inbox_count: 6, comment_count: 0, unique_inbox_count: 3, average_response_time: 60_000, phone_number_count: 2 },
-              { hour: utcHourStamp(0), inbox_count: 2, comment_count: 0, unique_inbox_count: 1, average_response_time: 120_000, phone_number_count: 1 },
+              { ...hourFields(1), page_id: opts.fbPageId, inbox_count: 6, comment_count: 0, unique_inbox_count: 3, order_count: 0, average_response_time: 60, phone_number_count: 2 },
+              { ...hourFields(0), page_id: opts.fbPageId, inbox_count: 2, comment_count: 0, unique_inbox_count: 1, order_count: 0, average_response_time: 120, phone_number_count: 1 },
             ],
           }
         : {
             [opts.saleB.uid]: [
               // Pancake không đo được tốc độ giờ này (trả 0) nhưng vẫn có tin.
-              { hour: utcHourStamp(0), inbox_count: 4, comment_count: 0, unique_inbox_count: 2, average_response_time: 0 },
+              { ...hourFields(0), page_id: opts.ttPageId, inbox_count: 4, comment_count: 0, unique_inbox_count: 2, order_count: 0, average_response_time: 0 },
             ],
           };
       const users = forFb
@@ -175,8 +208,8 @@ describe("F35: kéo thống kê nhân viên Pancake", () => {
               ? {
                   statistics: {
                     [saleA.uid]: [
-                      { hour: utcHourStamp(1), inbox_count: 6, comment_count: 0, unique_inbox_count: 3, average_response_time: 60_000, phone_number_count: 2 },
-                      { hour: utcHourStamp(0), inbox_count: 5, comment_count: 0, unique_inbox_count: 2, average_response_time: 120_000, phone_number_count: 1 },
+                      { ...hourFields(1), inbox_count: 6, comment_count: 0, unique_inbox_count: 3, average_response_time: 60, phone_number_count: 2 },
+                      { ...hourFields(0), inbox_count: 5, comment_count: 0, unique_inbox_count: 2, average_response_time: 120, phone_number_count: 1 },
                     ],
                   },
                   users: { [saleA.uid]: { user_name: saleA.name } },
@@ -195,6 +228,36 @@ describe("F35: kéo thống kê nhân viên Pancake", () => {
       _sum: { inboxCount: true },
     });
     expect(sumAfterThird._sum.inboxCount).toBe(15); // 6 + 5 + 4
+  });
+
+  it("mốc giờ đọc từ hour_in_integer (UTC), không đọc hour (giờ trang)", async () => {
+    await prisma.pancakeConfig.updateMany({ data: { active: false } });
+    const { config, fb } = await fixture();
+    const saleUid = `pu-${uid()}`;
+    const want = utcHour(0);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: String(url).includes(`/pages/${fb.pageId}/`)
+              ? {
+                  statistics: { [saleUid]: [{ ...hourFields(0), inbox_count: 3, average_response_time: 90 }] },
+                  users: { [saleUid]: { user_name: "Hằng Trần" } }
+                }
+              : { statistics: {}, users: {} }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      )
+    );
+    await syncConfigStats(config.id);
+    const row = await prisma.pancakeAgentStat.findFirstOrThrow({ where: { pageId: fb.id, pancakeUserId: saleUid } });
+    // Nếu lỡ đọc `hour` thì mốc sẽ lệch 7 tiếng và dayKey có thể sang ngày khác.
+    expect(row.hour.toISOString()).toBe(want.toISOString());
+    expect(row.avgResponseSeconds).toBe(90);
+    expect(row.dayKey).toBe(vnDayKey(want));
   });
 
   it("một trang lỗi thì các trang khác vẫn kéo được, lỗi báo rõ theo tên trang", async () => {
@@ -243,7 +306,7 @@ describe("F35: báo cáo hiệu suất", () => {
     expect(mine.messages).toBe(8);
     expect(mine.userId).toBe(crmUser.id);
     expect(mine.userName).toBe(crmUser.name);
-    // (60.000ms × 6 tin + 120.000ms × 2 tin) ÷ 8 tin = 75.000ms = 75 giây.
+    // (60 giây × 6 tin + 120 giây × 2 tin) ÷ 8 tin = 75 giây.
     expect(mine.avgResponseSeconds).toBe(75);
     expect(mine.phones).toBe(3);
 
@@ -270,5 +333,120 @@ describe("F35: báo cáo hiệu suất", () => {
   it("vai không có quyền xem số người khác bị chặn", async () => {
     const res = await ctx.as("TELESALE").get("/api/reports/pancake-agents?period=today");
     expect(res.status).toBe(403);
+  });
+});
+
+/* Những khẳng định dưới đây chốt lại SÁU chỗ tài liệu Pancake nói khác API
+ * thật. Dữ liệu mẫu copy nguyên dạng từ tài khoản thật ngày 08/10/2026 — nếu ai
+ * đó "sửa cho giống tài liệu" thì các test này đổ ngay. */
+describe("Pancake: đọc đúng hình dạng API THẬT (không theo tài liệu)", () => {
+  it("1. GET /pages trả categorized.activated, kèm token trang và nhân viên", async () => {
+    const body = {
+      success: true,
+      categorized: {
+        hidden: [],
+        inactivated: [{ id: "999", name: "Trang đã tắt", platform: "facebook" }],
+        activated: [
+          {
+            id: "101778372233531",
+            name: "Nova International Aesthetic",
+            platform: "facebook",
+            timezone: 7.0,
+            settings: { page_access_token: "pat-that" },
+            users: [
+              { name: "Hằng Trần", status: "active", user_id: "b595e8b8", fb_id: "7757219" },
+              { name: "Tạ Thu Hằng", status: "removed", user_id: "49d30b80", fb_id: "116057652372083" }
+            ]
+          }
+        ]
+      }
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+    );
+    const pages = await fetchPages("user-token");
+    // Bản cũ đọc `categorized_pages` nên ở đây sẽ ra 0 trang và cả tính năng chết lặng.
+    expect(pages).toHaveLength(1);
+    expect(pages[0].name).toBe("Nova International Aesthetic");
+
+    // 2. Token trang nằm sẵn trong phản hồi -> không cần sinh token mới.
+    expect(pageTokenOf(pages[0])).toBe("pat-that");
+    expect(pages[0].users).toHaveLength(2);
+    // Nền tảng trả chữ thường.
+    expect(normalizePlatform(pages[0].platform)).toBe("FACEBOOK");
+  });
+
+  it("3 + 4. average_response_time là giây; mốc giờ lấy từ hour_in_integer (UTC)", () => {
+    const bucket = { hour: "2026-10-07T08:00:00", hour_in_integer: "20261007010000", average_response_time: 150 };
+    // hour nói 08:00, hour_in_integer nói 01:00 UTC — đúng là 01:00 UTC.
+    expect(parseStatHour(bucket)?.toISOString()).toBe("2026-10-07T01:00:00.000Z");
+    // Thiếu hour_in_integer thì mới suy từ hour, trừ lệch giờ của trang.
+    expect(parseStatHour({ hour: "2026-10-07T08:00:00" }, 7)?.toISOString()).toBe("2026-10-07T01:00:00.000Z");
+    expect(parseStatHour({})).toBeNull();
+  });
+
+  it("5. GET messages: xếp lại theo thời gian, không tin vào thứ tự Pancake trả", async () => {
+    // Tài khoản thật trả CŨ TRƯỚC; tài liệu nói MỚI TRƯỚC. Trộn lộn xộn để chắc.
+    const raw = {
+      success: true,
+      conv_from: { id: "29622954850640757", name: "Huỳnh Ngân" },
+      messages: [
+        { id: "m3", inserted_at: "2026-10-08T08:09:37.000000", original_message: "ba", from: { id: "29622954850640757" } },
+        { id: "m1", inserted_at: "2026-10-08T08:09:32.000000", original_message: "mot", from: { id: "355628047872664" } },
+        { id: "m2", inserted_at: "2026-10-08T08:09:36.000000", original_message: "hai", from: { id: "355628047872664" } }
+      ]
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(raw), { status: 200, headers: { "content-type": "application/json" } }))
+    );
+    const r = await fetchMessages("pat", "355628047872664", "355628047872664_29622954850640757");
+    expect(r.messages.map((m) => m.id)).toEqual(["m1", "m2", "m3"]);
+    expect(r.convFromId).toBe("29622954850640757");
+
+    // Không có from_customer: suy ra từ from.id so với page_id và conv_from.id.
+    const ctx = { pageId: "355628047872664", convFromId: "29622954850640757" };
+    expect(isFromCustomer(r.messages[0], ctx)).toBe(false); // trang gửi
+    expect(isFromCustomer(r.messages[2], ctx)).toBe(true); // khách gửi
+    // inserted_at không có hậu tố múi giờ nhưng LÀ UTC.
+    expect(parsePancakeTime(r.messages[0].inserted_at).toISOString()).toBe("2026-10-08T08:09:32.000Z");
+  });
+
+  it("6. nội dung tin lấy original_message; thiếu thì bóc thẻ khỏi message HTML", () => {
+    expect(
+      messageText({
+        id: "m",
+        message: "<div>Dạ em chào chị\r<br key='n_0' />Chị muốn cải thiện vùng nào ạ?</div>",
+        original_message: "Dạ em chào chị\r\nChị muốn cải thiện vùng nào ạ?"
+      })
+    ).toBe("Dạ em chào chị\r\nChị muốn cải thiện vùng nào ạ?");
+
+    // Không có bản sạch: phải ra văn bản, tuyệt đối không để lọt "<div>" cho khách thấy.
+    const stripped = messageText({ id: "m", message: "<div>Chi phí&nbsp;Full Face <br/>là bao nhiêu?</div>" });
+    expect(stripped).toBe("Chi phí Full Face \nlà bao nhiêu?");
+    expect(stripped).not.toContain("<");
+
+    // Tin chỉ có ảnh: Pancake trả "<div></div>" -> coi như không có chữ.
+    expect(messageText({ id: "m", message: "<div></div>" })).toBeNull();
+  });
+
+  it("SĐT và nguồn quảng cáo của hội thoại lấy đúng chỗ API thật để", () => {
+    const conv = {
+      id: "355628047872664_29622954850640757",
+      type: "INBOX",
+      from: { id: "29622954850640757", name: "Huỳnh Ngân" },
+      seen: false,
+      recent_phone_numbers: [{ captured: "0862356173", phone_number: "0862356173" }],
+      ads: [{ ad_id: "120254179570120722", post_id: "355628047872664_1421243236808896" }],
+      ad_ids: ["120254179570120722"]
+    };
+    // Không có customer_phone trong phản hồi thật.
+    expect(conversationPhone(conv)).toBe("0862356173");
+    const ad = extractAdSource(conv);
+    expect(ad.adId).toBe("120254179570120722");
+    expect(ad.adPostId).toBe("355628047872664_1421243236808896");
+    // Chỉ có ad_ids, không có mảng ads: vẫn phải ra mã quảng cáo.
+    expect(extractAdSource({ id: "c", ad_ids: ["120000"] }).adId).toBe("120000");
   });
 });

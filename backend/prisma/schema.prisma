@@ -2175,7 +2175,8 @@ model PancakeAgentStat {
   page               PancakePage @relation(fields: [pageId], references: [id], onDelete: Cascade)
   /// UUID user bên Pancake (khớp PancakeAgent.pancakeUserId).
   pancakeUserId      String
-  /// Mốc giờ Pancake trả về (UTC+0, theo tài liệu API).
+  /// Mốc giờ ĐÃ QUY VỀ UTC. Pancake trả `hour` theo giờ địa phương của trang và
+  /// `hour_in_integer` theo UTC — đọc bằng parseStatHour, đừng tự parse.
   hour               DateTime
   /// Ngày giờ Việt Nam của mốc giờ đó, "2026-10-08" — gom báo cáo theo ngày.
   dayKey             String
@@ -2190,9 +2191,11 @@ model PancakeAgentStat {
   privateReplyCount  Int         @default(0)
   /// Số điện thoại lấy được.
   phoneNumberCount   Int         @default(0)
-  /// Tốc độ phản hồi trung bình trong giờ đó, MILIGIÂY (Pancake trả ms).
+  /// Tốc độ phản hồi trung bình trong giờ đó, GIÂY.
+  /// Tài liệu Pancake ghi miligiây là SAI: dữ liệu thật có trung vị 437 — đọc
+  /// là giây thì ra 7,3 phút (hợp lý), đọc là ms thì ra 0,44 giây (vô lý).
   /// 0 = Pancake không đo được giờ đó, KHÔNG phải trả lời tức thì.
-  avgResponseMs      Int         @default(0)
+  avgResponseSeconds Int         @default(0)
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 
