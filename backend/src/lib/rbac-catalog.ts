@@ -641,3 +641,18 @@ export const WORK_REPORT_DEPARTMENTS = [
 
 /** Mã bộ phận mặc định được coi là "khối báo cáo trang tính" trên giao diện. */
 export const WORK_REPORT_DEPARTMENT_CODES: string[] = WORK_REPORT_DEPARTMENTS.map((d) => d.code);
+
+/**
+ * Vai trò của khối báo cáo trang tính.
+ *
+ * Cần cả danh sách này bên cạnh danh sách bộ phận vì người quản trị tạo tài
+ * khoản thì BẮT BUỘC chọn vai trò, còn bộ phận là tuỳ chọn và trên thực tế gần
+ * như luôn để trống. Lọc nhân viên chỉ theo bộ phận sẽ ra danh sách rỗng ngay
+ * cả khi đã có đủ người của Media, Design, Content.
+ */
+export const WORK_REPORT_ROLE_CODES: string[] = [
+  RoleCode.MEDIA,
+  RoleCode.DESIGN,
+  RoleCode.CONTENT,
+  RoleCode.MARKETING,
+];

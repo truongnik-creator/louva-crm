@@ -1796,16 +1796,27 @@ export async function fetchWorkReportEntries(params: {
   return data
 }
 
-export async function fetchWorkReportUnlinked(): Promise<
+/**
+ * Nhân viên chưa gắn trang tính.
+ *
+ * Mặc định khớp theo VAI TRÒ (Media / Design / Content / Marketing) hoặc bộ
+ * phận — vì tạo tài khoản thì bắt buộc chọn vai trò còn bộ phận thường để
+ * trống. `all` bỏ cả hai bộ lọc để gắn được cho người ngoài khối.
+ */
+export async function fetchWorkReportUnlinked(params?: {
+  all?: boolean
+  departmentId?: string
+}): Promise<
   Array<{
     id: string
     name: string
     title: string | null
     email: string
     department: { id: string; code: string; name: string } | null
+    roles: Array<{ code: string; name: string }>
   }>
 > {
-  const { data } = await api.get('/work-reports/unlinked')
+  const { data } = await api.get('/work-reports/unlinked', { params })
   return data
 }
 

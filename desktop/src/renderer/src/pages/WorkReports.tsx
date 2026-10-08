@@ -744,7 +744,12 @@ function LinkModal({
   onDone: (name: string) => Promise<void>
 }): React.JSX.Element {
   const { fail } = useToast()
-  const [people, setPeople] = useState<Array<{ id: string; name: string; department: { name: string } | null }>>([])
+  const [people, setPeople] = useState<
+    Array<{ id: string; name: string; department: { name: string } | null; roles: Array<{ name: string }> }>
+  >([])
+  // Bộ phận là tuỳ chọn khi tạo tài khoản nên thường để trống; danh sách mặc
+  // định đã khớp theo vai trò, công tắc này để gắn cho người ngoài khối.
+  const [showAll, setShowAll] = useState(false)
   const [userId, setUserId] = useState('')
   const [url, setUrl] = useState('')
   const [year, setYear] = useState(new Date().getFullYear())
@@ -753,10 +758,10 @@ function LinkModal({
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    fetchWorkReportUnlinked()
+    fetchWorkReportUnlinked({ all: showAll })
       .then(setPeople)
       .catch((err) => fail(getApiErrorMessage(err)))
-  }, [fail])
+  }, [fail, showAll])
 
   const tryPreview = async (): Promise<void> => {
     setBusy(true)
@@ -800,22 +805,36 @@ function LinkModal({
       }
     >
       <div className="pf" style={{ marginBottom: 10 }}>
-        <div className="pl">Nhân viên</div>
+        <div className="row">
+          <div className="pl">Nhân viên</div>
+          <label className="row" style={{ marginLeft: 'auto', gap: 5, fontSize: 12 }}>
+            <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+            Hiện mọi nhân viên
+          </label>
+        </div>
         <select className="input" value={userId} onChange={(e) => setUserId(e.target.value)}>
           <option value="">— Chọn nhân viên —</option>
           {people.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
+              {p.roles.length ? ` · ${p.roles.map((r) => r.name).join(', ')}` : ''}
               {p.department ? ` · ${p.department.name}` : ''}
             </option>
           ))}
         </select>
         {!people.length ? (
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            Mọi nhân viên của Media / MKT / Design / Content đã có trang tính. Thêm người mới ở Người dùng &amp; Phân quyền
-            rồi gán bộ phận tương ứng.
+            {showAll
+              ? 'Mọi nhân viên đang làm việc đều đã có trang tính.'
+              : 'Không còn ai mang vai trò Media / Design / Content / Marketing (hoặc thuộc bộ phận tương ứng) mà chưa gắn trang tính. Tích “Hiện mọi nhân viên” để gắn cho người ngoài khối.'}
           </div>
-        ) : null}
+        ) : (
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            {showAll
+              ? 'Đang hiện mọi nhân viên chưa gắn trang tính.'
+              : 'Đang lọc theo vai trò Media / Design / Content / Marketing và bốn bộ phận tương ứng.'}
+          </div>
+        )}
       </div>
 
       <div className="pf" style={{ marginBottom: 10 }}>

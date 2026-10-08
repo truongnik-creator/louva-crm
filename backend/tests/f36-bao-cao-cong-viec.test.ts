@@ -327,6 +327,56 @@ describe("F36 · phân quyền và tổng quan", () => {
     expect(all.body.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("liệt kê nhân viên theo VAI TRÒ dù chưa gán bộ phận", async () => {
+    // Đây là tình huống thật trên máy chủ: tạo tài khoản thì bắt buộc chọn vai
+    // trò, còn bộ phận là tuỳ chọn nên bị bỏ trống. Lọc chỉ theo bộ phận làm ô
+    // "Chọn nhân viên" rỗng dù đã có đủ người của Media và Design.
+    const media = await ctx.createUser("MEDIA", { key: `nodept-media-${uid()}` });
+    const design = await ctx.createUser("DESIGN", { key: `nodept-design-${uid()}` });
+    await prisma.user.updateMany({ where: { id: { in: [media.id, design.id] } }, data: { departmentId: null } });
+
+    const res = await ctx.as("QUAN_LY_HE_THONG").get("/api/work-reports/unlinked").expect(200);
+    const ids = res.body.map((u: { id: string }) => u.id);
+    expect(ids).toContain(media.id);
+    expect(ids).toContain(design.id);
+
+    const row = res.body.find((u: { id: string }) => u.id === media.id);
+    expect(row.department).toBeNull();
+    expect(row.roles.map((r: { code: string }) => r.code)).toContain("MEDIA");
+
+    // Overview cũng phải nhắc đúng những người này.
+    const ov = await ctx.as("QUAN_LY_HE_THONG").get("/api/work-reports/overview").expect(200);
+    expect(ov.body.unlinked.map((u: { id: string }) => u.id)).toEqual(expect.arrayContaining([media.id, design.id]));
+  });
+
+  it("lọc mặc định bỏ qua vai trò ngoài khối, ?all=true thì hiện", async () => {
+    const kho = await ctx.createUser("KHO", { key: `ngoaikhoi-${uid()}` });
+    await prisma.user.updateMany({ where: { id: kho.id }, data: { departmentId: null } });
+
+    const mac = await ctx.as("QUAN_LY_HE_THONG").get("/api/work-reports/unlinked").expect(200);
+    expect(mac.body.map((u: { id: string }) => u.id)).not.toContain(kho.id);
+
+    const all = await ctx.as("QUAN_LY_HE_THONG").get("/api/work-reports/unlinked?all=true").expect(200);
+    expect(all.body.map((u: { id: string }) => u.id)).toContain(kho.id);
+  });
+
+  it("người đã gắn trang tính thì biến khỏi danh sách", async () => {
+    const u = await ctx.createUser("CONTENT", { key: `datgan-${uid()}` });
+    await prisma.user.updateMany({ where: { id: u.id }, data: { departmentId: null } });
+
+    const before = await ctx.as("QUAN_LY_HE_THONG").get("/api/work-reports/unlinked").expect(200);
+    expect(before.body.map((x: { id: string }) => x.id)).toContain(u.id);
+
+    await ctx
+      .as("QUAN_LY_HE_THONG")
+      .post("/api/work-reports/sources")
+      .send({ userId: u.id, url: `https://docs.google.com/spreadsheets/d/gone-${uid()}${"k".repeat(20)}/edit` })
+      .expect(201);
+
+    const after = await ctx.as("QUAN_LY_HE_THONG").get("/api/work-reports/unlinked").expect(200);
+    expect(after.body.map((x: { id: string }) => x.id)).not.toContain(u.id);
+  });
+
   it("vai trò không có quyền thì bị chặn ở cổng 1", async () => {
     await ctx.as("KHO").get("/api/work-reports/sources").expect(403);
     await ctx.as("KHO").get("/api/work-reports/overview").expect(403);

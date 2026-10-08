@@ -18,7 +18,7 @@ import {
 } from "../lib/work-report-sync";
 import { renderAppsScript } from "../lib/work-report-appsscript";
 import { previewPublicWorksheet, WorksheetError } from "../services/worksheet";
-import { WORK_REPORT_DEPARTMENT_CODES } from "../lib/rbac-catalog";
+import { WORK_REPORT_DEPARTMENT_CODES, WORK_REPORT_ROLE_CODES } from "../lib/rbac-catalog";
 import { getSettingRaw } from "../lib/settings-catalog";
 import {
   AuditAction,
@@ -164,6 +164,29 @@ function shapeSource<T extends { tokenPrefix: string | null }>(source: T) {
   return { ...source, hasToken: Boolean(source.tokenPrefix) };
 }
 
+/**
+ * "Ai thuộc khối báo cáo trang tính" — khớp theo VAI TRÒ **hoặc** BỘ PHẬN.
+ *
+ * Lúc đầu chỉ khớp theo bộ phận và danh sách ra RỖNG trên máy thật, dù đã có
+ * người mang vai trò Media và Design: tạo tài khoản thì bắt buộc chọn vai trò,
+ * còn bộ phận là tuỳ chọn nên thực tế luôn để trống. Khớp theo vai trò là
+ * chính; bộ phận chỉ là lối thứ hai cho người đã gán bộ phận tử tế.
+ *
+ * `departmentId` (lọc trên giao diện) vẫn ưu tiên tuyệt đối khi được truyền.
+ */
+function workReportStaffWhere(opts: { departmentId?: string; all?: boolean } = {}): Record<string, unknown> {
+  if (opts.departmentId) return { departmentId: opts.departmentId };
+  // "Mọi nhân viên": gắn trang tính cho người ngoài bốn bộ phận (trưởng nhóm
+  // kinh doanh cũng ghi báo cáo trên sheet chẳng hạn).
+  if (opts.all) return {};
+  return {
+    OR: [
+      { roleLinks: { some: { role: { code: { in: WORK_REPORT_ROLE_CODES } } } } },
+      { department: { code: { in: WORK_REPORT_DEPARTMENT_CODES } } },
+    ],
+  };
+}
+
 // ------------------------------------------------------------------ NGUỒN
 
 router.get(
@@ -196,16 +219,13 @@ router.get(
   asyncHandler(async (req, res) => {
     const me = currentUser(req);
     const scope = scopeOf(req, MANAGE);
-    const codes = String(req.query.departmentCodes ?? "")
-      .split(",")
-      .map((c) => c.trim())
-      .filter(Boolean);
+    const all = String(req.query.all ?? "") === "true";
 
     const users = await prisma.user.findMany({
       where: {
         status: "ACTIVE",
         workReportSource: null,
-        department: { code: { in: codes.length ? codes : WORK_REPORT_DEPARTMENT_CODES } },
+        ...workReportStaffWhere({ departmentId: req.query.departmentId ? String(req.query.departmentId) : undefined, all }),
         ...(scope === PermissionScope.ALL ? {} : { branches: { some: { branchId: { in: me.branchIds } } } }),
       },
       select: {
@@ -214,10 +234,20 @@ router.get(
         title: true,
         email: true,
         department: { select: { id: true, code: true, name: true } },
+        roleLinks: { select: { role: { select: { code: true, name: true } } } },
       },
       orderBy: { name: "asc" },
     });
-    res.json(users);
+    res.json(
+      users.map((u) => ({
+        id: u.id,
+        name: u.name,
+        title: u.title,
+        email: u.email,
+        department: u.department,
+        roles: u.roleLinks.map((l) => l.role),
+      }))
+    );
   })
 );
 
@@ -704,9 +734,7 @@ router.get(
       where: {
         status: "ACTIVE",
         workReportSource: null,
-        department: q.departmentId
-          ? { id: q.departmentId }
-          : { code: { in: WORK_REPORT_DEPARTMENT_CODES } },
+        ...workReportStaffWhere({ departmentId: q.departmentId }),
         ...(scope === PermissionScope.ALL ? {} : { branches: { some: { branchId: { in: me.branchIds } } } }),
         ...(scope === PermissionScope.OWN ? { id: me.id } : {}),
       },
