@@ -292,6 +292,61 @@ Hệ quả cần chủ biết: cơ hội chuyển từ dữ liệu cũ (P6) mang
 
 Ảnh demo đã chụp lại sau bản sửa: 57, 58, 59, 60, 61, 64, 65, 68, 69, 73, 76, 81, 83, 84, 85.
 
+## F35 · Hiệu suất nhân viên trên Pancake (kéo số mỗi 10 phút)
+
+**Vấn đề:** báo cáo "Tốc độ trả lời" sẵn có chỉ đo được tin nhắn ĐÃ VÀO CRM, và
+chỉ quy được về người gửi khi tin đó gửi TỪ CRM. Thực tế nhân viên trả lời khách
+ngay trong app Pancake, nên CRM chỉ có bản sao tin nhắn mà không biết ai bấm
+gửi — cột "số tin một nhân viên xử lý" trống.
+
+**Cách làm:** lấy thẳng số Pancake tự đo.
+
+| Hạng mục | Nguồn |
+| --- | --- |
+| Số tin một nhân viên xử lý | `inbox_count` + `comment_count` của `GET /pages/{page_id}/statistics/users` |
+| Tốc độ phản hồi trung bình | `average_response_time` (miligiây) của cùng API |
+| Số tin theo nền tảng, kênh | gom theo `platform` và theo trang của `PancakePage` |
+
+**Hai tác vụ nền, mỗi 10 phút** (`backend/src/lib/pancake-jobs.ts`):
+
+- `pancake-pull-sync` — kéo hội thoại, tin nhắn (công tắc `pancake.autoSync.enabled`).
+- `pancake-agent-stats` — kéo thống kê hiệu suất (công tắc `pancake.statsSync.enabled`).
+
+**Quy ước số liệu**
+
+- Ghi bằng upsert theo (trang, nhân viên, mốc giờ) nên kéo lại cùng khoảng thời
+  gian KHÔNG cộng dồn. Cửa sổ kéo phủ cả hôm qua để chốt những giờ cuối ngày.
+- Trung bình phản hồi của cả kỳ tính CÓ TRỌNG SỐ theo số tin trong từng ô giờ.
+- Ô Pancake trả `average_response_time = 0` coi là KHÔNG ĐO ĐƯỢC (hiện "—"),
+  không phải trả lời tức thì; nhưng số tin của ô đó vẫn được cộng.
+- Mốc `hour` Pancake trả về là UTC+0; tham số `date_range` lại theo giờ Việt
+  Nam. Hai thứ không được trộn (xem `parsePancakeTime`, `pancakeDateRange`).
+
+**Gắn nhân viên:** bảng `pancake_agents` nối user Pancake với tài khoản CRM. Dò
+tự động ở Kết nối › Nhân viên Pancake, tự gắn khi tên khớp duy nhất (bỏ dấu);
+trùng tên hai người thì để quản trị chọn tay. Tin gửi từ CRM mang thêm
+`sender_id` để Pancake quy về đúng người, nhờ đó số không bị hụt.
+
+**Xem ở:** Đo lường › Hiệu suất Pancake (`GET /api/reports/pancake-agents`).
+
+### Sửa theo tài liệu API chính thức (developer.pancake.biz)
+
+Đối chiếu bản OpenAPI thật, ba điểm cũ sai đã được sửa:
+
+1. **Token đi bằng tham số URL, không có header `Authorization`.** Mặc định
+   `PANCAKE_TOKEN_MODE` đổi thành `query`.
+2. **Hai loại token, hai nhóm địa chỉ.** `access_token` của người dùng chỉ dùng
+   cho `https://pages.fm/api/v1` (liệt kê trang, sinh token trang); mọi API cấp
+   trang nằm ở `https://pages.fm/api/public_api/v1` và `/v2` và chỉ nhận
+   `page_access_token`. Trang chưa có token thì hệ thống tự sinh một lần
+   (`generate_page_access_token`) rồi lưu mã hoá.
+3. **Mốc thời gian là UTC không kèm hậu tố múi giờ.** `new Date(chuỗi)` hiểu là
+   giờ máy nên lệch 7 tiếng khi máy chủ đặt giờ Việt Nam; đã gom về
+   `parsePancakeTime`.
+
+Ngoài ra: giới hạn 5 lượt gọi/trang/giây (có nghỉ giữa các lượt, `PANCAKE_PACE_MS`),
+và phản hồi gửi tin có thể trả HTTP 200 kèm `success: false`.
+
 ## Tham số mặc định chủ phòng khám phải xác nhận
 
 Mọi con số kinh doanh là tham số trong **Cài đặt hệ thống** (`backend/src/lib/settings-catalog.ts`), sửa trên giao diện, có hiệu lực sau tối đa 15 giây. Các giá trị dưới đây là **mặc định do đội code đặt tạm hoặc lấy từ biên bản coaching**, chưa được chủ phòng khám chốt. Không dùng các con số này như số liệu chính thức trước khi xác nhận.
@@ -380,7 +435,7 @@ Mọi con số kinh doanh là tham số trong **Cài đặt hệ thống** (`bac
 
 ## Việc cần xác minh với tài khoản thật
 
-1. **Pancake**: đối chiếu mọi chỗ `TODO-VERIFY` trong `backend/src/services/pancake.ts` và `backend/src/routes/pancake.ts` (logic đồng bộ ở `backend/src/services/pancake-sync.ts`): đường dẫn API, cách gửi token (header hay `?access_token=`, biến `PANCAKE_TOKEN_MODE`), định dạng chữ ký webhook (`X-Pancake-Signature` HMAC-SHA256 hay bí mật chung), trường nguồn quảng cáo (ad_id, post_id, campaign), cách tải ảnh đính kèm.
+1. **Pancake**: đường dẫn API, hai loại token và mốc thời gian đã đối chiếu bản OpenAPI chính thức (xem mục F35). Còn phải thử với tài khoản thật: định dạng chữ ký webhook (`X-Pancake-Signature` HMAC-SHA256 hay bí mật chung — các chỗ `TODO-VERIFY` còn lại ở `backend/src/routes/pancake.ts`), trường nguồn quảng cáo (ad_id, post_id, campaign), cách tải ảnh đính kèm, và xác nhận `GET /pages/{page_id}/statistics/users` có trong gói thuê bao của phòng khám.
 2. **Zalo OA**: kết nối OA thật, thử webhook nhận tin, gửi tin, tải ảnh.
 3. **Facebook qua Pancake**: xác nhận quy tắc cửa sổ 24 giờ áp đúng với tin gửi qua Pancake.
 4. **Claude API**: đặt `ANTHROPIC_API_KEY` thật, kiểm tên model `claude-haiku-4-5-20251001` (CHEAP) và `claude-sonnet-5` (SMART) trong `backend/src/lib/ai.ts` có trong tài khoản; chạy thử AI1 đến AI6 với khách đã ký đồng ý xử lý dữ liệu; theo dõi chi phí.

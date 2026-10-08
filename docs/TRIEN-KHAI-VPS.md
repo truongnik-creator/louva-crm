@@ -133,7 +133,7 @@ In ra **một lần duy nhất** lúc khởi động đầu. Đăng nhập xong 
 mật khẩu ngay. Nếu đã trôi mất, tạo lại tài khoản quản trị:
 
 ```bash
-ssh louva-vps 'cd /opt/louva/app/backend && sudo -u louva npx tsx scripts/create-admin.ts --email truongnik@gmail.com --name "Tên chủ phòng khám"'
+ssh louva-vps 'sudo -u louva bash -c "set -a; . /etc/louva/louva.env; set +a; cd /opt/louva/app/backend && npx tsx scripts/create-admin.ts --email truongnik@gmail.com --name \"Tên chủ phòng khám\""'
 ```
 
 ## Bước 5 — Nạp danh mục (tuỳ chọn)
@@ -142,7 +142,7 @@ Máy chủ mới chưa có dữ liệu nào. Nạp danh mục NOVA (phòng ban, 
 29 dịch vụ, bảng giá, mẫu tin) mà **không** tạo khách demo:
 
 ```bash
-ssh louva-vps 'cd /opt/louva/app/backend && sudo -u louva npx tsx prisma/seed.ts'
+ssh louva-vps "sudo -u louva bash -c 'set -a; . /etc/louva/louva.env; set +a; cd /opt/louva/app/backend && npx tsx prisma/seed.ts'"
 ```
 
 Đừng đặt `SEED_DEMO=1` trên máy chủ thật: cờ đó tạo khách và nhân viên giả.
@@ -168,7 +168,7 @@ build lại, khởi động lại service. `bootstrap.ts` tự chụp CSDL vào
 | Trạng thái | `ssh louva-vps systemctl status louva-crm` |
 | Log trực tiếp | `ssh louva-vps journalctl -u louva-crm -f` |
 | Khởi động lại | `ssh louva-vps systemctl restart louva-crm` |
-| Sao lưu ngay | `ssh louva-vps 'cd /opt/louva/app/backend && sudo -u louva npx tsx scripts/backup.ts -- --no-key'` |
+| Sao lưu ngay | `ssh louva-vps "sudo -u louva bash -c 'set -a; . /etc/louva/louva.env; set +a; cd /opt/louva/app/backend && npx tsx scripts/backup.ts -- --no-key'"` |
 | Danh sách bản sao lưu | `ssh louva-vps ls -lh /var/backups/louva` |
 | Tải bản sao lưu về máy | `rsync -avz louva-vps:/var/backups/louva/ ./backup-tu-vps/` |
 

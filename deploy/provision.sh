@@ -198,13 +198,16 @@ ufw --force enable >/dev/null
 echo "    mở 22, 80, 443; chặn 4000 từ ngoài"
 
 echo "==> 9/9 Sao lưu hằng ngày 2 giờ sáng"
+install -m 755 "$APP_DIR/deploy/backup-cron.sh" /usr/local/bin/louva-backup
 cat > /etc/cron.d/louva-backup <<CRONEOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-0 2 * * * louva cd $APP_DIR/backend && /usr/bin/npx tsx scripts/backup.ts -- --no-key >> $BACKUP_DIR/backup.log 2>&1
+0 2 * * * louva /usr/local/bin/louva-backup >> $BACKUP_DIR/backup.log 2>&1
 CRONEOF
 chmod 644 /etc/cron.d/louva-backup
-echo "    --no-key: khoá mã hoá KHÔNG nằm trong bản sao lưu, phải cất riêng"
+sudo -u louva /usr/local/bin/louva-backup >/dev/null \
+  || { echo "sao lưu thử thất bại"; exit 1; }
+echo "    đã chạy thử sao lưu thành công; --no-key nên khoá không nằm trong bản sao lưu"
 
 cat <<DONE
 
@@ -223,6 +226,6 @@ cat <<DONE
  3. Chép bản sao lưu ở $BACKUP_DIR ra ổ ngoài hoặc lưu trữ ngoài máy.
  4. Chưa seed dữ liệu nào: phòng khám, dịch vụ, bảng giá nhập trong Cài đặt.
     Muốn nạp danh mục NOVA (29 dịch vụ, bảng giá, mẫu tin), KHÔNG tạo khách
-    demo:  cd $APP_DIR/backend && sudo -u louva npx tsx prisma/seed.ts
+    demo:  sudo -u louva bash -c 'set -a; . /etc/louva/louva.env; set +a; cd $APP_DIR/backend && npx tsx prisma/seed.ts'
 ===========================================================================
 DONE
