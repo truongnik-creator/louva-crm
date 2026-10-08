@@ -166,8 +166,29 @@ export interface PancakeMessageRaw {
     admin_name?: string | null;
     is_automated?: boolean;
   };
-  /** Ảnh, tệp khách gửi (B13). Pancake dùng type "photo" | "image" | "file" | "video". */
-  attachments?: Array<{ type?: string; url?: string; name?: string; mime_type?: string }>;
+  /**
+   * "Đính kèm" của Pancake KHÔNG chỉ là tệp. Đã gặp thật 11 loại:
+   *   media   : photo, video, sticker, file, audio
+   *   không phải media: ad_click, link, reaction, address, template,
+   *                     replied_message, response_feedback, system_message
+   * Loại không phải media vẫn có `url` (ad_click trỏ facebook.com) và có `name`
+   * (là NGUYÊN BÀI QUẢNG CÁO) — xem classifyAttachments.
+   */
+  attachments?: PancakeAttachmentRaw[];
+}
+
+export interface PancakeAttachmentRaw {
+  type?: string;
+  url?: string;
+  name?: string;
+  mime_type?: string;
+  /** Video: url ở trên chỉ là ảnh đại diện, tệp thật nằm đây. */
+  video_data?: { url?: string; height?: number; width?: number };
+  /** reaction: "❤". */
+  emoji?: string;
+  /** address: "E ở, Phường Long Biên, Hà Nội". */
+  full_address?: string;
+  ad_id?: string | number;
 }
 
 /**
@@ -261,6 +282,86 @@ export function messageText(m: PancakeMessageRaw): string | null {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return text || null;
+}
+
+/* ------------------------------------------------------------ ĐÍNH KÈM
+ *
+ * BÀI HỌC TỪ DỮ LIỆU THẬT: lọc đính kèm bằng "có url https" là SAI.
+ *
+ * Pancake gói rất nhiều thứ vào `attachments`, và mấy thứ KHÔNG phải tệp cũng
+ * có `url`: `ad_click` trỏ tới facebook.com/<post_id>, `link` trỏ tới bài viết.
+ * Hai loại đó còn mang `name` là NGUYÊN VĂN BÀI QUẢNG CÁO. Hậu quả đo được
+ * trên máy chủ thật: 287 "tệp đính kèm" giả, tên tệp dài 200 ký tự là bài
+ * quảng cáo, và 385 tin (14%) hiện "[Tệp đính kèm]" thay cho nội dung.
+ *
+ * Nên ở đây dùng DANH SÁCH CHO PHÉP: chỉ loại nào thật là media mới thành tệp
+ * đính kèm. Loại mới của Pancake sẽ bị bỏ qua chứ không lọt vào hồ sơ khách —
+ * thà thiếu một loại media mới còn hơn rác vào bệnh án.
+ */
+
+const MEDIA_TYPES = new Set(["photo", "image", "video", "audio", "file", "sticker"]);
+
+export interface MediaAttachment {
+  kind: "IMAGE" | "FILE";
+  fileName: string;
+  mimeType: string | null;
+  url: string;
+}
+
+function isImageType(a: PancakeAttachmentRaw): boolean {
+  const t = (a.type ?? "").toLowerCase();
+  if (t === "photo" || t === "image" || t === "sticker") return true;
+  return Boolean(a.mime_type?.startsWith("image/"));
+}
+
+/** Chỉ giữ đính kèm THẬT là media, và lấy đúng đường dẫn tệp. */
+export function classifyAttachments(list: PancakeAttachmentRaw[] | undefined): MediaAttachment[] {
+  const out: MediaAttachment[] = [];
+  for (const a of list ?? []) {
+    const type = (a.type ?? "").toLowerCase();
+    const isMedia = MEDIA_TYPES.has(type) || Boolean(a.mime_type?.includes("/"));
+    if (!isMedia) continue;
+
+    // Video: `url` chỉ là ảnh đại diện (.jpg); tệp thật ở video_data.url.
+    const url = type === "video" ? (a.video_data?.url ?? a.url) : a.url;
+    if (!url?.startsWith("https://")) continue;
+
+    const image = isImageType(a);
+    // KHÔNG dùng a.name làm tên tệp: ở ad_click và link nó là bài quảng cáo.
+    const fallbackName = image ? "anh-pancake.jpg" : type === "video" ? "video-pancake.mp4" : "tep-pancake";
+    out.push({
+      kind: image ? "IMAGE" : "FILE",
+      fileName: fallbackName,
+      mimeType: a.mime_type ?? (image ? "image/jpeg" : null),
+      url,
+    });
+  }
+  return out;
+}
+
+/**
+ * Chữ để hiện khi tin KHÔNG có nội dung văn bản.
+ *
+ * Trước đây mọi tin như vậy hiện "[Tệp đính kèm]" hoặc "[Nội dung không đọc
+ * được]" — đo thật: 385 + 44 tin. Sale mở hộp thư thấy một dãy "[Tệp đính kèm]"
+ * thì không biết khách đã gửi gì, phải mở Pancake ra xem. Nên nói rõ là gì.
+ */
+export function attachmentLabel(list: PancakeAttachmentRaw[] | undefined): string | null {
+  for (const a of list ?? []) {
+    const t = (a.type ?? "").toLowerCase();
+    if (t === "reaction") return a.emoji ? `Đã bày tỏ cảm xúc ${a.emoji}` : "Đã bày tỏ cảm xúc";
+    if (t === "address") return a.full_address ? `Địa chỉ: ${a.full_address}` : "Đã gửi địa chỉ";
+    if (t === "sticker") return "[Nhãn dán]";
+    if (t === "photo" || t === "image") return "[Hình ảnh]";
+    if (t === "video") return "[Video]";
+    if (t === "audio") return "[Tin thoại]";
+    if (t === "file") return "[Tệp đính kèm]";
+    if (t === "ad_click") return "Khách nhắn từ quảng cáo";
+    if (t === "link") return "[Chia sẻ liên kết]";
+    if (t === "template") return "[Thẻ thông tin]";
+    if (t === "response_feedback") return "[Khách đánh giá]";
+  }
+  return null;
 }
 
 /** Nền tảng Pancake trả về không thống nhất hoa/thường — chuẩn hoá một chỗ. */

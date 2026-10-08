@@ -19,6 +19,7 @@ import {
   discoverAgents,
   discoverPagesAndAgents,
   isStatsSyncRunning,
+  relinkAgentMessages,
   syncConfigStats,
 } from "../services/pancake-stats";
 import { AuditAction } from "../types/enums";
@@ -325,16 +326,21 @@ router.patch(
       data: { userId: body.userId },
       select: { id: true, name: true, userId: true, user: { select: { id: true, name: true } } },
     });
+
+    // Quy lại cả những tin đã đồng bộ về TRƯỚC khi gắn, nếu không thì mọi báo
+    // cáo của CRM chỉ đếm từ lúc gắn trở đi.
+    const relink = await relinkAgentMessages(agent.id);
+
     await writeAudit({
       req,
       action: AuditAction.UPDATE,
       entity: "PancakeAgent",
       entityId: agent.id,
       summary: body.userId
-        ? `Gắn nhân viên Pancake "${agent.name}" với tài khoản ${updated.user?.name ?? body.userId}`
-        : `Bỏ gắn nhân viên Pancake "${agent.name}"`,
+        ? `Gắn nhân viên Pancake "${agent.name}" với tài khoản ${updated.user?.name ?? body.userId}, quy lại ${relink.linked} tin`
+        : `Bỏ gắn nhân viên Pancake "${agent.name}", bỏ quy ${relink.cleared} tin`,
     });
-    res.json(updated);
+    res.json({ ...updated, ...relink });
   })
 );
 

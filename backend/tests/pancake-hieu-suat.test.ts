@@ -5,7 +5,10 @@ import { encryptNullable } from "../src/lib/crypto";
 import { vnDayKey } from "../src/lib/datetime";
 import { syncConfigStats, pancakeDateRange, defaultStatsWindow, backfillWindows } from "../src/services/pancake-stats";
 import { syncPancakeConfig } from "../src/services/pancake-sync";
+import { relinkAgentMessages } from "../src/services/pancake-stats";
 import {
+  attachmentLabel,
+  classifyAttachments,
   conversationPhone,
   extractAdSource,
   fetchMessages,
@@ -542,5 +545,169 @@ describe("Pancake: kéo hội thoại bỏ qua phần không đổi", () => {
     expect(msgCalls).toHaveLength(1);
     expect(msgCalls[0]).toContain(encodeURIComponent(moiId));
     expect(msgCalls.some((u) => u.includes(encodeURIComponent(cuId)))).toBe(false);
+  });
+});
+
+/* Lọc đính kèm. Đo trên máy chủ thật: lọc bằng "có url https" cho ra 287 tệp
+ * giả (ad_click trỏ facebook.com) với tên tệp là nguyên bài quảng cáo, và 385
+ * tin (14%) hiện "[Tệp đính kèm]" thay cho nội dung. Mẫu dưới đây là 11 loại
+ * đính kèm gặp thật trên 4 trang. */
+describe("Pancake: chỉ nhận đính kèm THẬT là media", () => {
+  const AD_COPY = "‼️ TUYỂN MẪU  FREE FREE‼️\nKHÔNG MẤT PHÍ GÌ - TUYỂN MẪU FULLFACE";
+
+  it("bỏ ad_click và link dù chúng có url https và có name", () => {
+    const got = classifyAttachments([
+      { type: "ad_click", name: AD_COPY, url: "https://www.facebook.com/122185480646767087", ad_id: "120254179570120722" },
+      { type: "link", name: "Không có ngọn núi nào dành cho người sợ độ cao", url: "https://facebook.com/100178379510349_951512941042723" },
+      { type: "photo", url: "https://content.pancake.vn/2-2610/2026/10/8/abc.jpg", image_data: { height: 2048, width: 1536 } } as never
+    ]);
+    expect(got).toHaveLength(1);
+    expect(got[0].kind).toBe("IMAGE");
+    // Tên tệp KHÔNG được là bài quảng cáo.
+    expect(got[0].fileName).toBe("anh-pancake.jpg");
+  });
+
+  it("bỏ reaction, address, template, replied_message, system_message", () => {
+    expect(
+      classifyAttachments([
+        { type: "reaction", emoji: "❤" },
+        { type: "address", full_address: "E ở, Phường Long Biên, Hà Nội" },
+        { type: "template" },
+        { type: "replied_message" },
+        { type: "system_message" },
+        { type: "response_feedback" }
+      ])
+    ).toEqual([]);
+  });
+
+  it("video lấy tệp thật ở video_data.url, không lấy ảnh đại diện .jpg", () => {
+    const got = classifyAttachments([
+      {
+        type: "video",
+        mime_type: "video/mp4",
+        url: "https://content.pancake.vn/2-2610/2026/10/8/thumbnail.jpg",
+        video_data: { url: "https://scontent.fdad5-1.fna.fbcdn.net/o1/v/t2/f2/m483/that.mp4" }
+      }
+    ]);
+    expect(got).toHaveLength(1);
+    expect(got[0].url).toContain("that.mp4");
+    expect(got[0].url).not.toContain("thumbnail.jpg");
+    expect(got[0].kind).toBe("FILE");
+    expect(got[0].fileName).toBe("video-pancake.mp4");
+  });
+
+  it("nhãn dán tính là ảnh; loại lạ của Pancake về sau thì bỏ qua", () => {
+    expect(classifyAttachments([{ type: "sticker", url: "https://scontent.fbcdn.net/v/sticker.png" }])[0].kind).toBe("IMAGE");
+    expect(classifyAttachments([{ type: "loai_moi_nam_sau", url: "https://a.b/c" }])).toEqual([]);
+    // Trừ khi nó khai mime_type hẳn hoi.
+    expect(classifyAttachments([{ type: "loai_moi", mime_type: "application/pdf", url: "https://a.b/c.pdf" }])).toHaveLength(1);
+  });
+
+  it("tin không có chữ thì nói rõ khách gửi gì, không phải một dãy [Tệp đính kèm]", () => {
+    expect(attachmentLabel([{ type: "reaction", emoji: "❤" }])).toBe("Đã bày tỏ cảm xúc ❤");
+    expect(attachmentLabel([{ type: "address", full_address: "E ở, Phường Long Biên, Hà Nội" }])).toBe(
+      "Địa chỉ: E ở, Phường Long Biên, Hà Nội"
+    );
+    expect(attachmentLabel([{ type: "photo", url: "https://a/b.jpg" }])).toBe("[Hình ảnh]");
+    expect(attachmentLabel([{ type: "video" }])).toBe("[Video]");
+    expect(attachmentLabel([{ type: "ad_click", name: AD_COPY }])).toBe("Khách nhắn từ quảng cáo");
+    expect(attachmentLabel([])).toBeNull();
+  });
+});
+
+/* Gắn nhân viên MUỘN. Chạy thật: 2.814 tin đã về, 19 nhân viên chưa ai gắn.
+ * Không quy lại thì mọi báo cáo của CRM chỉ đếm từ lúc gắn trở đi. */
+describe("F35: gắn nhân viên muộn vẫn quy lại được tin đã đồng bộ", () => {
+  async function fix() {
+    await prisma.pancakeConfig.updateMany({ data: { active: false } });
+    await prisma.pancakePage.updateMany({ data: { active: false } });
+    const config = await prisma.pancakeConfig.create({
+      data: { label: `Quy lại ${uid()}`, accessTokenEnc: encryptNullable("ut")!, branchId: ctx.branchId, active: true }
+    });
+    const page = await prisma.pancakePage.create({
+      data: { configId: config.id, pageId: `pg${uid()}`, name: "Trang", platform: "FACEBOOK", branchId: ctx.branchId }
+    });
+    const conv = await prisma.conversation.create({
+      data: { title: "Khách", kind: "CUSTOMER", channel: "FACEBOOK", branchId: ctx.branchId, pancakePageId: page.id, pancakeConversationId: `c-${uid()}` }
+    });
+    return { config, page, conv };
+  }
+
+  it("quy theo uid, và theo tên cho tin về trước khi có cột uid", async () => {
+    const { config, conv } = await fix();
+    const crmUser = await prisma.user.findUniqueOrThrow({ where: { id: ctx.users.TELESALE.id } });
+    const puid = `pu-${uid()}`;
+    const agent = await prisma.pancakeAgent.create({
+      data: { configId: config.id, pancakeUserId: puid, name: crmUser.name, userId: null }
+    });
+
+    const moi = await prisma.chatMessage.create({
+      data: { conversationId: conv.id, direction: "OUT", content: "tin moi", externalId: `e-${uid()}`, pancakeAgentUid: puid, senderName: crmUser.name }
+    });
+    const cu = await prisma.chatMessage.create({
+      data: { conversationId: conv.id, direction: "OUT", content: "tin cu", externalId: `e-${uid()}`, pancakeAgentUid: null, senderName: crmUser.name }
+    });
+    // Tin của người KHÁC: không được quy sai sang nhân viên này.
+    const khac = await prisma.chatMessage.create({
+      data: { conversationId: conv.id, direction: "OUT", content: "nguoi khac", externalId: `e-${uid()}`, senderName: "Người Khác" }
+    });
+    // Tin KHÁCH gửi: không bao giờ có người gửi nội bộ.
+    const cuaKhach = await prisma.chatMessage.create({
+      data: { conversationId: conv.id, direction: "IN", content: "khach hoi", externalId: `e-${uid()}`, senderName: crmUser.name }
+    });
+
+    await prisma.pancakeAgent.update({ where: { id: agent.id }, data: { userId: crmUser.id } });
+    const r = await relinkAgentMessages(agent.id);
+    expect(r.linked).toBe(2); // một theo uid, một theo tên
+
+    const get = async (id: string) => (await prisma.chatMessage.findUniqueOrThrow({ where: { id } })).senderUserId;
+    expect(await get(moi.id)).toBe(crmUser.id);
+    expect(await get(cu.id)).toBe(crmUser.id);
+    expect(await get(khac.id)).toBeNull();
+    expect(await get(cuaKhach.id)).toBeNull();
+  });
+
+  it("bỏ gắn chỉ xoá tin khớp uid, KHÔNG xoá tin người đó gửi từ CRM", async () => {
+    const { config, conv } = await fix();
+    const crmUser = await prisma.user.findUniqueOrThrow({ where: { id: ctx.users.TELESALE.id } });
+    const puid = `pu-${uid()}`;
+    const agent = await prisma.pancakeAgent.create({
+      data: { configId: config.id, pancakeUserId: puid, name: crmUser.name, userId: crmUser.id }
+    });
+
+    const tuPancake = await prisma.chatMessage.create({
+      data: { conversationId: conv.id, direction: "OUT", content: "go trong pancake", externalId: `e-${uid()}`, pancakeAgentUid: puid, senderUserId: crmUser.id, senderName: crmUser.name }
+    });
+    // Tin gửi TỪ CRM: có senderUserId nhưng không có uid Pancake.
+    const tuCrm = await prisma.chatMessage.create({
+      data: { conversationId: conv.id, direction: "OUT", content: "gui tu CRM", senderUserId: crmUser.id, senderName: crmUser.name }
+    });
+
+    await prisma.pancakeAgent.update({ where: { id: agent.id }, data: { userId: null } });
+    const r = await relinkAgentMessages(agent.id);
+    expect(r.cleared).toBe(1);
+
+    const get = async (id: string) => (await prisma.chatMessage.findUniqueOrThrow({ where: { id } })).senderUserId;
+    expect(await get(tuPancake.id)).toBeNull();
+    // Mất dòng này là mất dữ liệu thật: chính người đó đã bấm gửi trong CRM.
+    expect(await get(tuCrm.id)).toBe(crmUser.id);
+  });
+
+  it("không đụng tới tin của kết nối Pancake khác", async () => {
+    const a = await fix();
+    const crmUser = await prisma.user.findUniqueOrThrow({ where: { id: ctx.users.TELESALE.id } });
+    const puid = `pu-${uid()}`;
+    const agent = await prisma.pancakeAgent.create({
+      data: { configId: a.config.id, pancakeUserId: puid, name: crmUser.name, userId: crmUser.id }
+    });
+
+    // Kết nối thứ hai, cùng tên nhân viên, cùng uid.
+    const b = await fix();
+    const laCuaBenKhac = await prisma.chatMessage.create({
+      data: { conversationId: b.conv.id, direction: "OUT", content: "ben khac", externalId: `e-${uid()}`, pancakeAgentUid: puid, senderName: crmUser.name }
+    });
+
+    await relinkAgentMessages(agent.id);
+    expect((await prisma.chatMessage.findUniqueOrThrow({ where: { id: laCuaBenKhac.id } })).senderUserId).toBeNull();
   });
 });

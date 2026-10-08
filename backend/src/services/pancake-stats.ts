@@ -2,7 +2,7 @@ import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
 import { normalizeName } from "../lib/text";
 import { startOfVnDay, vnDayKey, BUSINESS_TZ } from "../lib/datetime";
-import { UserStatus } from "../types/enums";
+import { MessageDirection, UserStatus } from "../types/enums";
 import { encryptNullable } from "../lib/crypto";
 import {
   fetchPages,
@@ -416,6 +416,60 @@ export async function discoverAgents(configId: string): Promise<{ found: number;
   const people = agentsFromPages(pages, registered);
   const found = await upsertAgents(configId, people);
   return { found, errors: people.length ? [] : ["Pancake không trả nhân viên nào cho các trang đã đăng ký"] };
+}
+
+/**
+ * Quy lại các tin đã đồng bộ về một nhân viên vừa được gắn tài khoản CRM.
+ *
+ * VÌ SAO CẦN: `senderUserId` chỉ điền được lúc GHI TIN, mà lúc đó nhân viên có
+ * thể chưa gắn tài khoản nào. Thực tế chạy thật: 2.814 tin về trước, 19 nhân
+ * viên Pancake chưa ai gắn — nếu không quy lại thì mọi báo cáo của CRM (tốc độ
+ * trả lời, bảng điểm bộ phận, lương thưởng) vẫn trống với toàn bộ số cũ, và chỉ
+ * đếm từ lúc gắn trở đi.
+ *
+ * Khớp theo hai đường:
+ *   · `pancakeAgentUid` — chính xác, dùng cho tin về sau khi đã có cột này.
+ *   · `senderName` — cầu nối MỘT LẦN cho tin đã về trước khi có cột uid.
+ *     Pancake ghi tên nhân viên vào `from.admin_name`, mình lưu vào senderName,
+ *     nên tên khớp nghĩa là cùng người. Chỉ dùng khi uid còn trống.
+ *
+ * Khi BỎ GẮN thì chỉ xoá những tin khớp bằng uid: tin do chính người đó gửi TỪ
+ * CRM cũng mang senderUserId nhưng không có uid, xoá luôn là mất dữ liệu thật.
+ */
+export async function relinkAgentMessages(agentId: string): Promise<{ linked: number; cleared: number }> {
+  const agent = await prisma.pancakeAgent.findUnique({ where: { id: agentId } });
+  if (!agent) return { linked: 0, cleared: 0 };
+
+  // Chỉ đụng tới hội thoại của các trang thuộc đúng kết nối này.
+  const pages = await prisma.pancakePage.findMany({ where: { configId: agent.configId }, select: { id: true } });
+  if (!pages.length) return { linked: 0, cleared: 0 };
+  const conversationWhere = { pancakePageId: { in: pages.map((p) => p.id) } };
+
+  if (!agent.userId) {
+    const r = await prisma.chatMessage.updateMany({
+      where: { conversation: conversationWhere, pancakeAgentUid: agent.pancakeUserId },
+      data: { senderUserId: null },
+    });
+    return { linked: 0, cleared: r.count };
+  }
+
+  const byUid = await prisma.chatMessage.updateMany({
+    where: { conversation: conversationWhere, pancakeAgentUid: agent.pancakeUserId },
+    data: { senderUserId: agent.userId },
+  });
+  const byName = await prisma.chatMessage.updateMany({
+    where: {
+      conversation: conversationWhere,
+      direction: MessageDirection.OUT,
+      pancakeAgentUid: null,
+      senderUserId: null,
+      senderName: agent.name,
+      // Chỉ tin đồng bộ từ Pancake (có externalId); tin gửi từ CRM đã có người.
+      externalId: { not: null },
+    },
+    data: { senderUserId: agent.userId },
+  });
+  return { linked: byUid.count + byName.count, cleared: 0 };
 }
 
 /** Khoá chống chạy chồng trong tiến trình (ngoài khoá của bộ chạy tác vụ). */

@@ -342,6 +342,51 @@ phút là ~240 lượt cho 4 trang, đo trên máy chủ thật mất 95 giây. 
 Hội thoại lạ hoặc Pancake không trả `updated_at` thì vẫn kéo, để không bao giờ
 sót tin của khách.
 
+### Ba lỗi dữ liệu chỉ chạy thật mới lộ ra
+
+Đo trên máy chủ sau lượt đồng bộ đầu (2.814 tin, 240 hội thoại, 4 trang):
+
+**1. 287 "tệp đính kèm" là giả, tên tệp là nguyên bài quảng cáo.**
+
+Pancake gói rất nhiều thứ vào mảng `attachments`, không chỉ tệp. Gặp thật 11
+loại: `photo`, `video`, `sticker`, `file` (là media) và `ad_click`, `link`,
+`reaction`, `address`, `template`, `replied_message`, `response_feedback`,
+`system_message` (không phải media). Lọc bằng "có `url` https" là SAI vì
+`ad_click` có `url` trỏ `facebook.com/<post_id>` và `link` trỏ bài viết — cả hai
+còn mang `name` là nguyên văn bài quảng cáo, nên tên tệp thành 200 ký tự quảng
+cáo nằm trong hồ sơ khách.
+
+Nay dùng DANH SÁCH CHO PHÉP (`classifyAttachments`): chỉ loại thật là media mới
+thành đính kèm. Loại mới của Pancake về sau sẽ bị bỏ qua chứ không lọt vào hồ sơ
+khách — thà thiếu một loại media mới còn hơn để rác vào bệnh án.
+
+**2. 429 tin (15%) hiện "[Tệp đính kèm]" hoặc "[Nội dung không đọc được]".**
+
+Sale mở hộp thư thấy một dãy như vậy thì không biết khách gửi gì, phải mở
+Pancake ra xem — đúng cái việc mà gom về CRM sinh ra để khỏi phải làm. Nay
+`attachmentLabel` nói rõ: "[Hình ảnh]", "[Video]", "Đã bày tỏ cảm xúc ❤",
+"Địa chỉ: …", "Khách nhắn từ quảng cáo".
+
+**3. Video lưu sai tệp.** `url` của đính kèm video chỉ là ảnh đại diện `.jpg`;
+tệp thật nằm ở `video_data.url`.
+
+Dữ liệu đã đồng bộ về sai thì ĐỒNG BỘ LẠI KHÔNG CHỮA ĐƯỢC — luồng đồng bộ chống
+trùng theo `externalId` nên bỏ qua tin đã có. Phải chạy
+`npx tsx scripts/sua-du-lieu-pancake.ts --yes` (xem trước khi bỏ `--yes`).
+
+### Gắn nhân viên muộn vẫn quy lại được số cũ
+
+`senderUserId` chỉ điền được lúc GHI TIN, mà lúc đó nhân viên Pancake có thể
+chưa gắn tài khoản CRM nào — chạy thật: 2.814 tin đã về, 19 nhân viên chưa ai
+gắn. Nếu không quy lại thì mọi báo cáo của CRM (tốc độ trả lời, bảng điểm bộ
+phận, lương thưởng) vẫn trống với toàn bộ số cũ và chỉ đếm từ lúc gắn trở đi.
+
+Thêm cột `chat_messages.pancakeAgentUid` và `relinkAgentMessages`: gắn tài khoản
+thì quy lại theo `uid` (chính xác), và theo `senderName` cho những tin về trước
+khi có cột uid (Pancake ghi tên nhân viên vào `from.admin_name`). Bỏ gắn thì chỉ
+xoá tin khớp `uid` — tin người đó gửi TỪ CRM cũng mang `senderUserId` nhưng
+không có uid, xoá luôn là mất dữ liệu thật.
+
 ### Đối chiếu API thật — ba điểm tài liệu nói đúng
 
 1. **Token đi bằng tham số URL, không có header `Authorization`.** Mặc định

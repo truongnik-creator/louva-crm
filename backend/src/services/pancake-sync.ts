@@ -6,6 +6,8 @@ import { applyStageEventSafe } from "../lib/stages";
 import { scheduleMediaIngest } from "../lib/chat-media";
 import { autoAssignConversation, noteMessageBatch } from "../lib/inbox-routing";
 import {
+  attachmentLabel,
+  classifyAttachments,
   conversationPhone,
   extractAdSource,
   fetchConversations,
@@ -58,10 +60,6 @@ export interface IngestResult {
   conversationId: string;
   created: number;
   leadId: string | null;
-}
-
-function isImage(f: { type?: string; mime_type?: string }): boolean {
-  return f.type === "photo" || f.type === "image" || Boolean(f.mime_type?.startsWith("image/"));
 }
 
 /**
@@ -197,17 +195,25 @@ export async function ingestPancakeConversation(opts: {
   if (fresh.length) {
     const r = await prisma.chatMessage.createMany({
       data: fresh.map((m) => {
-        const files = (m.attachments ?? []).filter((f) => f.url?.startsWith("https://"));
+        const files = classifyAttachments(m.attachments);
         const mine = !fromCustomer(m);
         const uid = staffUidOf(m);
         return {
           conversationId: conv.id,
           externalId: String(m.id),
           direction: mine ? MessageDirection.OUT : MessageDirection.IN,
-          type: files.some(isImage) ? MessageType.IMAGE : files.length ? MessageType.FILE : MessageType.TEXT,
-          content: messageText(m) ?? (files.length ? "[Tệp đính kèm]" : "[Nội dung không đọc được]"),
-          // F35: tin nhân viên gửi bên Pancake quy về tài khoản CRM đã gắn.
+          type: files.some((f) => f.kind === "IMAGE")
+            ? MessageType.IMAGE
+            : files.length
+              ? MessageType.FILE
+              : MessageType.TEXT,
+          // Tin không có chữ thì nói rõ khách đã gửi gì ("[Hình ảnh]", "Địa
+          // chỉ: …", "Đã bày tỏ cảm xúc ❤") thay vì một dãy "[Tệp đính kèm]".
+          content: messageText(m) ?? attachmentLabel(m.attachments) ?? "[Tin không có nội dung chữ]",
+          // F35: quy về tài khoản CRM nếu nhân viên đã gắn; chưa gắn thì vẫn
+          // giữ uid để gắn muộn còn quy lại được (xem relinkAgentMessages).
           senderUserId: mine && uid ? (agents.get(uid) ?? null) : null,
+          pancakeAgentUid: mine ? uid : null,
           senderName: m.sender_name ?? m.from?.admin_name ?? m.from?.name ?? (mine ? null : title),
           status: MessageStatus.DELIVERED,
           createdAt: parsePancakeTime(m.inserted_at),
@@ -223,20 +229,20 @@ export async function ingestPancakeConversation(opts: {
     const idOf = new Map(rows.map((r) => [r.externalId, r.id]));
 
     // B13/F2: tệp đính kèm, ảnh khách gửi sẽ được tải về chạy nền.
-    const withFiles = fresh.filter((m) => m.attachments?.some((f) => f.url?.startsWith("https://")));
+    const withFiles = fresh.filter((m) => classifyAttachments(m.attachments).length > 0);
     if (withFiles.length) {
       await prisma.messageAttachment.createMany({
-        data: withFiles.flatMap((m) =>
-          (m.attachments ?? [])
-            .filter((f) => f.url?.startsWith("https://") && idOf.get(String(m.id)))
-            .map((f) => ({
-              messageId: idOf.get(String(m.id))!,
-              kind: isImage(f) ? "IMAGE" : "FILE",
-              fileName: (f.name ?? (isImage(f) ? "anh-pancake.jpg" : "tep-pancake")).slice(0, 200),
-              mimeType: f.mime_type ?? (isImage(f) ? "image/jpeg" : null),
-              url: f.url!,
-            }))
-        ),
+        data: withFiles.flatMap((m) => {
+          const messageId = idOf.get(String(m.id));
+          if (!messageId) return [];
+          return classifyAttachments(m.attachments).map((f) => ({
+            messageId,
+            kind: f.kind,
+            fileName: f.fileName.slice(0, 200),
+            mimeType: f.mimeType,
+            url: f.url,
+          }));
+        }),
       });
       scheduleMediaIngest(
         withFiles.filter(fromCustomer).map((m) => idOf.get(String(m.id))!).filter(Boolean)
