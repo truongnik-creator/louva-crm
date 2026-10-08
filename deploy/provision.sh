@@ -147,9 +147,19 @@ else
       -subj "/CN=$SERVER_NAME" >/dev/null 2>&1
     chmod 600 /etc/nginx/tls/louva.key
   fi
-  sed -i 's|__TLS_BLOCK__|listen 443 ssl;\n    http2 on;\n    ssl_certificate /etc/nginx/tls/louva.crt;\n    ssl_certificate_key /etc/nginx/tls/louva.key;|' \
+  # http2 on; chỉ có từ nginx 1.25; Ubuntu 22.04 còn 1.18 nên phải dùng dạng
+  # cũ "listen 443 ssl http2;". Chọn theo phiên bản thật trên máy.
+  NGINX_VER="$(nginx -v 2>&1 | sed -n 's|.*nginx/\([0-9]*\)\.\([0-9]*\).*|\1 \2|p')"
+  NGX_MAJOR="${NGINX_VER%% *}"; NGX_MINOR="${NGINX_VER##* }"
+  if [ "$NGX_MAJOR" -gt 1 ] || { [ "$NGX_MAJOR" -eq 1 ] && [ "$NGX_MINOR" -ge 25 ]; }; then
+    TLS_LISTEN='listen 443 ssl;\n    http2 on;'
+  else
+    TLS_LISTEN='listen 443 ssl http2;'
+  fi
+  sed -i "s|__TLS_BLOCK__|$TLS_LISTEN\n    ssl_certificate /etc/nginx/tls/louva.crt;\n    ssl_certificate_key /etc/nginx/tls/louva.key;|" \
     /etc/nginx/sites-available/louva
-  nginx -t && systemctl reload nginx
+  nginx -t || { echo "nginx -t thất bại, không reload"; exit 1; }
+  systemctl reload nginx
   if [ "$CF_PROXY" = "1" ]; then
     echo "    TLS gốc tự ký; khách thấy chứng thư hợp lệ của biên Cloudflare."
     echo "    Đặt Cloudflare SSL/TLS về Full. Muốn Full (strict) thì thay bằng"
