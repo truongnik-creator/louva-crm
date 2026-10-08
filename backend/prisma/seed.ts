@@ -1,11 +1,15 @@
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { prisma } from "../src/lib/prisma";
 import { bootstrap } from "../src/lib/bootstrap";
 import { encryptNullable } from "../src/lib/crypto";
 import { putEncrypted } from "../src/lib/storage";
 import { RoleCode } from "../src/lib/rbac-catalog";
+import { randomToken } from "../src/lib/crypto";
+import { LEGACY_TO_INJECTION, parseClinicMode } from "../src/lib/stages";
+import { ND13_BODY, ND13_TITLE } from "../src/lib/consent-templates";
 import {
   AnesthesiaType,
+  ClinicMode,
   AppointmentStatus,
   AppointmentType,
   ChannelKind,
@@ -36,7 +40,32 @@ import {
 // Chạy lại nhiều lần được: mọi thứ đều upsert theo mã, và toàn bộ khối demo bị
 // bỏ qua nếu đã có khách trong CSDL.
 
-const PASSWORD = "123456";
+// S1: tài khoản và dữ liệu demo CHỈ tạo khi đặt SEED_DEMO=1. Không có cờ này
+// seed chỉ nạp danh mục (phòng ban, phòng, ca, kênh, dịch vụ, mẫu tin).
+//
+//   SEED_DEMO=1                           tạo demo, mật khẩu chung 123456 (máy dev)
+//                                         mọi tài khoản bị buộc đổi mật khẩu lần đầu
+//   SEED_DEMO=1 SEED_DEMO_KEEP_PASSWORD=1 như trên nhưng KHÔNG buộc đổi mật khẩu,
+//                                         chỉ để trình diễn trên máy cá nhân
+//   SEED_DEMO_PASSWORD=...                đặt mật khẩu chung khác
+//
+// NODE_ENV=production: không bao giờ dùng 123456; không đặt SEED_DEMO_PASSWORD
+// thì sinh ngẫu nhiên và in ra một lần, và luôn buộc đổi mật khẩu.
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const SEED_DEMO = process.env.SEED_DEMO === "1";
+const DEV_DEMO_PASSWORD = "123456";
+
+function demoPassword(): string {
+  const fromEnv = process.env.SEED_DEMO_PASSWORD;
+  if (IS_PRODUCTION) {
+    if (fromEnv && fromEnv !== DEV_DEMO_PASSWORD && fromEnv.length >= 10) return fromEnv;
+    return randomToken(12);
+  }
+  return fromEnv || DEV_DEMO_PASSWORD;
+}
+
+const PASSWORD = demoPassword();
+const KEEP_PASSWORD = !IS_PRODUCTION && process.env.SEED_DEMO_KEEP_PASSWORD === "1";
 
 /** Ngày làm việc mẫu = hôm nay, giờ cố định để lưới lịch luôn có dữ liệu. */
 function at(hour: number, minute = 0, dayOffset = 0): Date {
@@ -105,7 +134,7 @@ async function main() {
   const passwordHash = await bcrypt.hash(PASSWORD, 10);
   const userByEmail = new Map<string, string>();
 
-  for (const s of staff) {
+  for (const s of SEED_DEMO ? staff : []) {
     const existing = await prisma.user.findUnique({ where: { email: s.email } });
     if (existing) {
       userByEmail.set(s.email, existing.id);
@@ -115,6 +144,7 @@ async function main() {
       data: {
         email: s.email,
         passwordHash,
+        mustChangePassword: !KEEP_PASSWORD,
         name: s.name,
         title: s.title || null,
         departmentId: deptByCode.get(s.dept) ?? null,
@@ -229,18 +259,196 @@ async function main() {
       });
     }
   }
+
+  // ------------------------------------------- BẢNG GIÁ NOVA (F6, phòng khám tiêm)
+  // 29 dịch vụ + combo Full Face, giá niêm yết đúng bảng giá NOVA trong đặc tả.
+  // Lô 4 (F13 + F21): KHÔNG đặt giá sàn cứng. Giảm giá chỉ đi qua đợt ưu đãi
+  // đang chạy hoặc trần giảm theo vai (sale mặc định 0%, vượt trần chờ quản lý
+  // duyệt). Muốn chặn tuyệt đối dưới một mức thì đặt minPrice < giá niêm yết ở
+  // màn Bảng giá. Số ngày tái tiêm: botox 120, filler 180 (theo đặc tả); nhóm
+  // khác để trống, bác sĩ khai ở danh mục dịch vụ.
+  const novaCategories = [
+    { code: "NOVA_FILLER", name: "Filler", sortOrder: 11 },
+    { code: "NOVA_BOTOX_HAM", name: "Botox gọn hàm", sortOrder: 12 },
+    { code: "NOVA_BOTOX_NHAN", name: "Botox xoá nhăn", sortOrder: 13 },
+    { code: "NOVA_HOC_MAT", name: "Tinh chất hốc mắt", sortOrder: 14 },
+    { code: "NOVA_TAN_MO", name: "Tan mỡ", sortOrder: 15 },
+    { code: "NOVA_BOTOX_BODY", name: "Botox body", sortOrder: 16 },
+    { code: "NOVA_TAN", name: "Tan", sortOrder: 17 },
+    { code: "NOVA_BAP", name: "BAP", sortOrder: 18 },
+    { code: "NOVA_MESO", name: "Meso", sortOrder: 19 },
+    { code: "NOVA_HIFU", name: "HIFU", sortOrder: 20 },
+    { code: "NOVA_COMBO", name: "Combo", sortOrder: 21 },
+  ];
+  for (const c of novaCategories) {
+    await prisma.serviceCategory.upsert({ where: { code: c.code }, create: c, update: { name: c.name } });
+  }
+  const novaCat = new Map((await prisma.serviceCategory.findMany()).map((c) => [c.code, c.id]));
+  const novaServices: Array<{ code: string; name: string; cat: string; price: number; kind?: string; duration?: number }> = [
+    { code: "NV-FIL-SARDENYA", name: "Filler Hàn Sardenya (1cc)", cat: "NOVA_FILLER", price: 2_500_000 },
+    { code: "NV-FIL-YOUTHFILL", name: "Filler Hàn Vip Youthfill (1cc)", cat: "NOVA_FILLER", price: 3_500_000 },
+    { code: "NV-FIL-RES", name: "Filler Res (1cc)", cat: "NOVA_FILLER", price: 7_000_000 },
+    { code: "NV-FIL-JU", name: "Filler Ju (1cc)", cat: "NOVA_FILLER", price: 8_000_000 },
+    { code: "NV-BTX-HAM-HAN", name: "Botox gọn hàm Hàn", cat: "NOVA_BOTOX_HAM", price: 3_500_000 },
+    { code: "NV-BTX-HAM-MY", name: "Botox gọn hàm Mỹ", cat: "NOVA_BOTOX_HAM", price: 9_000_000 },
+    { code: "NV-BTX-NHAN", name: "Botox xoá nhăn (1 vùng)", cat: "NOVA_BOTOX_NHAN", price: 2_000_000 },
+    { code: "NV-HOCMAT-HAN", name: "Tinh chất hốc mắt Hàn (1cc)", cat: "NOVA_HOC_MAT", price: 4_500_000 },
+    { code: "NV-HOCMAT-TEO1", name: "Tinh chất hốc mắt Teo 1", cat: "NOVA_HOC_MAT", price: 6_000_000 },
+    { code: "NV-HOCMAT-TEO2", name: "Tinh chất hốc mắt Teo 2", cat: "NOVA_HOC_MAT", price: 9_000_000 },
+    { code: "NV-TANMO-MA", name: "Tan mỡ má", cat: "NOVA_TAN_MO", price: 2_500_000 },
+    { code: "NV-TANMO-NONG", name: "Tan mỡ nọng", cat: "NOVA_TAN_MO", price: 3_000_000 },
+    { code: "NV-TANMO-BAPTAY", name: "Tan mỡ bắp tay (1 buổi)", cat: "NOVA_TAN_MO", price: 4_000_000 },
+    { code: "NV-BTXB-CAUVAI", name: "Botox body hạ cầu vai", cat: "NOVA_BOTOX_BODY", price: 5_000_000 },
+    { code: "NV-BTXB-BAPTAY", name: "Botox body bắp tay", cat: "NOVA_BOTOX_BODY", price: 5_000_000 },
+    { code: "NV-BTXB-BAPCHAN", name: "Botox body bắp chân", cat: "NOVA_BOTOX_BODY", price: 5_000_000 },
+    { code: "NV-TAN-ONG", name: "Tan (1 ống)", cat: "NOVA_TAN", price: 500_000 },
+    { code: "NV-BAP-KARISMA", name: "BAP Karisma", cat: "NOVA_BAP", price: 4_500_000 },
+    { code: "NV-BAP-JALUPRO", name: "BAP Jalupro", cat: "NOVA_BAP", price: 5_500_000 },
+    { code: "NV-MESO-TRANG", name: "Meso trắng sáng", cat: "NOVA_MESO", price: 3_000_000 },
+    { code: "NV-MESO-CANGBONG", name: "Meso căng bóng trắng sáng", cat: "NOVA_MESO", price: 5_000_000 },
+    { code: "NV-MESO-CAPAM", name: "Meso cấp ẩm thường", cat: "NOVA_MESO", price: 2_000_000 },
+    { code: "NV-MESO-CAPAM-VIP", name: "Meso cấp ẩm VIP", cat: "NOVA_MESO", price: 5_000_000 },
+    { code: "NV-MESO-MUN", name: "Meso điều trị mụn", cat: "NOVA_MESO", price: 2_500_000 },
+    { code: "NV-MESO-PHUCHOI", name: "Meso phục hồi", cat: "NOVA_MESO", price: 4_000_000 },
+    { code: "NV-MESO-KIEMDAU", name: "Meso kiềm dầu thu nhỏ lỗ chân lông", cat: "NOVA_MESO", price: 2_500_000 },
+    { code: "NV-HIFU-500", name: "HIFU 500S", cat: "NOVA_HIFU", price: 7_500_000, kind: ServiceKind.LASER },
+    { code: "NV-HIFU-700", name: "HIFU 700S", cat: "NOVA_HIFU", price: 10_500_000, kind: ServiceKind.LASER },
+    { code: "NV-HIFU-1000", name: "HIFU 1000S", cat: "NOVA_HIFU", price: 15_000_000, kind: ServiceKind.LASER },
+    { code: "NV-COMBO-FULLFACE", name: "Combo Full Face", cat: "NOVA_COMBO", price: 12_000_000, duration: 90 },
+  ];
+  const RETREAT_BY_CAT: Record<string, number> = {
+    NOVA_FILLER: 180,
+    NOVA_BOTOX_HAM: 120,
+    NOVA_BOTOX_NHAN: 120,
+    NOVA_BOTOX_BODY: 120,
+  };
+  const allBranches = await prisma.branch.findMany({ where: { active: true }, select: { id: true } });
+  for (const s of novaServices) {
+    const service = await prisma.service.upsert({
+      where: { code: s.code },
+      create: {
+        code: s.code,
+        name: s.name,
+        categoryId: novaCat.get(s.cat),
+        kind: s.kind ?? ServiceKind.INJECTION,
+        durationMin: s.duration ?? 45,
+        recoveryDays: 0,
+        anesthesia: AnesthesiaType.LOCAL,
+        requiresPreOpLab: false,
+        retreatDays: RETREAT_BY_CAT[s.cat] ?? null,
+      },
+      update: { name: s.name, categoryId: novaCat.get(s.cat) },
+    });
+    if (service.retreatDays == null && RETREAT_BY_CAT[s.cat]) {
+      await prisma.service.update({ where: { id: service.id }, data: { retreatDays: RETREAT_BY_CAT[s.cat] } });
+    }
+    // Seed Lô 3 đặt minPrice = giá niêm yết (khoá cứng mọi khoản giảm): gỡ đi.
+    await prisma.servicePrice.updateMany({
+      where: { serviceId: service.id, validTo: null, minPrice: s.price, price: s.price },
+      data: { minPrice: null },
+    });
+    for (const b of allBranches) {
+      const hasPrice = await prisma.servicePrice.findFirst({
+        where: { serviceId: service.id, branchId: b.id, validTo: null },
+      });
+      if (!hasPrice) {
+        await prisma.servicePrice.create({
+          data: { serviceId: service.id, branchId: b.id, price: s.price, minPrice: null },
+        });
+      }
+    }
+  }
+
+  // ------------------------------- MẪU ĐỒNG Ý XỬ LÝ DỮ LIỆU (Nghị định 13/2023)
+  await prisma.consentTemplate.upsert({
+    where: { code: "ND13-XU-LY-DU-LIEU" },
+    create: { code: "ND13-XU-LY-DU-LIEU", type: ConsentType.DATA_PRIVACY, title: ND13_TITLE, bodyText: ND13_BODY },
+    update: { title: ND13_TITLE, bodyText: ND13_BODY, type: ConsentType.DATA_PRIVACY },
+  });
+
   const svcByCode = new Map((await prisma.service.findMany()).map((s) => [s.code, s]));
+
+  // ------------------------------------------ Lô 7 · V2 LUẬT BÁN KÈM MẪU
+  // Luật MẪU do đội code đặt để thử tính năng, đánh dấu isSample = "mẫu, chờ bác
+  // sĩ duyệt". Bác sĩ duyệt (upsell.review) mới gỡ nhãn. Chỉ nạp khi chưa có luật nào.
+  if ((await prisma.upsellRule.count()) === 0) {
+    const sampleRules: Array<{ from: string; to: string; pitch: string; condition: string }> = [
+      {
+        from: "NV-BTX-HAM-HAN",
+        to: "NV-TANMO-NONG",
+        pitch: "Khách gọn hàm thường quan tâm thêm vùng nọng cằm. Mời bác sĩ đánh giá vùng nọng trước khi giới thiệu tan mỡ nọng.",
+        condition: "Bác sĩ đánh giá có mỡ vùng nọng cằm",
+      },
+      {
+        from: "NV-FIL-YOUTHFILL",
+        to: "NV-MESO-CAPAM",
+        pitch: "Giới thiệu liệu trình cấp ẩm da; hỏi bác sĩ thời điểm phù hợp sau tiêm filler.",
+        condition: "Theo chỉ định thời điểm của bác sĩ, không tự hẹn cùng ngày",
+      },
+      {
+        from: "NV-HOCMAT-HAN",
+        to: "NV-BTX-NHAN",
+        pitch: "Khách làm hốc mắt hay hỏi về nếp nhăn đuôi mắt. Giới thiệu botox xoá nhăn nếu bác sĩ thấy phù hợp.",
+        condition: "Có nếp nhăn động vùng đuôi mắt, bác sĩ đồng ý",
+      },
+      {
+        from: "NV-HIFU-500",
+        to: "NV-MESO-CANGBONG",
+        pitch: "Giới thiệu meso căng bóng làm liệu trình đi kèm HIFU; bác sĩ quyết định lịch các buổi.",
+        condition: "Sau khi bác sĩ khám da",
+      },
+    ];
+    for (const r of sampleRules) {
+      const a = svcByCode.get(r.from);
+      const b = svcByCode.get(r.to);
+      if (!a || !b) continue;
+      await prisma.upsellRule.create({
+        data: { triggerServiceId: a.id, suggestServiceId: b.id, pitch: r.pitch, conditionNote: r.condition, isSample: true },
+      });
+    }
+  }
+
+  // ------------------------------------------ Lô 8 · J3 CHECKLIST VIỆC THEO BƯỚC MẪU
+  // Việc MẪU do đội code đặt (isSample), chủ phòng khám sửa hoặc tắt ở màn Việc
+  // theo bước. Chỉ nạp khi chưa có mục nào. Mẫu tin không hứa kết quả, không nói giá chốt.
+  if ((await prisma.stageChecklistItem.count()) === 0) {
+    const items: Array<{ stage: string; title: string; dueDays: number; messageTemplate?: string }> = [
+      { stage: "NHAN_TIN", title: "Hỏi vùng muốn làm, ngân sách, dịp; ghi vào Hồ sơ nhu cầu", dueDays: 0 },
+      { stage: "NHAN_TIN", title: "Mời khách gửi ảnh vùng muốn làm để bác sĩ xem trước", dueDays: 1, messageTemplate: "Dạ chị gửi giúp em ảnh chụp thẳng vùng chị muốn cải thiện, em chuyển bác sĩ xem trước và tư vấn kỹ hơn cho chị ạ." },
+      { stage: "CO_ANH", title: "Gửi nhận xét của bác sĩ và mời đặt lịch có cọc", dueDays: 1, messageTemplate: "Dạ bác sĩ đã xem ảnh của chị. Em mời chị qua phòng khám để bác sĩ thăm khám trực tiếp, chị chọn giúp em khung giờ thuận tiện ạ." },
+      { stage: "LICH_COC", title: "Gọi xác nhận lịch trước 1 ngày, gửi vị trí và hướng dẫn gửi xe", dueDays: 0 },
+      { stage: "DEN_CO_SO", title: "Lập báo giá 3 phương án sau khi bác sĩ khám", dueDays: 0 },
+      { stage: "LAM_DICH_VU", title: "Gửi hướng dẫn chăm sóc sau tiêm, hẹn mốc tái khám", dueDays: 0 },
+    ];
+    let order = 0;
+    for (const it of items) {
+      await prisma.stageChecklistItem.create({ data: { ...it, sortOrder: order++, isSample: true } });
+    }
+  }
 
   // ------------------------------------------------------------- MẪU TIN NHANH
   if ((await prisma.quickReply.count()) === 0) {
     await prisma.quickReply.createMany({
       data: [
-        { title: "Xác nhận lịch hẹn", category: "Lễ tân", content: "Dạ em xác nhận lịch hẹn của chị lúc {{gio}} ngày {{ngay}} tại phòng khám ạ. Chị đến trước 10 phút để làm thủ tục giúp em nhé." },
-        { title: "Nhắc tái khám", category: "Hậu phẫu", content: "Dạ chị ơi, mai là lịch tái khám của chị lúc {{gio}} ạ. Chị sắp xếp qua đúng hẹn giúp em nhé." },
-        { title: "Gửi báo giá", category: "Tư vấn", content: "Dạ em gửi chị báo giá dịch vụ {{dich_vu}}: {{gia}}. Mức giá tuỳ tình trạng thực tế sau khi bác sĩ thăm khám ạ." },
+        { title: "Xác nhận lịch hẹn", category: "Lễ tân", content: "Dạ em xác nhận lịch hẹn của chị lúc {{gio_hen}} ngày {{ngay_hen}} tại phòng khám ạ. Chị đến trước 10 phút để làm thủ tục giúp em nhé." },
+        { title: "Nhắc tái khám", category: "Hậu phẫu", content: "Dạ chị ơi, mai là lịch tái khám của chị lúc {{gio_hen}} ạ. Chị sắp xếp qua đúng hẹn giúp em nhé." },
+        { title: "Gửi báo giá", category: "Tư vấn", content: "Dạ em gửi chị báo giá dịch vụ {{dich_vu_quan_tam}}: {{gia_dich_vu_quan_tam}}. Mức giá tuỳ tình trạng thực tế sau khi bác sĩ thăm khám ạ." },
         { title: "Dặn trước mổ", category: "Tiền phẫu", content: "Dạ chị nhịn ăn uống từ 22h đêm trước, ngưng thuốc chống đông 7 ngày và mang theo kết quả xét nghiệm giúp em ạ." },
-        { title: "Nhắc thanh toán", category: "Kế toán", content: "Dạ chị ơi, phần còn lại {{so_tien}} chị thanh toán trước ngày {{han}} giúp em nhé. Em cảm ơn chị ạ." },
+        { title: "Nhắc thanh toán", category: "Kế toán", content: "Dạ chị ơi, phần còn lại {{cong_no}} chị thanh toán trước ngày {{han_thanh_toan}} giúp em nhé. Em cảm ơn chị ạ." },
       ],
+    });
+  }
+
+  if (!SEED_DEMO) {
+    console.log("Đã nạp danh mục. Bỏ qua tài khoản và dữ liệu demo (đặt SEED_DEMO=1 để tạo).");
+    return;
+  }
+
+  if (KEEP_PASSWORD) {
+    // Máy trình diễn cá nhân: cho cả tài khoản quản trị mặc định vào thẳng.
+    await prisma.user.updateMany({
+      where: { email: { in: [process.env.ADMIN_EMAIL ?? "admin@louva.vn", ...staff.map((x) => x.email)] } },
+      data: { mustChangePassword: false },
     });
   }
 
@@ -307,6 +515,10 @@ async function main() {
     { code: "KH-2608-0188", name: "Trịnh Thu Hằng", phone: "0946882200", stage: FunnelStage.DEN, status: CustomerStatus.LEAD, gender: Gender.FEMALE, interest: ["Combo trẻ hoá"], channel: "google", tv: "minhngoc@louva.vn", ts: "minhngoc@louva.vn", city: "Hà Nội" },
   ];
 
+  // F1: phòng khám tiêm (mặc định) dùng bộ 7 bước, đổi bước cũ của khách mẫu sang bộ mới.
+  const clinicMode = parseClinicMode((await prisma.systemSetting.findUnique({ where: { key: "clinic.mode" } }))?.value);
+  const stageOf = (legacy: string) => (clinicMode === ClinicMode.INJECTION ? (LEGACY_TO_INJECTION[legacy] ?? legacy) : legacy);
+
   const customerByName = new Map<string, string>();
   for (const c of customerSeed) {
     const created = await prisma.customer.create({
@@ -320,7 +532,9 @@ async function main() {
         city: c.city,
         note: c.note,
         status: c.status,
-        stage: c.stage,
+        stage: stageOf(c.stage),
+        stageChangedAt: daysAgo(2),
+        ...(stageOf(c.stage) === "MAT_KHACH" ? { lostReason: "KHAC" } : {}),
         channelId: channelByKey.get(c.channel!),
         campaignId: c.campaign,
         interest: JSON.stringify(c.interest),
@@ -334,6 +548,97 @@ async function main() {
     customerByName.set(c.name, created.id);
   }
   const cid = (name: string) => customerByName.get(name)!;
+
+  // ------------------------------------------- KHÁCH MẪU PHÒNG KHÁM TIÊM (F6)
+  // Mỗi khách đứng ở một bước của quy trình 7 bước để bảng kanban có dữ liệu.
+  const injectionCustomers = [
+    { code: "KH-2609-0201", name: "Đỗ Minh Anh", phone: "0936120501", stage: "TIEP_CAN", interest: ["Filler Hàn Sardenya (1cc)"], channel: "facebook", ts: "minhngoc@louva.vn" },
+    { code: "KH-2609-0202", name: "Phan Ngọc Hân", phone: "0936120502", stage: "NHAN_TIN", interest: ["Botox gọn hàm Hàn"], channel: "tiktok", ts: "haiyen@louva.vn" },
+    { code: "KH-2609-0203", name: "Nguyễn Khánh Linh", phone: "0936120503", stage: "CO_ANH", interest: ["Tinh chất hốc mắt Hàn (1cc)"], channel: "facebook", ts: "minhngoc@louva.vn" },
+    { code: "KH-2609-0204", name: "Trần Thảo Vy", phone: "0936120504", stage: "LICH_COC", interest: ["Combo Full Face"], channel: "tiktok", ts: "haiyen@louva.vn" },
+    { code: "KH-2609-0205", name: "Lê Hải Yến", phone: "0936120505", stage: "LAM_DICH_VU", interest: ["Meso căng bóng trắng sáng"], channel: "facebook", ts: "minhngoc@louva.vn", served: 20 },
+    { code: "KH-2609-0206", name: "Vũ Diệu Thuý", phone: "0936120506", stage: "QUAY_LAI", interest: ["HIFU 700S", "Botox xoá nhăn (1 vùng)"], channel: "khach_cu", ts: "haiyen@louva.vn", served: 3 },
+    { code: "KH-2609-0207", name: "Hoàng Mỹ Tâm", phone: "0936120507", stage: "MAT_KHACH", interest: ["Tan mỡ nọng"], channel: "facebook", ts: "minhngoc@louva.vn", lost: "CHE_GIA" },
+  ];
+  if (clinicMode === ClinicMode.INJECTION) {
+    for (const c of injectionCustomers) {
+      const created = await prisma.customer.create({
+        data: {
+          code: c.code,
+          name: c.name,
+          phone: c.phone,
+          gender: Gender.FEMALE,
+          city: "Hà Nội",
+          status: c.served ? CustomerStatus.ACTIVE : CustomerStatus.LEAD,
+          stage: c.stage,
+          stageChangedAt: daysAgo(1),
+          lostReason: c.lost ?? null,
+          lastServiceAt: c.served ? daysAgo(c.served) : null,
+          channelId: channelByKey.get(c.channel),
+          interest: JSON.stringify(c.interest),
+          telesaleId: uid(c.ts),
+          assignedToId: uid(c.ts),
+          lastContactAt: daysAgo(1),
+          branchLinks: { create: [{ branchId: tmv.id, isPrimary: true }] },
+          stageHistory: { create: { fromStage: null, toStage: c.stage, source: "MIGRATION", note: "Dữ liệu mẫu" } },
+        },
+      });
+      customerByName.set(c.name, created.id);
+    }
+    // Lịch có cọc (đã nhận) và lịch chờ cọc cho ngày mai.
+    const tomorrow10 = new Date(daysAgo(-1).setHours(10, 0, 0, 0));
+    const fullFace = svcByCode.get("NV-COMBO-FULLFACE")!;
+    const vyAppt = await prisma.appointment.create({
+      data: {
+        code: "LH-2609-0001",
+        branchId: tmv.id,
+        customerId: cid("Trần Thảo Vy"),
+        type: AppointmentType.TREATMENT,
+        title: fullFace.name,
+        serviceId: fullFace.id,
+        startAt: tomorrow10,
+        endAt: new Date(tomorrow10.getTime() + 90 * 60000),
+        status: AppointmentStatus.CONFIRMED,
+        depositAmount: 500_000,
+        depositStatus: "DA_COC",
+        depositConfirmedAt: daysAgo(1),
+        createdById: uid("letan@louva.vn"),
+      },
+    });
+    await prisma.payment.create({
+      data: {
+        code: "PT-2609-0901",
+        branchId: tmv.id,
+        customerId: cid("Trần Thảo Vy"),
+        appointmentId: vyAppt.id,
+        type: "DEPOSIT",
+        amount: 500_000,
+        method: PaymentMethod.BANK_TRANSFER,
+        reference: "LH-2609-0001",
+        note: "Cọc lịch LH-2609-0001",
+        receivedById: uid("letan@louva.vn"),
+        paidAt: daysAgo(1),
+      },
+    });
+    const hocMat = svcByCode.get("NV-HOCMAT-HAN")!;
+    const tomorrow14 = new Date(daysAgo(-1).setHours(14, 0, 0, 0));
+    await prisma.appointment.create({
+      data: {
+        code: "LH-2609-0002",
+        branchId: tmv.id,
+        customerId: cid("Nguyễn Khánh Linh"),
+        type: AppointmentType.TREATMENT,
+        title: hocMat.name,
+        serviceId: hocMat.id,
+        startAt: tomorrow14,
+        endAt: new Date(tomorrow14.getTime() + 45 * 60000),
+        status: AppointmentStatus.PENDING,
+        depositAmount: 500_000,
+        depositStatus: "CHO_COC",
+        createdById: uid("letan@louva.vn"),
+      },
+    });
+  }
 
   // ------------------------------------------------------------- HỘI THOẠI ZALO
   const oaConfig = await prisma.zaloOAConfig.create({
@@ -846,7 +1151,12 @@ async function main() {
   console.log("=================================================");
   console.log("Đã nạp dữ liệu mẫu theo prototype.");
   console.log(`  ${staff.length} nhân viên · mật khẩu chung: ${PASSWORD}`);
-  console.log(`  ${customerSeed.length} khách · ${conversations.length} hội thoại Zalo`);
+  console.log(
+    KEEP_PASSWORD
+      ? "  SEED_DEMO_KEEP_PASSWORD=1: không buộc đổi mật khẩu (chỉ dùng trên máy cá nhân)."
+      : "  Mọi tài khoản demo bị buộc đổi mật khẩu ở lần đăng nhập đầu."
+  );
+  console.log(`  ${customerSeed.length + (clinicMode === ClinicMode.INJECTION ? injectionCustomers.length : 0)} khách · ${conversations.length} hội thoại Zalo`);
   console.log(`  ${appointments.length} lịch hẹn hôm nay · ${surgeries.length} ca mổ`);
   console.log("Đăng nhập thử:");
   console.log("  Giám đốc      giamdoc@louva.vn");

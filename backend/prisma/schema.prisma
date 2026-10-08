@@ -46,6 +46,15 @@ model Branch {
   phone     String?
   timezone  String   @default("Asia/Ho_Chi_Minh")
   active    Boolean  @default(true)
+  /// F24: link bản đồ, chỉ dẫn gửi xe, chỉ dẫn toà nhà (sảnh, tầng), ảnh mặt tiền.
+  mapUrl         String?
+  parkingGuide   String?
+  buildingGuide  String?
+  facadePhotoUrl String?
+  /// F25: tài khoản nhận cọc của cơ sở (trống thì lấy Cài đặt hệ thống).
+  bankBin         String?
+  bankAccountNo   String?
+  bankAccountName String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -123,6 +132,12 @@ model User {
   department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   status       String    @default("ACTIVE") // UserStatus
   mustChangePassword Boolean @default(false)
+  /// Số lần đăng nhập sai liên tiếp; về 0 khi đăng nhập đúng (S6).
+  failedLoginCount Int     @default(0)
+  /// Khoá tạm tới mốc này sau quá nhiều lần sai mật khẩu (S6).
+  lockedUntil  DateTime?
+  /// Lô 7 · P3: lựa chọn của người dùng trên bảng bước khách (kiểu xem, bộ lọc nhanh), JSON.
+  boardPrefs   String?
   lastLoginAt  DateTime?
   resignedAt   DateTime?
   createdAt    DateTime  @default(now())
@@ -442,6 +457,9 @@ model CampaignCost {
   date       DateTime
   amount     Int // đồng
   note       String?
+  /// F15: nguồn nhập chi phí (CostSource): MANUAL | CSV_META | CSV_TIKTOK | CSV_OTHER.
+  source     String   @default("MANUAL")
+  updatedAt  DateTime @default(now()) @updatedAt
 
   @@unique([campaignId, date])
   @@map("campaign_costs")
@@ -457,6 +475,8 @@ model Lead {
   campaign     Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   name         String
   phone        String?
+  /// SĐT chuẩn hoá dạng 0xxxxxxxxx (lib/phone.ts), dùng chống trùng (B17).
+  phoneNormalized String?
   zaloUserId   String?
   interest     String? // dịch vụ quan tâm
   stage        String    @default("NEW") // LeadStage
@@ -467,13 +487,25 @@ model Lead {
   convertedCustomerId String? @unique
   convertedCustomer   Customer? @relation("LeadConverted", fields: [convertedCustomerId], references: [id], onDelete: SetNull)
   externalId   String? // id từ Facebook Lead Ads — dùng để chống trùng
+  /// F5: nguồn quảng cáo lấy từ Pancake (nếu API trả về).
+  adId         String?
+  adPostId     String?
+  adCampaign   String?
   firstContactAt DateTime?
+  /// F15: mốc lead có SĐT (lần đầu), mốc khách đến lần đầu (check-in).
+  hasPhoneAt   DateTime?
+  showedUpAt   DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   @@unique([externalId])
+  @@index([hasPhoneAt])
+  @@index([showedUpAt])
   @@index([stage, createdAt])
   @@index([assignedToId])
+  @@index([phone])
+  @@index([phoneNormalized])
+  @@index([branchId])
   @@map("leads")
 }
 
@@ -485,7 +517,11 @@ model Customer {
   id           String    @id @default(uuid())
   code         String    @unique // KH-2608-0187
   name         String
+  /// Tên bỏ dấu, chữ thường, gộp khoảng trắng — để cảnh báo tên gần giống (B17).
+  nameNormalized String?
   phone        String?
+  /// SĐT chuẩn hoá dạng 0xxxxxxxxx (lib/phone.ts), dùng chống trùng (B17).
+  phoneNormalized String?
   email        String?
   zaloUserId   String?   @unique
   dob          DateTime?
@@ -493,7 +529,20 @@ model Customer {
   address      String?
   city         String?
   status       String    @default("LEAD") // CustomerStatus
-  stage        String    @default("MOI") // giai đoạn phễu, xem types/enums.ts FunnelStage
+  stage        String    @default("TIEP_CAN") // giai đoạn phễu, xem lib/stages.ts (INJECTION | SURGERY)
+  /// F1: lý do mất khách (LostReason), bắt buộc khi ở bước mất khách.
+  lostReason   String?
+  stageChangedAt DateTime?
+  /// F1: lần làm dịch vụ gần nhất, để nhận ra khách quay lại trong N ngày.
+  lastServiceAt DateTime?
+  /// Nghị định 13/2023: khách đồng ý cho xử lý dữ liệu bằng AI (có chuyển ra nước ngoài).
+  aiDataConsent   Boolean  @default(false)
+  aiDataConsentAt DateTime?
+  aiDataConsentById String?
+  /// F11: khách từ chối nhận tin gửi theo nhóm (không bao giờ nằm trong hàng đợi gửi).
+  optOut       Boolean   @default(false)
+  optOutAt     DateTime?
+  optOutReason String?
   channelId    String?
   channel      Channel?  @relation(fields: [channelId], references: [id], onDelete: SetNull)
   campaignId   String?
@@ -507,7 +556,15 @@ model Customer {
   telesale     User?     @relation("CustomerTelesale", fields: [telesaleId], references: [id], onDelete: SetNull)
   hidden       Boolean   @default(false) // "ẩn hồ sơ" thay cho xoá
   hiddenReason String?
+  /// Hồ sơ này đã được gộp vào khách nào (màn Gộp hồ sơ trùng, B17).
+  mergedIntoId String?
   lastContactAt DateTime?
+  /// F32: lần trả tiền thật đầu tiên (không tính hoàn tiền, voucher).
+  firstPurchaseAt DateTime?
+  /// F19: mã giới thiệu của khách này; khách giới thiệu mình (Customer.id).
+  referralCode String?   @unique
+  referredById String?
+  referredAt   DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -529,16 +586,55 @@ model Customer {
   dataAccessLogs DataAccessLog[]
   breakGlass    BreakGlassGrant[]
   leadOrigin    Lead?     @relation("LeadConverted")
+  stageHistory  StageHistory[]
 
   @@index([status])
   @@index([stage])
   @@index([assignedToId])
   @@index([phone])
+  @@index([phoneNormalized])
+  @@index([nameNormalized])
+  @@index([createdAt])
+  @@index([lastContactAt])
+  @@index([firstPurchaseAt])
+  @@index([referredById])
   productUsages ProductUsage[]
   consultationSessions ConsultationSession[]
   treatmentPlans       TreatmentPlan[]
   caseStudies          CaseStudy[]
+  upsellOffers         UpsellOffer[]
+  /// Lô 8 · P6: cơ hội bán (pipeline theo cơ hội); V3: gói liệu trình.
+  opportunities        Opportunity[]
+  treatmentPackages    TreatmentPackage[]
+  /// Lô 8 · C3: hồ sơ nhu cầu chọn nhanh (JSON: vùng, ngân sách, nỗi sợ, người quyết định, dịp, nơi so sánh).
+  needsProfile         String?
   @@map("customers")
+}
+
+// F1: lịch sử đổi bước của khách, nền cho báo cáo chuyển đổi theo bước.
+model StageHistory {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  fromStage  String?
+  toStage    String
+  /// MANUAL | AUTO | IMPORT | MIGRATION
+  source     String   @default("MANUAL")
+  /// Sự kiện gây ra khi source = AUTO (StageEvent)
+  event      String?
+  lostReason String?
+  note       String?
+  userId     String?
+  userName   String?
+  createdAt  DateTime @default(now())
+  /// Lô 8 · P6: cơ hội của lần đổi bước (null = dòng cũ chưa chuyển dữ liệu).
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@index([toStage, createdAt])
+  @@index([opportunityId, createdAt])
+  @@map("stage_history")
 }
 
 // Khách liên thông toàn công ty nhưng có ghi nhận từng cơ sở đã phục vụ.
@@ -552,6 +648,7 @@ model CustomerBranchLink {
   firstSeenAt DateTime @default(now())
 
   @@unique([customerId, branchId])
+  @@index([branchId])
   @@map("customer_branch_links")
 }
 
@@ -561,6 +658,7 @@ model Tag {
   color String @default("#177f4d")
 
   customers CustomerTag[]
+  conversations ConversationTag[]
 
   @@map("tags")
 }
@@ -609,9 +707,29 @@ model Task {
   createdById String?
   createdBy   User?     @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt   DateTime  @default(now())
+  /// Lô 4: loại việc (TaskKind) để trang Việc của tôi, màn Chăm sóc gom nhóm.
+  kind        String    @default("OTHER")
+  /// Quy tắc tự động sinh ra việc này (khoá job, F9); trống = người tạo tay.
+  source      String?
+  /// F10: lần thực hiện và mốc chăm sóc (D0, D1, D3...).
+  procedureId String?
+  milestone   String?
+  /// F10: kết quả "Đã liên hệ" (AftercareResult) và ghi chú.
+  result      String?
+  resultNote  String?
+  contactedAt DateTime?
+  contactedById String?
+  /// Lô 8 · J3: việc sinh từ checklist bước (cơ hội, bước, mục checklist).
+  opportunityId String?
+  stageKey      String?
+  checklistItemId String?
 
   @@index([assigneeId, status])
+  @@index([opportunityId])
   @@index([dueAt])
+  @@index([kind, status, dueAt])
+  @@index([customerId])
+  @@index([procedureId])
   @@map("tasks")
 }
 
@@ -665,10 +783,32 @@ model Conversation {
   @@unique([externalId, oaConfigId])
   @@index([kind, lastMessageAt])
   @@index([assignedToId])
+  @@index([branchId])
+  @@index([customerId])
+  @@index([channel])
   pancakePageId String?
   pancakePage   PancakePage? @relation(fields: [pancakePageId], references: [id], onDelete: SetNull)
   /// ID hội thoại bên Pancake — khoá khử trùng lặp khi đồng bộ lại.
   pancakeConversationId String? @unique
+  /// F5: nguồn quảng cáo của hội thoại (Pancake trả về nếu khách nhắn từ quảng cáo).
+  adId       String?
+  adPostId   String?
+  adCampaign String?
+  leadId     String?
+  /// F26: mốc tin khách gửi, tin mình trả lời gần nhất; khách chờ từ lúc nào
+  /// (tin khách đầu tiên chưa được trả lời, null = không ai chờ).
+  lastInboundAt  DateTime?
+  lastOutboundAt DateTime?
+  waitingSince   DateTime?
+  assignedAt     DateTime?
+  /// F9 quy tắc 2: tin có từ khoá y khoa, đã báo bác sĩ.
+  medicalFlag    Boolean   @default(false)
+  medicalFlagAt  DateTime?
+
+  tags  ConversationTag[]
+  notes ConversationNote[]
+
+  @@index([waitingSince])
   @@map("conversations")
 }
 
@@ -690,6 +830,7 @@ model ChatMessage {
   attachments MessageAttachment[]
 
   @@index([conversationId, createdAt])
+  @@index([createdAt])
   @@map("chat_messages")
 }
 
@@ -701,9 +842,18 @@ model MessageAttachment {
   fileName  String
   mimeType  String?
   size      Int?
-  storageKey String // khoá trong kho tệp cục bộ/S3
+  /// Khoá trong kho tệp mã hoá (lib/storage.ts). Trống khi tệp chỉ nằm ở máy chủ kênh chat (xem url).
+  storageKey String?
+  /// IV và auth tag AES-GCM khi tệp nằm trong kho mã hoá của mình.
+  encIv     String?
+  encTag    String?
+  /// Đường dẫn gốc bên Zalo/Pancake khi chưa tải về kho (B13).
+  url       String?
+  /// Bộ ảnh hồ sơ khách đã lưu từ tệp này ("Lưu ảnh vào hồ sơ", B13).
+  savedPhotoSetId String?
   createdAt DateTime @default(now())
 
+  @@index([messageId])
   @@map("message_attachments")
 }
 
@@ -769,6 +919,13 @@ model Appointment {
   startAt     DateTime
   endAt       DateTime
   status      String    @default("PENDING") // AppointmentStatus
+  /// F25: mã lịch (LH-YYMM-NNNN), dùng làm nội dung chuyển khoản cọc.
+  code        String?   @unique
+  depositAmount Int     @default(0) // đồng
+  /// DepositStatus: CHO_COC | DA_COC | HOAN_COC; null = không yêu cầu cọc
+  depositStatus String?
+  depositConfirmedAt DateTime?
+  depositConfirmedById String?
   note        String?
   cancelReason String?
   createdById String?
@@ -778,10 +935,12 @@ model Appointment {
 
   reminders AppointmentReminder[]
   visit     Visit?
+  payments  Payment[]
 
   @@index([branchId, startAt])
   @@index([customerId])
   @@index([status])
+  @@index([depositStatus])
   @@map("appointments")
 }
 
@@ -896,10 +1055,13 @@ model Service {
   requiresConsent Boolean @default(true)
   requiresPreOpLab Boolean @default(false)
   anesthesia   String? // AnesthesiaType mặc định
+  /// F10: số ngày tái tiêm (botox 120, filler 180...). Trống = không nhắc tái tiêm.
+  retreatDays  Int?
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
 
   prices        ServicePrice[]
+  promotions    PromotionService[]
   appointments  Appointment[]
   quotationItems QuotationItem[]
   contractItems ContractItem[]
@@ -908,6 +1070,8 @@ model Service {
   treatmentPlanItems TreatmentPlanItem[]
   caseStudies        CaseStudy[]
   materials ServiceMaterial[]
+  upsellTriggers UpsellRule[] @relation("UpsellTrigger")
+  upsellSuggests UpsellRule[] @relation("UpsellSuggest")
 
   @@map("services")
 }
@@ -946,11 +1110,26 @@ model Quotation {
   createdBy   User?    @relation("QuotationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   sentAt      DateTime?
   decidedAt   DateTime?
+  /// F21: giảm vượt trần của người lập thì chờ quản lý duyệt (ApprovalStatus).
+  approvalStatus String  @default("NOT_REQUIRED")
+  approvalRequestedAt DateTime?
+  approvedById String?
+  approvedAt   DateTime?
+  approvalNote String?
+  /// Lô 7 · V1: phương án được chọn khi lập từ báo giá 3 phương án (BASIC | RECOMMENDED | PACKAGE).
+  optionTier  String?
+  /// Lô 8 · P6: cơ hội của báo giá; V6: lý do khách từ chối, việc chăm lại đã tạo.
+  opportunityId String?
+  rejectReason  String?
+  followupTaskId String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  treatmentPlan TreatmentPlan?
   items    QuotationItem[]
   contract Contract?
+
+  @@index([approvalStatus])
 
   @@index([customerId])
   @@map("quotations")
@@ -967,6 +1146,14 @@ model QuotationItem {
   unitPrice   Int
   discount    Int       @default(0)
   amount      Int
+  /// F13 + F21: giá niêm yết lúc lập, tổng tiền giảm so với niêm yết, phần
+  /// giảm thuộc đợt ưu đãi, lý do, đợt ưu đãi, người duyệt giảm vượt trần.
+  listPrice      Int?
+  discountAmount Int     @default(0)
+  promotionDiscount Int  @default(0)
+  discountReason String?
+  promotionId    String?
+  approvedById   String?
 
   @@map("quotation_items")
 }
@@ -990,6 +1177,11 @@ model Contract {
   signedAt     DateTime?
   cancelReason String?
   note         String?
+  /// F17: CloseType FULL = sale chốt từ A đến Z, PARTIAL = sale kéo đến, bác sĩ chốt.
+  closeType    String    @default("FULL")
+  closingDoctorId String?
+  /// Lô 8 · P6: cơ hội của hợp đồng.
+  opportunityId String?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -1016,7 +1208,19 @@ model ContractItem {
   discount   Int      @default(0)
   amount     Int
   deliveredQty Int    @default(0)
+  /// F13 + F21: giá niêm yết lúc lập, tổng tiền giảm so với niêm yết, phần
+  /// giảm thuộc đợt ưu đãi, lý do, đợt ưu đãi, người duyệt giảm vượt trần.
+  listPrice      Int?
+  discountAmount Int     @default(0)
+  promotionDiscount Int  @default(0)
+  discountReason String?
+  promotionId    String?
+  approvedById   String?
+  /// F17: dòng upsale do kỹ thuật viên (điều dưỡng, bác sĩ) bán thêm, hưởng % upsale.
+  upsellById     String?
 
+  @@index([promotionId])
+  @@index([upsellById])
   @@map("contract_items")
 }
 
@@ -1056,6 +1260,14 @@ model Payment {
   contract     Contract? @relation(fields: [contractId], references: [id], onDelete: Restrict)
   invoiceId    String?
   invoice      Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  /// F25: phiếu cọc gắn với lịch hẹn.
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  /// PaymentType: DEPOSIT | PAYMENT | REFUND (REFUND lưu số âm)
+  type         String   @default("PAYMENT")
+  misaInvoiceNo String?
+  /// Phiếu cọc đã được trừ vào lần thanh toán dịch vụ lúc nào.
+  depositAppliedAt DateTime?
   code         String   @unique // PT-2608-0091
   amount       Int
   method       String   @default("CASH") // PaymentMethod
@@ -1068,6 +1280,7 @@ model Payment {
 
   @@index([branchId, paidAt])
   @@index([customerId])
+  @@index([appointmentId])
   commissionEntries CommissionEntry[]
   @@map("payments")
 }
@@ -1173,7 +1386,13 @@ model PhotoSet {
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
   procedureId String?
   procedure  ProcedureRecord? @relation(fields: [procedureId], references: [id], onDelete: SetNull)
-  stage      String // PhotoStage: PRE_OP | D1 | D7 | M1 | M3 | M6
+  stage      String // PhotoStage: PRE_OP | D0 | D1 | D7 | D30 | M1 | M3 | M6 | CHAT | CONSULT
+  /// F2: cho phép dùng ảnh làm marketing. Mặc định KHÔNG; chỉ bác sĩ, quản lý bật (có audit).
+  consentForMarketing Boolean @default(false)
+  consentSetById String?
+  consentSetAt   DateTime?
+  /// F2: ảnh tự lưu từ tin nhắn chat thì nhớ tin gốc.
+  sourceMessageId String?
   takenAt    DateTime @default(now())
   takenById  String?
   takenBy    User?    @relation("PhotoSetTakenBy", fields: [takenById], references: [id], onDelete: SetNull)
@@ -1233,6 +1452,14 @@ model ProcedureRecord {
   finishedAt  DateTime?
   report      String? // tường trình
   checklist   String? // JSON boolean[7] theo CHECKLIST tiền phẫu
+  /// F14: vùng tiêm, lượng tiêm theo đơn vị 0,1cc (15 = 1,5cc), điều dưỡng phụ.
+  injectionArea String?
+  volumeTenthCc Int?
+  nurseId       String?
+  /// F10: số ngày tái tiêm riêng của lần này (bác sĩ chỉnh), mốc tái tiêm, đã sinh việc chăm sóc.
+  retreatDays   Int?
+  retreatDueAt  DateTime?
+  aftercareGeneratedAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -1241,6 +1468,7 @@ model ProcedureRecord {
 
   @@index([branchId, scheduledAt])
   @@index([customerId])
+  @@index([retreatDueAt])
   productUsages ProductUsage[]
   caseStudies CaseStudy[]
   @@map("procedure_records")
@@ -1401,7 +1629,12 @@ model ProductUsage {
   branchId    String
   branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
+  /// Số ĐƠN VỊ NGUYÊN trừ khỏi lô (mở ống nào tính ống đó).
   quantity    Int      @default(1)
+  /// F14: lượng dùng thật theo 0,1 đơn vị (5 = 0,5 ống). Trống ở dữ liệu cũ = quantity × 10.
+  quantityTenths Int?
+  /// F14: giá vốn của lượng dùng thật tại thời điểm dùng (đồng) = đơn giá lô × lượng.
+  costAtUse   Int?
   usedAt      DateTime @default(now())
   recordedById String?
   recordedBy  User?    @relation("ProductUsageRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
@@ -1650,6 +1883,9 @@ model PayrollPeriod {
   closedById  String?
   closedBy    User?    @relation("PayrollCloser", fields: [closedById], references: [id], onDelete: SetNull)
   note        String?
+  /// F17: lần tính gần nhất, tham số dùng khi tính (JSON) để xem lại căn cứ.
+  computedAt  DateTime?
+  paramsJson  String?
   createdAt   DateTime @default(now())
 
   lines PayrollLine[]
@@ -1672,6 +1908,14 @@ model PayrollLine {
   total        Int @default(0)
   workedDays   Int @default(0)
   note         String?
+  /// F17: căn cứ tính (khách đến, doanh thu đã thu được tính, các khoản thưởng).
+  roleCode     String?
+  showups      Int @default(0)
+  revenue      Int @default(0)
+  salesBonus   Int @default(0)
+  upsellBonus  Int @default(0)
+  adsBonus     Int @default(0)
+  detailJson   String?
 
   @@unique([periodId, userId])
   @@map("payroll_lines")
@@ -1699,6 +1943,13 @@ model ConsultationSession {
   recoveryNote String? // thời gian nghỉ dưỡng khách chấp nhận được
   contraindicationNote String?
   note         String?
+  /// F30: vùng mặt (JSON mảng mã vùng: TRAN, MA, CAM, MOI, MUI, HOC_MAT, ...).
+  faceAreas    String?
+  /// F30: đề xuất dịch vụ, sản phẩm, liều (JSON mảng ConsultationProposal).
+  proposals    String?
+  /// F30: bộ ảnh "trước" chụp trong buổi tư vấn (PhotoSet mốc CONSULT).
+  photoSetId   String?
+  createdById  String?
   heldAt       DateTime  @default(now())
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -1725,6 +1976,11 @@ model TreatmentPlan {
   expectedResult String?
   riskNote      String?
   recoveryDays  Int?
+  /// F30: báo giá lập từ phác đồ (một phác đồ một báo giá).
+  quotationId   String?  @unique
+  quotation     Quotation? @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  note          String?
+  createdById   String?
   status        String   @default("DRAFT") // DRAFT | PROPOSED | ACCEPTED | REJECTED
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -1741,6 +1997,13 @@ model TreatmentPlanItem {
   plan      TreatmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
   serviceId String?
   service   Service?      @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  /// F30: sản phẩm dùng, liều theo 0,1 đơn vị (15 = 1,5cc), số lượng báo giá, giá niêm yết lúc lập.
+  productId   String?
+  productName String?
+  doseTenths  Int?
+  quantity    Int       @default(1)
+  listPrice   Int?
+  faceArea    String?
   name      String
   stepOrder Int           @default(1)
   note      String?
@@ -1928,4 +2191,595 @@ model ServiceMaterial {
 
   @@unique([serviceId, productId])
   @@map("service_materials")
+}
+
+// =============================================================================
+// LÔ 4 · ĐỢT 2: TỰ ĐỘNG HOÁ VÀ BÁN HÀNG
+// =============================================================================
+
+// F8: mỗi lần chạy một tác vụ nền.
+model JobRun {
+  id            String    @id @default(uuid())
+  jobKey        String
+  /// JobRunStatus: RUNNING | SUCCESS | FAILED
+  status        String    @default("RUNNING")
+  /// JobTrigger: SCHEDULE | MANUAL
+  trigger       String    @default("SCHEDULE")
+  startedAt     DateTime  @default(now())
+  finishedAt    DateTime?
+  durationMs    Int?
+  createdCount  Int       @default(0)
+  message       String?
+  error         String?
+  triggeredById String?
+
+  @@index([jobKey, startedAt])
+  @@index([startedAt])
+  @@map("job_runs")
+}
+
+// F8: khoá chạy tác vụ (một tác vụ không chạy chồng, kể cả khi có hai tiến trình).
+model JobLock {
+  key         String   @id
+  owner       String
+  lockedUntil DateTime
+
+  @@map("job_locks")
+}
+
+// F9: dấu "đã xử lý" của quy tắc tự động cho một đối tượng, để không sinh việc trùng.
+model AutomationMark {
+  id        String   @id @default(uuid())
+  ruleKey   String
+  dedupeKey String
+  createdAt DateTime @default(now())
+
+  @@unique([ruleKey, dedupeKey])
+  @@map("automation_marks")
+}
+
+// F26: con trỏ chia hội thoại xoay vòng theo cơ sở.
+model RoundRobinState {
+  key        String   @id
+  lastUserId String?
+  updatedAt  DateTime @updatedAt
+
+  @@map("round_robin_states")
+}
+
+// F26: nhãn và ghi chú nội bộ của hội thoại (cột 3 hộp thư).
+model ConversationTag {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tagId          String
+  tag            Tag          @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@unique([conversationId, tagId])
+  @@map("conversation_tags")
+}
+
+model ConversationNote {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String?
+  userName       String?
+  content        String
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+  @@map("conversation_notes")
+}
+
+// F11: nhóm khách lưu sẵn (bộ lọc JSON).
+model CustomerSegment {
+  id          String   @id @default(uuid())
+  name        String
+  filter      String // JSON SegmentFilter
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("customer_segments")
+}
+
+// F11: một lần gửi tin theo kịch bản cho một nhóm khách.
+model Broadcast {
+  id            String    @id @default(uuid())
+  name          String
+  branchId      String?
+  segmentId     String?
+  filter        String // JSON SegmentFilter đã dùng
+  template      String
+  /// BroadcastStatus: QUEUED | RUNNING | DONE | CANCELLED
+  status        String    @default("QUEUED")
+  total         Int       @default(0)
+  createdById   String?
+  createdByName String?
+  createdAt     DateTime  @default(now())
+  finishedAt    DateTime?
+
+  recipients BroadcastRecipient[]
+
+  @@index([status, createdAt])
+  @@map("broadcasts")
+}
+
+// F11: nhật ký gửi từng khách.
+model BroadcastRecipient {
+  id             String    @id @default(uuid())
+  broadcastId    String
+  broadcast      Broadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  customerId     String
+  conversationId String?
+  /// RecipientStatus: PENDING | SENT | FAILED | SKIPPED_OPT_OUT | TASK_CREATED | CANCELLED
+  status         String    @default("PENDING")
+  content        String?
+  error          String?
+  taskId         String?
+  messageId      String?
+  sentAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([broadcastId, status])
+  @@index([status, sentAt])
+  @@index([customerId])
+  @@map("broadcast_recipients")
+}
+
+// F13: đợt ưu đãi.
+model Promotion {
+  id          String    @id @default(uuid())
+  code        String    @unique
+  name        String
+  /// PromotionKind: PERCENT (value = %) | AMOUNT (value = đồng / đơn vị)
+  kind        String    @default("PERCENT")
+  value       Int
+  /// Số suất; trống = không giới hạn. Hết suất thì tự khoá.
+  maxSlots    Int?
+  usedSlots   Int       @default(0)
+  startAt     DateTime
+  endAt       DateTime
+  /// Trống = áp dụng mọi cơ sở.
+  branchId    String?
+  active      Boolean   @default(true)
+  lockedAt    DateTime?
+  note        String?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  services PromotionService[]
+
+  @@index([active, startAt, endAt])
+  @@map("promotions")
+}
+
+model PromotionService {
+  id          String    @id @default(uuid())
+  promotionId String
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  serviceId   String
+  service     Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, serviceId])
+  @@map("promotion_services")
+}
+
+// AI2: kịch bản bán hàng chuẩn, có phiên bản.
+model SalesScript {
+  id            String   @id @default(uuid())
+  key           String   @default("default")
+  version       Int
+  title         String
+  content       String
+  isActive      Boolean  @default(false)
+  note          String?
+  createdById   String?
+  createdByName String?
+  createdAt     DateTime @default(now())
+
+  @@unique([key, version])
+  @@map("sales_scripts")
+}
+
+// AI2: mỗi lần gợi ý câu trả lời, kèm câu thực gửi để đối chiếu.
+model AiSuggestion {
+  id             String    @id @default(uuid())
+  conversationId String
+  customerId     String?
+  userId         String?
+  userName       String?
+  /// AiSuggestionStatus
+  status         String
+  reason         String?
+  suggestion     String?
+  scriptId       String?
+  model          String?
+  checkResult    String? // JSON kết quả tự kiểm
+  sentMessageId  String?
+  sentText       String?
+  sentAt         DateTime?
+  edited         Boolean?
+  createdAt      DateTime  @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([customerId])
+  @@map("ai_suggestions")
+}
+
+// =============================================================================
+
+// F18: quản lý gắn cờ vi phạm chuyên môn cho nhân viên trong tháng (loại khỏi thi đua).
+model StaffViolationFlag {
+  id            String    @id @default(uuid())
+  userId        String
+  branchId      String?
+  periodKey     String // "2026-10"
+  reason        String
+  flaggedById   String?
+  flaggedByName String?
+  createdAt     DateTime  @default(now())
+  revokedAt     DateTime?
+  revokedById   String?
+
+  @@index([periodKey, userId])
+  @@map("staff_violation_flags")
+}
+
+// F20: voucher gắn khách, dùng khi thanh toán.
+model Voucher {
+  id                String    @id @default(uuid())
+  code              String    @unique
+  customerId        String?
+  branchId          String?
+  value             Int // đồng
+  expiresAt         DateTime
+  /// VoucherStatus: ACTIVE | REDEEMED | CANCELLED (hết hạn tính theo expiresAt)
+  status            String    @default("ACTIVE")
+  /// VoucherSource: MANUAL | REFERRAL | BIRTHDAY | GIFT
+  source            String    @default("MANUAL")
+  note              String?
+  createdById       String?
+  createdAt         DateTime  @default(now())
+  redeemedAt        DateTime?
+  redeemedById      String?
+  redeemedPaymentId String?
+
+  @@index([customerId])
+  @@index([status, expiresAt])
+  @@map("vouchers")
+}
+
+// F19: thưởng giới thiệu, mỗi khách được giới thiệu chỉ sinh MỘT lần thưởng.
+model ReferralReward {
+  id          String    @id @default(uuid())
+  /// Khách được giới thiệu (người mới).
+  customerId  String    @unique
+  referrerId  String
+  procedureId String?
+  /// ReferralRewardKind: VOUCHER | CASH
+  kind        String
+  amount      Int
+  voucherId   String?
+  /// ReferralRewardStatus: ISSUED (đã phát voucher) | PENDING_PAYOUT (chờ chi tiền) | PAID
+  status      String
+  paidAt      DateTime?
+  paidById    String?
+  createdAt   DateTime  @default(now())
+
+  @@index([referrerId])
+  @@map("referral_rewards")
+}
+
+// F20: danh mục quà tặng khi khách ra về, nhật ký tặng quà.
+model GiftItem {
+  id        String   @id @default(uuid())
+  name      String
+  cost      Int // đồng mỗi đơn vị
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("gift_items")
+}
+
+model GiftLog {
+  id          String   @id @default(uuid())
+  customerId  String
+  branchId    String
+  giftItemId  String
+  giftName    String
+  quantity    Int      @default(1)
+  unitCost    Int
+  totalCost   Int
+  visitId     String?
+  givenById   String?
+  givenByName String?
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([customerId])
+  @@index([branchId, createdAt])
+  @@map("gift_logs")
+}
+
+// F34: chỉ tiêu doanh thu theo tháng, cơ sở, dịch vụ. scopeKey = "YYYY-MM|branchId|serviceId" (* = tất cả).
+model SalesTarget {
+  id            String   @id @default(uuid())
+  scopeKey      String   @unique
+  periodKey     String
+  branchId      String?
+  serviceId     String?
+  targetRevenue Int      @default(0)
+  targetShowups Int?
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([periodKey])
+  @@map("sales_targets")
+}
+
+// AI4: điểm chấm hội thoại theo kịch bản mỗi tuần (không trừ lương tự động).
+model ConversationScore {
+  id             String   @id @default(uuid())
+  conversationId String
+  customerId     String?
+  /// Sale phụ trách hội thoại lúc chấm.
+  userId         String?
+  branchId       String?
+  weekKey        String // "2026-W40"
+  scriptId       String?
+  scriptVersion  Int?
+  /// ConversationScoreStatus: SCORED | FAILED
+  status         String
+  score          Int?
+  criteriaJson   String?
+  summary        String?
+  model          String?
+  error          String?
+  createdAt      DateTime @default(now())
+
+  @@unique([conversationId, weekKey])
+  @@index([weekKey, userId])
+  @@index([customerId])
+  @@map("conversation_scores")
+}
+
+// =============================================================================
+// Lô 6 · SAU 90 NGÀY
+
+// AI5: nháp tin chăm lại khách im lặng, chờ sale duyệt. Không bao giờ tự gửi:
+// duyệt xong mới vào hàng đợi gửi theo nhóm (F11), tôn trọng optOut và cửa sổ 24 giờ.
+model ReengageDraft {
+  id             String    @id @default(uuid())
+  customerId     String
+  branchId       String?
+  conversationId String?
+  /// Sale phụ trách lúc soạn (người được giao duyệt).
+  ownerId        String?
+  /// Ngày soạn theo giờ VN "2026-10-02".
+  dayKey         String
+  content        String
+  model          String?
+  /// ReengageDraftStatus: PENDING | QUEUED | REJECTED | EXPIRED
+  status         String    @default("PENDING")
+  /// Nội dung sale đã sửa trước khi duyệt (trống = giữ nguyên nháp AI).
+  finalContent   String?
+  edited         Boolean   @default(false)
+  broadcastId    String?
+  reviewedById   String?
+  reviewedByName String?
+  reviewedAt     DateTime?
+  rejectReason   String?
+  createdAt      DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@index([ownerId, status])
+  @@index([customerId])
+  @@map("reengage_drafts")
+}
+
+// AI6: bản tin sáng cho quản lý, chỉ từ số liệu tổng hợp (không có thông tin cá nhân khách).
+model ManagerBriefing {
+  id          String   @id @default(uuid())
+  dayKey      String
+  /// "ALL" = toàn hệ thống, còn lại là id cơ sở.
+  scopeKey    String
+  branchId    String?
+  /// BriefingSource: AI | FALLBACK
+  source      String
+  content     String
+  metricsJson String
+  model       String?
+  createdAt   DateTime @default(now())
+
+  @@unique([dayKey, scopeKey])
+  @@map("manager_briefings")
+}
+
+// =============================================================================
+// Lô 7 · CRM 360 LÔ A
+// =============================================================================
+
+// V2: luật gợi ý bán kèm (dịch vụ A -> gợi ý B). Quản lý cơ sở, giám đốc quản lý
+// (upsell.manage); luật mẫu do đội code đặt phải được bác sĩ duyệt nội dung (upsell.review).
+model UpsellRule {
+  id               String    @id @default(uuid())
+  /// Cơ sở áp dụng; trống = mọi cơ sở.
+  branchId         String?
+  triggerServiceId String
+  triggerService   Service   @relation("UpsellTrigger", fields: [triggerServiceId], references: [id], onDelete: Cascade)
+  suggestServiceId String
+  suggestService   Service   @relation("UpsellSuggest", fields: [suggestServiceId], references: [id], onDelete: Cascade)
+  /// Lời gợi ý cho tư vấn viên nói với khách.
+  pitch            String
+  /// Điều kiện áp dụng bằng lời (bác sĩ đánh giá...), hiện kèm gợi ý.
+  conditionNote    String?
+  /// Chỉ gợi ý khi khách chưa từng làm dịch vụ B (lần thực hiện hoàn tất hoặc hợp đồng).
+  onlyIfNotDone    Boolean   @default(true)
+  priority         Int       @default(0)
+  active           Boolean   @default(true)
+  /// Luật mẫu, chờ bác sĩ duyệt chuyên môn.
+  isSample         Boolean   @default(false)
+  reviewedById     String?
+  reviewedAt       DateTime?
+  createdById      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  offers UpsellOffer[]
+
+  @@index([triggerServiceId, active])
+  @@map("upsell_rules")
+}
+
+// V2: mỗi lần gợi ý bán kèm cho một khách và kết quả (khách nhận / từ chối), để đo tỉ lệ.
+model UpsellOffer {
+  id               String    @id @default(uuid())
+  ruleId           String?
+  rule             UpsellRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  customerId       String
+  customer         Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  branchId         String?
+  triggerServiceId String?
+  suggestServiceId String
+  /// UpsellContext: CONSULT | COUNTER | INBOX | QUOTE
+  context          String
+  /// UpsellOfferStatus: SUGGESTED | ACCEPTED | DECLINED
+  status           String    @default("SUGGESTED")
+  declineReason    String?
+  quotationId      String?
+  suggestedById    String?
+  suggestedAt      DateTime  @default(now())
+  decidedById      String?
+  decidedAt        DateTime?
+
+  @@index([customerId, status])
+  @@index([ruleId, status])
+  @@index([suggestedAt])
+  @@map("upsell_offers")
+}
+
+// =============================================================================
+// Lô 8 · CRM 360 LÔ B
+// =============================================================================
+
+// P6: cơ hội bán. Một khách có thể có nhiều cơ hội (khách đã làm dịch vụ quay lại
+// hỏi dịch vụ mới thì mở cơ hội mới). Bước của khách (Customer.stage) luôn bằng
+// bước của cơ hội đang mở mới nhất, không có cơ hội mở thì bằng cơ hội gần nhất.
+model Opportunity {
+  id            String    @id @default(uuid())
+  customerId    String
+  customer      Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  branchId      String?
+  /// Dịch vụ quan tâm chính (có thể trống: cơ hội cũ chuyển từ khách).
+  serviceId     String?
+  title         String
+  stage         String
+  /// P4: bước con (ví dụ LICH_COC: HEN_CHUA_COC | DA_COC).
+  subStage      String?
+  stageChangedAt DateTime?
+  /// OpportunityStatus: OPEN | WON | LOST
+  status        String    @default("OPEN")
+  /// Giá trị dự kiến nhập tay (đồng); trống = tính từ báo giá, phác đồ, dịch vụ quan tâm.
+  expectedValue Int?
+  /// V7: ngày dự kiến chốt (gom dự báo theo tháng).
+  expectedCloseAt DateTime?
+  channelId     String?
+  campaignId    String?
+  /// Sale phụ trách cơ hội.
+  ownerId       String?
+  lostReason    String?
+  lostNote      String?
+  closedAt      DateTime?
+  /// OpportunitySource: MIGRATION | AUTO | MANUAL
+  source        String    @default("MANUAL")
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  stageHistory StageHistory[]
+
+  @@index([customerId, status])
+  @@index([stage, status])
+  @@index([ownerId])
+  @@map("opportunities")
+}
+
+// J3: checklist việc theo bước. Vào bước thì tự sinh việc cho sale phụ trách.
+model StageChecklistItem {
+  id          String   @id @default(uuid())
+  stage       String
+  /// Cơ sở áp dụng; trống = mọi cơ sở.
+  branchId    String?
+  title       String
+  /// Mẫu tin gợi ý gửi khách ở bước này (không tự gửi).
+  messageTemplate String?
+  /// Hạn việc: số ngày sau khi vào bước (0 = trong ngày).
+  dueDays     Int      @default(0)
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  isSample    Boolean  @default(false)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([stage, active])
+  @@map("stage_checklist_items")
+}
+
+// V3: gói liệu trình nhiều buổi trả trước. Bán qua hợp đồng như mọi dịch vụ (doanh
+// số và thực thu giữ nguyên cách ghi cũ); gói theo dõi buổi đã dùng, còn lại.
+model TreatmentPackage {
+  id             String    @id @default(uuid())
+  customerId     String
+  customer       Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  branchId       String
+  contractId     String
+  contractItemId String    @unique
+  serviceId      String?
+  name           String
+  totalSessions  Int
+  usedSessions   Int       @default(0)
+  /// Giá trị gói (đồng) = thành tiền dòng hợp đồng lúc lập gói.
+  price          Int
+  /// Số ngày giữa hai buổi để nhắc đặt buổi tiếp; trống = tham số chung.
+  intervalDays   Int?
+  expiresAt      DateTime?
+  /// PackageStatus: ACTIVE | COMPLETED | CANCELLED
+  status         String    @default("ACTIVE")
+  cancelReason   String?
+  lastUsedAt     DateTime?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  sessions PackageSession[]
+
+  @@index([customerId, status])
+  @@index([status, lastUsedAt])
+  @@map("treatment_packages")
+}
+
+model PackageSession {
+  id          String    @id @default(uuid())
+  packageId   String
+  package     TreatmentPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  sessionNo   Int
+  usedAt      DateTime  @default(now())
+  procedureId String?   @unique
+  visitId     String?
+  /// Giá trị buổi (đồng) = giá gói chia đều, buổi cuối nhận phần dư. Chỉ để tham khảo, không vào báo cáo doanh thu.
+  value       Int
+  note        String?
+  userId      String?
+  userName    String?
+  createdAt   DateTime  @default(now())
+
+  @@unique([packageId, sessionNo])
+  @@map("package_sessions")
 }
