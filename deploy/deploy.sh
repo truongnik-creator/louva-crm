@@ -14,7 +14,7 @@ BRANCH="${BRANCH:-main}"
 
 echo "==> Kiểm tra cục bộ trước khi đẩy"
 ( cd "$HERE/.."/backend && npm run -s typecheck && npm test --silent >/dev/null )
-echo "    typecheck và 235 test: OK"
+echo "    typecheck và test: OK"
 
 echo "==> Triển khai lên $HOST (nhánh $BRANCH)"
 ssh -o BatchMode=yes "$HOST" BRANCH="$BRANCH" bash -s <<'REMOTE'
@@ -28,8 +28,12 @@ git reset --hard "origin/$BRANCH" -q
 echo "    sau:    $(git log --oneline -1)"
 
 cd "$APP/backend"
-npm ci --omit=dev --no-audit --no-fund -q 2>/dev/null || npm ci --no-audit --no-fund -q
+# KHÔNG dùng --omit=dev: bản build cần tsc, mà typescript là devDependency.
+# Trước đây deploy chết ở "tsc: not found" sau khi đã git reset mã mới, để lại
+# mã nguồn mới mà dist cũ — trạng thái lệch.
+npm ci --no-audit --no-fund -q
 npm run build -q
+test -f dist/index.js || { echo "build backend không ra dist/index.js"; exit 1; }
 cd "$APP/desktop"
 npm ci --no-audit --no-fund -q
 npx vite build --config vite.web.config.mts
