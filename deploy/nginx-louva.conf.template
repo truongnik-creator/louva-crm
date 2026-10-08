@@ -1,0 +1,49 @@
+# Louva CRM — nginx đứng trước backend Node ở 127.0.0.1:4000.
+# Backend phục vụ cả giao diện web lẫn API trên cùng origin, nên ở đây chỉ cần
+# một khối proxy duy nhất; không có gì phải tách /api riêng.
+
+server {
+    listen 80;
+    __TLS_BLOCK__
+    server_name __SERVER_NAME__;
+
+    # Ảnh trước-sau chụp bằng máy tính bảng có thể vài chục MB một lượt.
+    client_max_body_size 50m;
+
+    # Dữ liệu bệnh án: không cho trình duyệt hay proxy trung gian giữ lại.
+    add_header Cache-Control "no-store" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "same-origin" always;
+
+    # Socket.io cần nâng cấp WebSocket và timeout dài hơn mặc định.
+    location /socket.io/ {
+        proxy_pass http://127.0.0.1:4000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 7d;
+        proxy_send_timeout 7d;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:4000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+
+    # Service worker phải luôn lấy bản mới, nếu không bản web cũ bám lại.
+    location = /sw.js {
+        proxy_pass http://127.0.0.1:4000;
+        proxy_set_header Host $host;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+    }
+}

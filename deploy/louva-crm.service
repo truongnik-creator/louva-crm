@@ -1,0 +1,40 @@
+[Unit]
+Description=Louva CRM (phòng khám thẩm mỹ)
+Documentation=https://github.com/truongnik-creator/louva-crm
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=louva
+Group=louva
+WorkingDirectory=/opt/louva/app/backend
+EnvironmentFile=/etc/louva/louva.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=louva-crm
+
+# Siết quyền tiến trình: chạy CRM có bệnh án thì không cho nó với ra ngoài
+# những thư mục nó thật sự cần ghi.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Chỉ ba chỗ này được ghi: CSDL + kho tệp, bản sao lưu, và thư mục app
+# (bootstrap chụp CSDL trước khi áp migration).
+ReadWritePaths=/var/lib/louva /var/backups/louva /opt/louva/app
+
+[Install]
+WantedBy=multi-user.target
