@@ -346,6 +346,40 @@ export const SETTINGS: SettingDef[] = [
     usedIn: "Đo lường · Hiệu suất Pancake",
   },
   {
+    key: "workReport.autoPull.enabled",
+    group: "Tự động hoá",
+    label: "Báo cáo công việc: tự kéo trang tính công khai mỗi 30 phút",
+    type: "boolean",
+    defaultValue: "true",
+    description:
+      "Chỉ ảnh hưởng những nguồn để ở chế độ KÉO. Nguồn ở chế độ ĐẨY (Apps Script trong trang tính tự bắn về) không phụ thuộc công tắc này.",
+    usedIn: "Báo cáo công việc · Nhật ký tác vụ",
+  },
+  {
+    key: "workReport.publicBaseUrl",
+    group: "Tự động hoá",
+    label: "Báo cáo công việc: địa chỉ CRM mà Apps Script gọi về",
+    type: "text",
+    defaultValue: "",
+    description:
+      "Ví dụ https://crm.congty.vn — phải là địa chỉ máy chủ Google gọi tới được. Để trống thì lấy theo địa chỉ của chính yêu cầu khi sinh mã, đúng khi mở CRM qua tên miền thật nhưng SAI nếu đang mở qua localhost.",
+    usedIn: "Báo cáo công việc › Lấy mã Apps Script",
+    validate: (value: string) => {
+      const v = value.trim();
+      if (!v) return null;
+      if (!/^https?:\/\//.test(v)) return "Phải bắt đầu bằng http:// hoặc https://";
+      try {
+        const u = new URL(v);
+        if (/^(localhost|127\.|\[?::1)/.test(u.hostname)) {
+          return "Google không gọi được localhost — nhập tên miền hoặc IP công khai của máy chủ CRM";
+        }
+        return null;
+      } catch {
+        return "Địa chỉ không hợp lệ";
+      }
+    },
+  },
+  {
     key: "automation.unanswered.enabled",
     group: "Tự động hoá",
     label: "Quy tắc 1: tin chưa trả lời quá lâu thì báo trưởng nhóm",

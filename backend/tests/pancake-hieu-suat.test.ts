@@ -4,6 +4,7 @@ import { setupTestContext, prisma, type TestContext } from "./helpers";
 import { encryptNullable } from "../src/lib/crypto";
 import { vnDayKey } from "../src/lib/datetime";
 import { syncConfigStats, pancakeDateRange, defaultStatsWindow, backfillWindows } from "../src/services/pancake-stats";
+import { syncPancakeConfig } from "../src/services/pancake-sync";
 import {
   conversationPhone,
   extractAdSource,
@@ -465,5 +466,81 @@ describe("Pancake: đọc đúng hình dạng API THẬT (không theo tài liệ
     expect(ad.adPostId).toBe("355628047872664_1421243236808896");
     // Chỉ có ad_ids, không có mảng ads: vẫn phải ra mã quảng cáo.
     expect(extractAdSource({ id: "c", ad_ids: ["120000"] }).adId).toBe("120000");
+  });
+});
+
+/* Kéo hội thoại mỗi 10 phút: danh sách luôn trả 60 hội thoại gần nhất, mà mỗi
+ * hội thoại phải một lượt gọi riêng để lấy tin. Không lọc thì mỗi lượt kéo lại
+ * toàn bộ — đo trên máy chủ thật là 95 giây cho 4 trang. */
+describe("Pancake: kéo hội thoại bỏ qua phần không đổi", () => {
+  it("hội thoại có updated_at không mới hơn mốc đã lưu thì không gọi lấy tin", async () => {
+    await prisma.pancakeConfig.updateMany({ data: { active: false } });
+    await prisma.pancakePage.updateMany({ data: { active: false } });
+    const config = await prisma.pancakeConfig.create({
+      data: { label: `Kéo ${uid()}`, accessTokenEnc: encryptNullable("ut")!, branchId: ctx.branchId, active: true }
+    });
+    const page = await prisma.pancakePage.create({
+      data: {
+        configId: config.id,
+        pageId: `pg${uid()}`,
+        name: "Trang kéo",
+        platform: "FACEBOOK",
+        branchId: ctx.branchId,
+        pageAccessTokenEnc: encryptNullable("pat")
+      }
+    });
+
+    const cuId = `cu-${uid()}`;
+    const moiId = `moi-${uid()}`;
+    const updatedAt = "2026-10-08T08:00:00.000000";
+    // Hội thoại "cu" đã có trong CRM với mốc tin cuối ĐÚNG BẰNG updated_at.
+    await prisma.conversation.create({
+      data: {
+        title: "Khách cũ",
+        kind: "CUSTOMER",
+        channel: "FACEBOOK",
+        branchId: ctx.branchId,
+        pancakePageId: page.id,
+        pancakeConversationId: cuId,
+        lastMessageAt: new Date("2026-10-08T08:00:00.000Z")
+      }
+    });
+
+    const msgCalls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/conversations?") || /\/conversations\?/.test(u)) {
+          return new Response(
+            JSON.stringify({
+              conversations: [
+                { id: cuId, type: "INBOX", updated_at: updatedAt, from: { id: "kh1", name: "Khách cũ" }, seen: true },
+                { id: moiId, type: "INBOX", updated_at: "2026-10-08T09:00:00.000000", from: { id: "kh2", name: "Khách mới" }, seen: false }
+              ]
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        msgCalls.push(u);
+        return new Response(
+          JSON.stringify({
+            conv_from: { id: "kh2", name: "Khách mới" },
+            messages: [{ id: `m-${uid()}`, inserted_at: "2026-10-08T09:00:00.000000", original_message: "Cho em hỏi giá", from: { id: "kh2" } }]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
+
+    const r = await syncPancakeConfig(config.id);
+    expect(r.errors).toEqual([]);
+    expect(r.skipped).toBe(1);
+    expect(r.conversations).toBe(1);
+    expect(r.messages).toBe(1);
+    // CHỈ gọi lấy tin cho hội thoại mới — đây là chỗ tiết kiệm thời gian thật.
+    expect(msgCalls).toHaveLength(1);
+    expect(msgCalls[0]).toContain(encodeURIComponent(moiId));
+    expect(msgCalls.some((u) => u.includes(encodeURIComponent(cuId)))).toBe(false);
   });
 });

@@ -6,7 +6,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "./prisma";
 import { env, BACKEND_ROOT } from "./env";
 import { ensureStorageDir } from "./storage";
-import { PERMISSIONS, ROLES, RoleCode, expandGrant } from "./rbac-catalog";
+import { PERMISSIONS, ROLES, RoleCode, WORK_REPORT_DEPARTMENTS, expandGrant } from "./rbac-catalog";
 import { logger } from "./logger";
 import { backupBeforeMigrate } from "./backup";
 import { randomToken } from "./crypto";
@@ -149,6 +149,28 @@ async function ensureBranches() {
  * Lần khởi động đầu: nếu chưa có người dùng nào, tạo tài khoản quản trị và gán
  * vai trò Quản trị hệ thống ở mọi cơ sở.
  */
+/**
+ * F36: bốn bộ phận dùng cơ chế báo cáo công việc theo trang tính (Media, MKT,
+ * Design, Content) phải tồn tại ở MỌI cơ sở.
+ *
+ * Chạy mỗi lần khởi động và chỉ TẠO MỚI khi thiếu — không sửa tên, không bật
+ * lại bộ phận quản lý đã cố ý tắt. Nếu không bootstrap thì sau khi cập nhật mã
+ * nguồn, quản lý phải tự vào Cài đặt tạo tay bốn bộ phận ở từng cơ sở mới gắn
+ * được trang tính cho nhân viên.
+ */
+async function ensureWorkReportDepartments() {
+  const branches = await prisma.branch.findMany({ select: { id: true } });
+  for (const branch of branches) {
+    for (const dept of WORK_REPORT_DEPARTMENTS) {
+      await prisma.department.upsert({
+        where: { branchId_code: { branchId: branch.id, code: dept.code } },
+        create: { branchId: branch.id, code: dept.code, name: dept.name },
+        update: {},
+      });
+    }
+  }
+}
+
 async function ensureAdminAccount() {
   if ((await prisma.user.count()) > 0) return;
 
@@ -247,6 +269,7 @@ export async function bootstrap(opts: { skipMigrate?: boolean; exitOnError?: boo
     ensureStorageDir();
     await ensureBranches();
     await syncRbacCatalog();
+    await ensureWorkReportDepartments();
     await ensureAdminAccount();
     await backfillNormalizedColumns();
   } catch (err) {

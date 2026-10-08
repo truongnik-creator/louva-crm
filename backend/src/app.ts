@@ -27,6 +27,7 @@ import auditRoutes from "./routes/audit";
 import inventoryRoutes from "./routes/inventory";
 import hrRoutes from "./routes/hr";
 import pancakeRoutes from "./routes/pancake";
+import workReportRoutes from "./routes/work-reports";
 import settingsRoutes from "./routes/settings";
 import homeRoutes from "./routes/home";
 import clinicRoutes from "./routes/clinic";
@@ -141,6 +142,11 @@ export function createApp(): express.Express {
   // Giữ lại RAW body để xác thực HMAC webhook Zalo. Bắt buộc phải là đúng
   // chuỗi byte đã nhận: tính chữ ký trên JSON.stringify(req.body) sẽ sai ngay
   // khi Zalo đổi thứ tự khoá hoặc khoảng trắng.
+  // F36: Apps Script đẩy cả mảng ô của 3 sheet tháng mỗi lượt — vượt trần 2mb
+  // dùng chung. Đặt TRƯỚC bộ phân tích chung: express.json bỏ qua request đã
+  // được phân tích, nên route này có trần riêng mà không nới lỏng cả API.
+  app.use("/api/work-reports/ingest", express.json({ limit: "16mb" }));
+
   app.use(
     express.json({
       limit: "2mb",
@@ -202,6 +208,7 @@ export function createApp(): express.Express {
   app.use("/api/inventory", inventoryRoutes);
   app.use("/api/hr", hrRoutes);
   app.use("/api/pancake", pancakeRoutes);
+  app.use("/api/work-reports", workReportRoutes);
   app.use("/api/settings", settingsRoutes);
   app.use("/api/home", homeRoutes);
   app.use("/api/clinic", clinicRoutes);

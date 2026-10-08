@@ -333,6 +333,14 @@ trùng tên hai người thì để quản trị chọn tay. Tin gửi từ CRM 
 `sender_id` để Pancake quy về đúng người, nhờ đó số không bị hụt.
 
 **Xem ở:** Đo lường › Hiệu suất Pancake (`GET /api/reports/pancake-agents`).
+Gắn nhân viên: Kết nối Zalo / Tổng đài › tab Pancake › Nhân viên Pancake.
+
+**Kéo hội thoại bỏ qua phần không đổi:** danh sách Pancake luôn trả 60 hội thoại
+gần nhất, mà mỗi hội thoại phải một lượt gọi riêng để lấy tin. Kéo hết mỗi 10
+phút là ~240 lượt cho 4 trang, đo trên máy chủ thật mất 95 giây. Nay so
+`updated_at` của Pancake với mốc tin cuối đã lưu: không mới hơn thì không gọi.
+Hội thoại lạ hoặc Pancake không trả `updated_at` thì vẫn kéo, để không bao giờ
+sót tin của khách.
 
 ### Đối chiếu API thật — ba điểm tài liệu nói đúng
 

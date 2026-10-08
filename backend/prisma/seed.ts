@@ -97,6 +97,12 @@ async function main() {
     { code: "DIEU_DUONG", name: "Điều dưỡng" },
     { code: "KE_TOAN", name: "Kế toán" },
     { code: "MARKETING", name: "Marketing" },
+    // F36: bốn bộ phận báo cáo công việc theo trang tính. Bootstrap cũng tạo
+    // bốn bộ phận này ở mọi cơ sở — giữ ở đây để seed chạy độc lập vẫn đủ.
+    { code: "MEDIA", name: "Media" },
+    { code: "MKT", name: "Marketing (MKT)" },
+    { code: "DESIGN", name: "Design" },
+    { code: "CONTENT", name: "Content" },
   ];
   for (const d of departments) {
     await prisma.department.upsert({
@@ -129,6 +135,11 @@ async function main() {
     { email: "dd.hanh@louva.vn", name: "Cao Thị Hạnh", title: "ĐD", role: RoleCode.DIEU_DUONG, dept: "DIEU_DUONG", branches: [tmv.id] },
     { email: "ketoan@louva.vn", name: "Lương Thị Vân Anh", title: "", role: RoleCode.KE_TOAN, dept: "KE_TOAN", branches: [tmv.id] },
     { email: "marketing@louva.vn", name: "Hoàng Đức Duy", title: "", role: RoleCode.MARKETING, dept: "MARKETING", branches: [tmv.id] },
+    // F36: khối sáng tạo — mỗi người một trang tính báo cáo công việc.
+    { email: "media.son@louva.vn", name: "Kim Sơn", title: "", role: RoleCode.MEDIA, dept: "MEDIA", branches: [tmv.id] },
+    { email: "mkt.chi@louva.vn", name: "Ngô Linh Chi", title: "", role: RoleCode.MARKETING, dept: "MKT", branches: [tmv.id] },
+    { email: "design.an@louva.vn", name: "Bùi Hoài An", title: "", role: RoleCode.DESIGN, dept: "DESIGN", branches: [tmv.id] },
+    { email: "content.mai@louva.vn", name: "Lý Thu Mai", title: "", role: RoleCode.CONTENT, dept: "CONTENT", branches: [tmv.id] },
   ];
 
   const passwordHash = await bcrypt.hash(PASSWORD, 10);

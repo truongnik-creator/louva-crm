@@ -26,14 +26,16 @@ export async function runPancakePullSync(): Promise<{ created: number; message: 
 
   let conversations = 0;
   let messages = 0;
+  let skipped = 0;
   const errors: string[] = [];
   for (const c of configs) {
     const r = await syncPancakeConfig(c.id);
     conversations += r.conversations;
     messages += r.messages;
+    skipped += r.skipped;
     errors.push(...r.errors.map((e) => `${c.label}: ${e}`));
   }
-  const note = `${conversations} hội thoại, ${messages} tin mới`;
+  const note = `${conversations} hội thoại, ${messages} tin mới${skipped ? `, bỏ qua ${skipped} không đổi` : ""}`;
   return { created: messages, message: errors.length ? `${note}. Lỗi: ${errors.join(" | ")}` : note };
 }
 

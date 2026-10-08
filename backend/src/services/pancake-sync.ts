@@ -274,8 +274,12 @@ export function isSyncRunning(configId: string): boolean {
   return running.has(configId);
 }
 
-export async function syncPancakeConfig(configId: string): Promise<{ conversations: number; messages: number; errors: string[] }> {
-  if (running.has(configId)) return { conversations: 0, messages: 0, errors: ["Đang đồng bộ, chờ lượt trước chạy xong"] };
+export async function syncPancakeConfig(
+  configId: string
+): Promise<{ conversations: number; messages: number; skipped: number; errors: string[] }> {
+  if (running.has(configId)) {
+    return { conversations: 0, messages: 0, skipped: 0, errors: ["Đang đồng bộ, chờ lượt trước chạy xong"] };
+  }
   running.add(configId);
   try {
     const config = await prisma.pancakeConfig.findUniqueOrThrow({
@@ -287,6 +291,7 @@ export async function syncPancakeConfig(configId: string): Promise<{ conversatio
     const agents = await agentUserMap(configId);
     let convCount = 0;
     let msgCount = 0;
+    let skipped = 0;
     const errors: string[] = [];
     for (const page of config.pages) {
       try {
@@ -294,7 +299,34 @@ export async function syncPancakeConfig(configId: string): Promise<{ conversatio
         const token = await resolvePageToken(page);
         if (!token) throw new Error("Chưa lấy được token trang (kiểm tra API token của kết nối)");
         const conversations = await fetchConversations(token, page.pageId);
+
+        // BỎ QUA HỘI THOẠI KHÔNG ĐỔI.
+        //
+        // Mỗi hội thoại phải một lượt gọi riêng để lấy tin, mà danh sách luôn
+        // trả về 60 hội thoại gần nhất. Kéo hết mỗi 10 phút là ~240 lượt gọi
+        // cho 4 trang, mất gần hai phút, trong khi gần như không có gì mới —
+        // đo trên máy chủ thật: 95 giây cho lượt đầu. So `updated_at` của
+        // Pancake với mốc tin cuối đã lưu: bằng hoặc cũ hơn thì không có tin
+        // nào mới, khỏi gọi.
+        const ids = conversations.map((c) => String(c.id));
+        const knownRows = ids.length
+          ? await prisma.conversation.findMany({
+              where: { pancakeConversationId: { in: ids } },
+              select: { pancakeConversationId: true, lastMessageAt: true },
+            })
+          : [];
+        const lastSeen = new Map(knownRows.map((r) => [r.pancakeConversationId!, r.lastMessageAt]));
+
         for (const c of conversations) {
+          const updatedAt = c.updated_at ? parsePancakeTime(c.updated_at) : null;
+          const seen = lastSeen.get(String(c.id));
+          // Chỉ bỏ qua khi CHẮC CHẮN đã có và không mới hơn. Hội thoại lạ,
+          // hoặc Pancake không nói updated_at, thì vẫn kéo cho an toàn.
+          if (seen && updatedAt && updatedAt.getTime() <= seen.getTime()) {
+            skipped++;
+            continue;
+          }
+
           // Pancake chặn ở 5 lượt/trang/giây: nghỉ giữa các lượt lấy tin.
           await sleep(PACE_MS);
           const fetched = await fetchMessages(token, page.pageId, String(c.id));
@@ -315,18 +347,17 @@ export async function syncPancakeConfig(configId: string): Promise<{ conversatio
       }
     }
 
-    const note = errors.length
-      ? `${convCount} hội thoại, ${msgCount} tin mới. Lỗi: ${errors.join(" | ")}`
-      : `${convCount} hội thoại, ${msgCount} tin mới`;
+    const base = `${convCount} hội thoại, ${msgCount} tin mới${skipped ? `, bỏ qua ${skipped} hội thoại không đổi` : ""}`;
+    const note = errors.length ? `${base}. Lỗi: ${errors.join(" | ")}` : base;
     await prisma.pancakeConfig.update({ where: { id: configId }, data: { lastSyncAt: new Date(), lastSyncNote: note } });
-    return { conversations: convCount, messages: msgCount, errors };
+    return { conversations: convCount, messages: msgCount, skipped, errors };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await prisma.pancakeConfig
       .update({ where: { id: configId }, data: { lastSyncNote: `Lỗi đồng bộ: ${message}` } })
       .catch(() => undefined);
     logger.warn({ err: message, configId }, "[pancake] đồng bộ lỗi");
-    return { conversations: 0, messages: 0, errors: [message] };
+    return { conversations: 0, messages: 0, skipped: 0, errors: [message] };
   } finally {
     running.delete(configId);
   }

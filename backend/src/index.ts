@@ -11,6 +11,7 @@ import { registerScoringJob } from "./lib/conversation-scoring";
 import { registerReengageJob } from "./lib/reengage";
 import { registerBriefingJob } from "./lib/briefing";
 import { registerPancakeJobs } from "./lib/pancake-jobs";
+import { registerWorkReportJobs } from "./lib/work-report-jobs";
 
 async function main() {
   // Zero-setup: tạo/áp migration, sinh danh mục quyền + vai trò, tạo tài khoản
@@ -28,6 +29,7 @@ async function main() {
   registerReengageJob();
   registerBriefingJob();
   registerPancakeJobs();
+  registerWorkReportJobs();
   if (process.env.DISABLE_JOBS !== "1") startJobScheduler();
 
   httpServer.listen(env.port, () => {
