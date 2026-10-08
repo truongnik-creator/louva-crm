@@ -427,6 +427,67 @@ Nhờ điểm 1 và 2, một lượt "Dò trang" lấy được cả ba thứ: d
 riêng từng trang, và danh sách nhân viên — không cần gọi thêm, không cần sinh
 token mới.
 
+## F36 · Báo cáo công việc hàng ngày từ trang tính Google
+
+Tài liệu đầy đủ: **`docs/BAO-CAO-CONG-VIEC-TRANG-TINH.md`**.
+
+**Vấn đề:** bốn bộ phận Media, MKT, Design, Content ghi báo cáo công việc trên
+trang tính Google riêng của từng người (12 sheet `T1`..`T12` = 12 tháng). Muốn
+biết tiến độ phải mở từng trang tính và đi nhắc mọi người gửi link.
+
+**Chốt kiến trúc:** trang tính là dữ liệu nhân sự nên để **ẩn**, backend không
+tự đọc được. Đường chính là **ĐẨY** — Apps Script nằm trong chính trang tính,
+chạy bằng quyền của chủ trang tính:
+
+| | Đẩy (mặc định) | Kéo (dự phòng) |
+| --- | --- | --- |
+| Trang tính ẩn | ✅ | ❌ |
+| Lấy được URL ô "Link hoàn thành" | ✅ | ❌ (chỉ còn chữ "Link") |
+| Cần cài ở trang tính | Dán mã một lần, chạy `setup()` | Không |
+| Độ trễ | ~5 phút sau khi sửa | ≤30 phút (`work-report-pull`) |
+
+Apps Script đẩy **mảng ô thô**, không đẩy dữ liệu đã phân tích: logic phân tích
+nằm một chỗ trong CRM nên test được, và sửa mẫu không phải dán lại từng script.
+`onEdit` chỉ ghi dấu "có sửa" rồi để trigger 5 phút đẩy — gọi mạng ngay trong
+`onEdit` là tự hết quota UrlFetch của Google.
+
+**Ba điểm của trang tính thật quyết định cách phân tích**
+
+- Ô tiêu đề `🕒Time` và `Công/ngày` là **ô gộp** nên Google trả về rỗng, dò theo
+  chữ không bao giờ ra. Mất cột ngày là mất cả màn theo dõi tiến độ, nên khi đã
+  dò ra ≥3 cột theo tiêu đề thì các cột còn thiếu được vá theo vị trí mẫu.
+- Ô ngày gộp theo khối việc nên ngày được **điền xuôi**; `Công/ngày` thì **không**
+  — nó là số công của cả ngày, nhân ra từng dòng sẽ đếm sai. Số công tháng là
+  giá trị **lớn nhất** vì ô đó tích luỹ.
+- Ngày trống phải phân biệt: Chủ nhật để trắng là **nghỉ tuần**, ngày thường để
+  trắng là **chưa điền báo cáo**. Đó chính là con số cần theo dõi.
+
+**Ghi dữ liệu** = thay toàn bộ dòng của một sheet, không hợp nhất từng dòng:
+chèn một dòng giữa tháng làm đổi số dòng của mọi dòng bên dưới.
+
+**Bảo mật cổng đẩy:** `/api/work-reports/ingest` không qua phiên đăng nhập, xác
+thực bằng token 32 byte riêng từng nguồn, **chỉ lưu hash SHA-256** như refresh
+token. Token gắn với đúng một trang tính — dán mã của người này vào trang tính
+người khác bị trả 409 chứ không âm thầm ghi sai chủ. Mỗi lần lấy mã là cấp token
+mới và token cũ chết ngay.
+
+**Phân quyền** — module E5: `work_report.read` (ALL/BRANCH/OWN),
+`work_report.manage_source`, `work_report.sync`. Bộ phận mới: `MEDIA`, `MKT`,
+`DESIGN`, `CONTENT` (bootstrap tạo ở mọi cơ sở). Vai trò mới `MEDIA`, `DESIGN`,
+`CONTENT` chỉ thấy báo cáo của chính mình, không chạm dữ liệu y khoa, SĐT khách
+bị che vì không có `customer.view_phone`. Bộ phận MKT dùng lại vai trò
+`MARKETING` sẵn có. Trưởng bộ phận cần xem cả nhóm thì nâng scope lên `BRANCH`
+ở màn Người dùng & Phân quyền.
+
+**Hai tham số** phải đặt: `workReport.publicBaseUrl` (địa chỉ CRM mà Google gọi
+tới — để trống thì lấy theo địa chỉ của chính yêu cầu, sai nếu đang mở qua
+localhost) và `workReport.autoPull.enabled`.
+
+**Kiểm chứng:** 22 test (`tests/f36-bao-cao-cong-viec.test.ts`) chạy trên bản
+chụp **thật** sheet `T1` của trang tính mẫu — ai sửa bộ phân tích cho "gọn" mà
+làm sai ô gộp thì test đổ ngay. Đã kéo thử toàn bộ 12 tháng của trang tính mẫu:
+768 dòng việc, không lỗi, nhận cả kênh không lường trước (`FB Vân Trần`).
+
 ## Tham số mặc định chủ phòng khám phải xác nhận
 
 Mọi con số kinh doanh là tham số trong **Cài đặt hệ thống** (`backend/src/lib/settings-catalog.ts`), sửa trên giao diện, có hiệu lực sau tối đa 15 giây. Các giá trị dưới đây là **mặc định do đội code đặt tạm hoặc lấy từ biên bản coaching**, chưa được chủ phòng khám chốt. Không dùng các con số này như số liệu chính thức trước khi xác nhận.
