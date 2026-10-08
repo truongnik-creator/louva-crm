@@ -142,7 +142,7 @@ Cả hai token đi bằng tham số URL, **không** có header `Authorization`.
 
 **Tác vụ nền mỗi 10 phút** (bật tắt ở Cài đặt, nhóm *Tự động hoá*):
 
-- `pancake.autoSync.enabled` — kéo hội thoại, tin nhắn về hộp thư.
+- `pancake.autoSync.enabled` — tự nhận kênh mới nối thêm bên Pancake, rồi kéo hội thoại và tin nhắn về hộp thư.
 - `pancake.statsSync.enabled` — kéo thống kê hiệu suất nhân viên (F35).
 
 Tác vụ định kỳ chỉ kéo hôm qua và hôm nay. Muốn có số của những ngày trước khi bật tính năng thì bấm **"Nạp lại 30 ngày"** ở màn Kết nối.

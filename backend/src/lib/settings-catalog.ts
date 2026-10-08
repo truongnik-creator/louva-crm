@@ -328,11 +328,11 @@ export const SETTINGS: SettingDef[] = [
   {
     key: "pancake.autoSync.enabled",
     group: "Tự động hoá",
-    label: "Pancake: tự kéo hội thoại và tin nhắn mỗi 10 phút",
+    label: "Pancake: tự nhận trang mới và kéo tin mỗi 10 phút",
     type: "boolean",
     defaultValue: "true",
     description:
-      "Dự phòng cho webhook. Tắt thì chỉ còn webhook đẩy tin; webhook rớt là sót tin của khách.",
+      "Mỗi lượt kéo cũng dò trang: nối thêm kênh bên Pancake là CRM tự nhận, không cần ai bấm Dò trang. Tắt thì chỉ còn webhook đẩy tin; webhook rớt là sót tin của khách, và kênh mới sẽ không tự vào.",
     usedIn: "Hộp thư · Nhật ký tác vụ",
   },
   {

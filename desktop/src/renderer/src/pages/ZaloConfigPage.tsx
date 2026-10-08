@@ -349,9 +349,12 @@ function PancakeAgentsBlock({ configId }: { configId: string }): React.JSX.Eleme
     }
   }, [configId, fail])
 
+  // Nạp ngay khi mở màn (không chờ bấm mở khối) để nút thu gọn hiện được số
+  // đếm. Nút không có số thì người dùng không biết bên trong có gì — đã mất
+  // một lượt hỏi "chưa thấy nút dò nhân viên".
   useEffect(() => {
-    if (open) void load()
-  }, [open, load])
+    void load()
+  }, [load])
 
   const discover = async (): Promise<void> => {
     setBusy(true)
@@ -371,11 +374,19 @@ function PancakeAgentsBlock({ configId }: { configId: string }): React.JSX.Eleme
   }
 
   if (!open) {
+    const unmapped = agents.filter((a) => !a.userId).length
     return (
-      <div className="row" style={{ marginTop: 10 }}>
+      <div className="row" style={{ marginTop: 10, gap: 8 }}>
         <button className="btn sec sm" onClick={() => setOpen(true)}>
-          Nhân viên Pancake (gắn với tài khoản CRM)
+          {agents.length === 0
+            ? 'Nhân viên Pancake — chưa dò, bấm để dò'
+            : `Nhân viên Pancake — ${agents.length} người${unmapped ? `, ${unmapped} chưa gắn tài khoản CRM` : ', đã gắn hết'}`}
         </button>
+        {unmapped > 0 ? (
+          <span className="muted" style={{ fontSize: 12 }}>
+            Chưa gắn thì số của họ không vào được bảng lương, bảng thi đua.
+          </span>
+        ) : null}
       </div>
     )
   }

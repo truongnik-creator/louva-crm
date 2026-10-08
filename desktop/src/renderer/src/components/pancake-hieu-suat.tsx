@@ -101,10 +101,23 @@ export function PancakePerformancePanel(): React.JSX.Element {
         <Empty>
           Chưa có số liệu trong kỳ.
           <br />
-          <span className="muted">
-            Cần: kết nối Pancake đang bật, đã “Dò trang”, và bật “Pancake: tự kéo thống kê hiệu suất nhân viên” ở Cài
-            đặt nhóm Tự động hoá. Muốn có số ngay thì bấm “Kéo thống kê” ở màn Kết nối.
-          </span>
+          {data?.idlePages.length ? (
+            <span className="muted">
+              {data.idlePages.length} trang đã kéo số nhưng KHÔNG có hoạt động nào trong kỳ:{' '}
+              {data.idlePages
+                .map(
+                  (p) =>
+                    `${p.name}${p.lastMessageAt ? ` (tin cuối ${dateVi(p.lastMessageAt)}${p.daysIdle != null ? `, ${p.daysIdle} ngày trước` : ''})` : ''}`
+                )
+                .join('; ')}
+              . Chọn kỳ dài hơn để thấy số cũ.
+            </span>
+          ) : (
+            <span className="muted">
+              Cần: kết nối Pancake đang bật, đã “Dò trang”, và bật “Pancake: tự kéo thống kê hiệu suất nhân viên” ở Cài
+              đặt nhóm Tự động hoá. Muốn có số ngay thì bấm “Kéo thống kê” ở màn Kết nối.
+            </span>
+          )}
         </Empty>
       </div>
     )
@@ -141,6 +154,25 @@ export function PancakePerformancePanel(): React.JSX.Element {
           <div className="alert wr" style={{ marginTop: 10, marginBottom: 0 }}>
             Chưa kéo được số liệu của trang: <b>{data.pagesNeverSynced.join(', ')}</b>. Kiểm tra token trang ở màn Kết
             nối (Pancake: Cài đặt trang › Công cụ).
+          </div>
+        ) : null}
+        {data.idlePages.length ? (
+          <div className="alert" style={{ marginTop: 10, marginBottom: 0 }}>
+            <b>
+              {data.idlePages.length} trang không có hoạt động trong kỳ
+            </b>{' '}
+            nên không hiện trong các bảng dưới. Đây là trang đang ngủ, KHÔNG phải kéo số bị lỗi:
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+              {data.idlePages.map((p) => (
+                <li key={p.pageId}>
+                  {p.name}
+                  {' — '}
+                  {p.lastMessageAt
+                    ? `tin cuối ${dateVi(p.lastMessageAt)}${p.daysIdle != null ? ` (${p.daysIdle} ngày trước)` : ''}`
+                    : 'chưa có tin nào trong CRM'}
+                </li>
+              ))}
+            </ul>
           </div>
         ) : null}
         {data.unmappedAgents > 0 ? (

@@ -335,6 +335,20 @@ trùng tên hai người thì để quản trị chọn tay. Tin gửi từ CRM 
 **Xem ở:** Đo lường › Hiệu suất Pancake (`GET /api/reports/pancake-agents`).
 Gắn nhân viên: Kết nối Zalo / Tổng đài › tab Pancake › Nhân viên Pancake.
 
+**Tự nhận kênh mới:** mỗi lượt kéo (10 phút) dò trang trước khi kéo tin, đúng
+một lượt gọi `GET /pages` cho mỗi kết nối. Nối thêm kênh bên Pancake là CRM tự
+nhận, lấy luôn token riêng của trang và danh sách nhân viên, nên kéo được tin
+ngay trong cùng lượt đó. Trước đây phải có người vào bấm "Dò trang" mà không ai
+nghĩ ra là phải bấm — đã có một trang TikTok nối thêm mà CRM im lặng không biết.
+Dò trang lỗi không chặn việc kéo tin của các trang đã có.
+
+**Nói rõ trang nào đang ngủ:** bảng "Theo trang" chỉ liệt kê trang CÓ số liệu
+trong kỳ, nên người xem thấy thiếu trang mà không biết vì sao — trang ngủ hay
+kéo số bị lỗi? Nay báo cáo trả thêm `idlePages` (tên trang + mốc tin cuối + số
+ngày ngủ) và màn hình hiện thành một dòng riêng. Hai tình huống tách bạch:
+`pagesNeverSynced` là chưa kéo được lần nào (cần kiểm token), `idlePages` là đã
+kéo nhưng trang không có hoạt động.
+
 **Kéo hội thoại bỏ qua phần không đổi:** danh sách Pancake luôn trả 60 hội thoại
 gần nhất, mà mỗi hội thoại phải một lượt gọi riêng để lấy tin. Kéo hết mỗi 10
 phút là ~240 lượt cho 4 trang, đo trên máy chủ thật mất 95 giây. Nay so

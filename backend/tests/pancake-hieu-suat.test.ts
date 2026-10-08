@@ -20,7 +20,9 @@ import {
   parsePancakeTime,
   parseStatHour,
 } from "../src/services/pancake";
-import { runPancakeStatsSync } from "../src/lib/pancake-jobs";
+import { runPancakeStatsSync, runPancakePullSync } from "../src/lib/pancake-jobs";
+import { buildPancakeAgentReport } from "../src/lib/pancake-report";
+import { startOfVnDay } from "../src/lib/datetime";
 
 // F35: HIỆU SUẤT NHÂN VIÊN TRÊN PANCAKE.
 //
@@ -709,5 +711,146 @@ describe("F35: gắn nhân viên muộn vẫn quy lại được tin đã đồn
 
     await relinkAgentMessages(agent.id);
     expect((await prisma.chatMessage.findUniqueOrThrow({ where: { id: laCuaBenKhac.id } })).senderUserId).toBeNull();
+  });
+});
+
+/* Trang ngủ. Chạy thật: bảng "Theo trang" chỉ hiện 2 trong 4 trang vì hai
+ * trang kia không có hoạt động trong kỳ — mà báo cáo không nói gì, nên người
+ * xem không phân biệt được "trang ngủ" với "kéo số bị lỗi". */
+describe("F35: báo cáo nói rõ trang nào không có hoạt động", () => {
+  it("liệt kê trang đã kéo số nhưng không có số trong kỳ, kèm mốc tin cuối", async () => {
+    await prisma.pancakeConfig.updateMany({ data: { active: false } });
+    await prisma.pancakePage.updateMany({ data: { active: false } });
+    const config = await prisma.pancakeConfig.create({
+      data: { label: `Ngủ ${uid()}`, accessTokenEnc: encryptNullable("ut")!, branchId: ctx.branchId, active: true }
+    });
+    const mk = (name: string, statsSyncAt: Date | null) =>
+      prisma.pancakePage.create({
+        data: { configId: config.id, pageId: `pg${uid()}`, name, platform: "FACEBOOK", branchId: ctx.branchId, statsSyncAt }
+      });
+
+    const chay = await mk("Trang đang chạy", new Date());
+    const ngu = await mk("Trang ngủ", new Date());
+    const chuaKeo = await mk("Trang chưa kéo", null);
+
+    // Trang ngủ: tin cuối 30 ngày trước.
+    const cuoi = new Date(Date.now() - 30 * 86_400_000);
+    await prisma.conversation.create({
+      data: { title: "Khách cũ", kind: "CUSTOMER", channel: "FACEBOOK", branchId: ctx.branchId, pancakePageId: ngu.id, pancakeConversationId: `c-${uid()}`, lastMessageAt: cuoi }
+    });
+    // Trang đang chạy: có ô số liệu trong kỳ.
+    const hour = new Date();
+    hour.setUTCMinutes(0, 0, 0);
+    await prisma.pancakeAgentStat.create({
+      data: { pageId: chay.id, pancakeUserId: `pu-${uid()}`, hour, dayKey: vnDayKey(hour), inboxCount: 5, avgResponseSeconds: 60 }
+    });
+
+    const today = startOfVnDay(new Date());
+    const r = await buildPancakeAgentReport(
+      { from: today, to: new Date(today.getTime() + 86_400_000) },
+      { ids: [ctx.branchId], specific: false }
+    );
+
+    expect(r.pages.map((p) => p.label)).toEqual(["Trang đang chạy · Facebook"]);
+    // Trang ngủ phải được GỌI TÊN, kèm số ngày kể từ tin cuối.
+    const idle = r.idlePages.find((p) => p.name === "Trang ngủ");
+    expect(idle).toBeTruthy();
+    expect(idle!.daysIdle).toBeGreaterThanOrEqual(29);
+    expect(idle!.lastMessageAt).toBeTruthy();
+    // Trang đang chạy không bị kể là ngủ.
+    expect(r.idlePages.some((p) => p.name === "Trang đang chạy")).toBe(false);
+    // Trang CHƯA kéo lần nào là vấn đề khác: thuộc pagesNeverSynced, không phải ngủ.
+    expect(r.idlePages.some((p) => p.name === "Trang chưa kéo")).toBe(false);
+    expect(r.pagesNeverSynced).toContain("Trang chưa kéo");
+    void chuaKeo;
+  });
+});
+
+/* Nối thêm kênh bên Pancake thì CRM phải tự nhận, không chờ ai bấm "Dò trang" —
+ * thực tế đã có một trang TikTok nối thêm mà CRM im lặng không biết. */
+describe("F35: lượt kéo định kỳ tự nhận trang mới", () => {
+  it("trang lạ trong GET /pages được thêm vào CSDL ngay trong lượt kéo", async () => {
+    await prisma.pancakeConfig.updateMany({ data: { active: false } });
+    await prisma.pancakePage.updateMany({ data: { active: false } });
+    const config = await prisma.pancakeConfig.create({
+      data: { label: `Tự nhận ${uid()}`, accessTokenEnc: encryptNullable("ut")!, branchId: ctx.branchId, active: true }
+    });
+    const cu = await prisma.pancakePage.create({
+      data: { configId: config.id, pageId: `cu${uid()}`, name: "Trang cũ", platform: "FACEBOOK", branchId: ctx.branchId, pageAccessTokenEnc: encryptNullable("pat-cu") }
+    });
+    const idMoi = `ttm_-${uid()}`;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/api/v1/pages")) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              categorized: {
+                activated: [
+                  { id: cu.pageId, name: "Trang cũ", platform: "facebook", settings: { page_access_token: "pat-cu" }, users: [] },
+                  {
+                    id: idMoi,
+                    name: "Kênh TikTok mới",
+                    platform: "tiktok_business_messaging",
+                    settings: { page_access_token: "pat-moi" },
+                    users: [{ user_id: `pu-${uid()}`, name: "Nhân viên mới", status: "active" }]
+                  }
+                ]
+              }
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        // Hội thoại: trả rỗng cho mọi trang, test này chỉ quan tâm việc nhận trang.
+        return new Response(JSON.stringify({ conversations: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      })
+    );
+
+    const r = await runPancakePullSync();
+    expect(r.message).toContain("TRANG MỚI: 1");
+
+    const moi = await prisma.pancakePage.findUnique({ where: { pageId: idMoi } });
+    expect(moi).toBeTruthy();
+    expect(moi!.name).toBe("Kênh TikTok mới");
+    expect(moi!.platform).toBe("TIKTOK");
+    // Token riêng của trang lấy luôn trong cùng lượt gọi -> kéo được tin ngay.
+    expect(moi!.pageAccessTokenEnc).toBeTruthy();
+    expect(moi!.active).toBe(true);
+    // Nhân viên của trang mới cũng vào theo.
+    expect(await prisma.pancakeAgent.count({ where: { configId: config.id, name: "Nhân viên mới" } })).toBe(1);
+
+    // Lượt sau không được báo "trang mới" nữa.
+    const lan2 = await runPancakePullSync();
+    expect(lan2.message).not.toContain("TRANG MỚI");
+  });
+
+  it("dò trang lỗi KHÔNG chặn việc kéo tin của các trang đã có", async () => {
+    await prisma.pancakeConfig.updateMany({ data: { active: false } });
+    await prisma.pancakePage.updateMany({ data: { active: false } });
+    const config = await prisma.pancakeConfig.create({
+      data: { label: `Dò lỗi ${uid()}`, accessTokenEnc: encryptNullable("ut")!, branchId: ctx.branchId, active: true }
+    });
+    await prisma.pancakePage.create({
+      data: { configId: config.id, pageId: `pg${uid()}`, name: "Trang đã có", platform: "FACEBOOK", branchId: ctx.branchId, pageAccessTokenEnc: encryptNullable("pat") }
+    });
+
+    let convCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/api/v1/pages")) return new Response("Pancake sập", { status: 500 });
+        convCalls++;
+        return new Response(JSON.stringify({ conversations: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      })
+    );
+
+    const r = await runPancakePullSync();
+    // Vẫn gọi kéo hội thoại dù dò trang lỗi.
+    expect(convCalls).toBeGreaterThan(0);
+    expect(r.message).toContain("dò trang");
   });
 });

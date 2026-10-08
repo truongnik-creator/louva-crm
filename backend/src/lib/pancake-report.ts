@@ -93,6 +93,24 @@ export interface PancakeAgentReport {
   lastSyncAt: string | null;
   /** Trang đang bật nhưng chưa kéo được số liệu lần nào. */
   pagesNeverSynced: string[];
+  /**
+   * Trang ĐÃ kéo số nhưng KHÔNG có hoạt động nào trong kỳ.
+   *
+   * Thiếu danh sách này thì người xem chỉ thấy bảng "Theo trang" ít hơn số
+   * trang mình có, mà không biết vì sao: trang ngủ, hay kéo số bị lỗi? Thực tế
+   * đã mất một lượt hỏi đi hỏi lại vì đúng chỗ này.
+   */
+  idlePages: IdlePageRow[];
+}
+
+export interface IdlePageRow {
+  pageId: string;
+  name: string;
+  platform: string;
+  /** Tin cuối cùng của trang trong CRM (mọi thời điểm, không chỉ trong kỳ). */
+  lastMessageAt: string | null;
+  /** Số ngày kể từ tin cuối. null = chưa có tin nào. */
+  daysIdle: number | null;
 }
 
 /** Bộ tích luỹ: tổng tin + tổng (trung bình × trọng số) để chia lại sau. */
@@ -190,6 +208,32 @@ export async function buildPancakeAgentReport(
   });
   const pageById = new Map(pages.map((p) => [p.id, p]));
 
+  // Tin cuối của từng trang (mọi thời điểm) để giải thích trang nào đang ngủ.
+  const lastByPage = pages.length
+    ? await prisma.conversation.groupBy({
+        by: ["pancakePageId"],
+        where: { pancakePageId: { in: pages.map((p) => p.id) } },
+        _max: { lastMessageAt: true },
+      })
+    : [];
+  const lastMessageOf = new Map(lastByPage.map((r) => [r.pancakePageId, r._max.lastMessageAt]));
+
+  /** Trang không xuất hiện trong `active` của kỳ = không có hoạt động. */
+  const idleOf = (activePageIds: Set<string>): IdlePageRow[] =>
+    pages
+      .filter((p) => !activePageIds.has(p.id) && p.statsSyncAt)
+      .map((p) => {
+        const last = lastMessageOf.get(p.id) ?? null;
+        return {
+          pageId: p.id,
+          name: p.name,
+          platform: p.platform,
+          lastMessageAt: last ? last.toISOString() : null,
+          daysIdle: last ? Math.floor((range.to.getTime() - last.getTime()) / 86_400_000) : null,
+        };
+      })
+      .sort((a, b) => (a.daysIdle ?? 1e9) - (b.daysIdle ?? 1e9));
+
   const empty: PancakeAgentReport = {
     from: range.from.toISOString(),
     to: range.to.toISOString(),
@@ -202,6 +246,7 @@ export async function buildPancakeAgentReport(
     unmappedAgents: 0,
     lastSyncAt: null,
     pagesNeverSynced: pages.filter((p) => !p.statsSyncAt).map((p) => p.name),
+    idlePages: idleOf(new Set()),
   };
   if (!pages.length) return empty;
 
@@ -319,6 +364,7 @@ export async function buildPancakeAgentReport(
     unmappedAgents: agents.filter((a) => !a.userId).length,
     lastSyncAt,
     pagesNeverSynced: pages.filter((p) => !p.statsSyncAt).map((p) => p.name),
+    idlePages: idleOf(new Set(byPage.keys())),
   };
 }
 

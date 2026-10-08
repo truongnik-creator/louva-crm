@@ -472,6 +472,14 @@ export interface PancakeAgentReport {
   unmappedAgents: number
   lastSyncAt: string | null
   pagesNeverSynced: string[]
+  /** Trang đã kéo số nhưng không có hoạt động nào trong kỳ. */
+  idlePages: Array<{
+    pageId: string
+    name: string
+    platform: string
+    lastMessageAt: string | null
+    daysIdle: number | null
+  }>
 }
 
 export async function fetchPancakeAgentReport(
