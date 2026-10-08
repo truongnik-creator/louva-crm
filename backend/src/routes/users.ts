@@ -1,7 +1,8 @@
 import { Router } from "express";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { pageQuery, CATALOG_PAGE } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import { requirePermission, scopeOf, notFound } from "../middleware/rbac";
@@ -65,7 +66,12 @@ router.get(
     if (req.query.status) where.status = String(req.query.status);
     if (req.query.roleCode) where.roleLinks = { some: { role: { code: String(req.query.roleCode) } } };
 
-    const users = await prisma.user.findMany({ where, select: userSelect, orderBy: { name: "asc" } });
+    const users = await prisma.user.findMany({
+      where,
+      select: userSelect,
+      orderBy: { name: "asc" },
+      ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 1000 }),
+    });
     res.json(users.map(shapeUser));
   })
 );
@@ -288,7 +294,12 @@ router.post(
 
     await prisma.user.update({
       where: { id: target.id },
-      data: { passwordHash: await bcrypt.hash(newPassword, 10), mustChangePassword: true },
+      data: {
+        passwordHash: await bcrypt.hash(newPassword, 10),
+        mustChangePassword: true,
+        failedLoginCount: 0,
+        lockedUntil: null,
+      },
     });
     await revokeAllSessions(target.id, "Quản trị đặt lại mật khẩu");
 
@@ -308,8 +319,9 @@ router.post(
 router.get(
   "/roles/all",
   requirePermission("settings.read"),
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const roles = await prisma.role.findMany({
+      ...pageQuery(req.query, CATALOG_PAGE),
       orderBy: { name: "asc" },
       include: {
         permissions: { select: { scope: true, permission: { select: { code: true, name: true } } } },
@@ -338,8 +350,11 @@ router.get(
 router.get(
   "/permissions/all",
   requirePermission("settings.read"),
-  asyncHandler(async (_req, res) => {
-    const rows = await prisma.permission.findMany({ orderBy: [{ module: "asc" }, { code: "asc" }] });
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.permission.findMany({
+      orderBy: [{ module: "asc" }, { code: "asc" }],
+      ...pageQuery(req.query, CATALOG_PAGE),
+    });
     res.json({ permissions: rows, catalogSize: PERMISSIONS.length });
   })
 );
@@ -399,11 +414,11 @@ router.put(
 router.get(
   "/handovers/all",
   requirePermission("hr.read"),
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     res.json(
       await prisma.customerHandover.findMany({
         orderBy: { createdAt: "desc" },
-        take: 100,
+        ...pageQuery(req.query, { defaultLimit: 100, maxLimit: 500 }),
         include: {
           fromUser: { select: { id: true, name: true } },
           toUser: { select: { id: true, name: true } },

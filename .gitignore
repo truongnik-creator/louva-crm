@@ -14,6 +14,9 @@ out/
 *.db-journal
 _backup_legacy/
 .run/
+# Bản sao lưu trước nâng cấp: có CSDL thật VÀ tệp .enc-key (khoá mã hoá
+# ảnh/bệnh án). Không bao giờ đẩy lên git.
+backups/
 
 # Môi trường & khoá
 .env

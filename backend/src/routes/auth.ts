@@ -1,7 +1,8 @@
 import { Router } from "express";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { pageQuery, CATALOG_PAGE } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import {
@@ -14,6 +15,7 @@ import {
 } from "../lib/session";
 import { writeAudit } from "../lib/audit";
 import { AuditAction, UserStatus } from "../types/enums";
+import { getSettingNumber } from "../lib/settings-catalog";
 
 const router = Router();
 
@@ -70,7 +72,14 @@ router.post(
 
     const user = await prisma.user.findUnique({
       where: { email },
-      select: { id: true, name: true, passwordHash: true, status: true },
+      select: {
+        id: true,
+        name: true,
+        passwordHash: true,
+        status: true,
+        failedLoginCount: true,
+        lockedUntil: true,
+      },
     });
 
     // Cùng một thông báo cho "sai email" và "sai mật khẩu" — không để kẻ tấn
@@ -88,7 +97,38 @@ router.post(
       throw invalid;
     }
 
+    // S6: tài khoản đang bị khoá tạm thì từ chối TRƯỚC khi so mật khẩu, để kẻ
+    // dò mật khẩu không biết được lượt đoán nào là đúng.
+    if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+      const minutes = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
+      throw new HttpError(
+        423,
+        `Tài khoản đang tạm khoá do nhập sai mật khẩu nhiều lần. Thử lại sau ${minutes} phút hoặc nhờ quản trị đặt lại mật khẩu.`
+      );
+    }
+
     if (!(await bcrypt.compare(password, user.passwordHash))) {
+      const maxAttempts = await getSettingNumber("security.loginMaxAttempts");
+      const lockMinutes = await getSettingNumber("security.loginLockMinutes");
+      const failed = user.failedLoginCount + 1;
+      const lock = failed >= maxAttempts;
+      await prisma.user.update({
+        where: { id: user.id },
+        data: lock
+          ? { failedLoginCount: 0, lockedUntil: new Date(Date.now() + lockMinutes * 60000) }
+          : { failedLoginCount: failed },
+      });
+      if (lock) {
+        await writeAudit({
+          req,
+          action: AuditAction.ACCOUNT_LOCKED,
+          entity: "User",
+          entityId: user.id,
+          summary: `Khoá tạm ${lockMinutes} phút tài khoản ${email} sau ${failed} lần nhập sai mật khẩu`,
+          actorId: user.id,
+          actorName: user.name,
+        });
+      }
       await writeAudit({
         req,
         action: AuditAction.LOGIN_FAILED,
@@ -106,7 +146,10 @@ router.post(
     }
 
     const session = await issueSession(user.id, clientMeta(req));
-    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date(), failedLoginCount: 0, lockedUntil: null },
+    });
     await writeAudit({
       req,
       action: AuditAction.LOGIN,
@@ -192,6 +235,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const user = currentUser(req);
     const sessions = await prisma.authSession.findMany({
+      ...pageQuery(req.query, CATALOG_PAGE),
       where: { userId: user.id, revokedAt: null, expiresAt: { gt: new Date() } },
       orderBy: { lastUsedAt: "desc" },
       select: { id: true, userAgent: true, ipAddress: true, createdAt: true, lastUsedAt: true },

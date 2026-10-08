@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma";
+import { pageQuery, parsePagination } from "../lib/pagination";
 import { asyncHandler } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import { requirePermission, scopeOf } from "../middleware/rbac";
@@ -33,13 +34,13 @@ router.get(
       };
     }
 
-    const take = Math.min(Number(req.query.limit ?? 100), 500);
+    const { take, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 500 });
     const [items, total] = await Promise.all([
       prisma.auditLog.findMany({
         where,
         orderBy: { createdAt: "desc" },
         take,
-        skip: Number(req.query.offset ?? 0),
+        skip,
         include: { branch: { select: { code: true, shortName: true } } },
       }),
       prisma.auditLog.count({ where }),
@@ -82,8 +83,7 @@ router.get(
       prisma.dataAccessLog.findMany({
         where,
         orderBy: { createdAt: "desc" },
-        take: Math.min(Number(req.query.limit ?? 100), 500),
-        skip: Number(req.query.offset ?? 0),
+        ...pageQuery(req.query, { defaultLimit: 100, maxLimit: 500 }),
         include: { customer: { select: { id: true, name: true, code: true } } },
       }),
       prisma.dataAccessLog.count({ where }),
@@ -101,7 +101,7 @@ router.get(
     const items = await prisma.notification.findMany({
       where: { userId: me.id, ...(req.query.unread === "1" ? { readAt: null } : {}) },
       orderBy: { createdAt: "desc" },
-      take: 50,
+      ...pageQuery(req.query, { defaultLimit: 50, maxLimit: 200 }),
     });
     const unread = await prisma.notification.count({ where: { userId: me.id, readAt: null } });
     res.json({ items, unread });

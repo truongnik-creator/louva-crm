@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { prisma } from "../src/lib/prisma";
 import { RoleCode } from "../src/lib/rbac-catalog";
 import { revokeAllSessions } from "../src/lib/session";
@@ -70,7 +70,7 @@ async function main() {
 
   const passwordData = keepPassword
     ? {}
-    : { passwordHash: await bcrypt.hash(password, 10), mustChangePassword: true };
+    : { passwordHash: await bcrypt.hash(password, 10), mustChangePassword: true, failedLoginCount: 0, lockedUntil: null };
 
   const user = await prisma.$transaction(async (tx) => {
     const u = existing
@@ -78,7 +78,7 @@ async function main() {
           where: { id: existing.id },
           data: { name, status: "ACTIVE", ...passwordData },
         })
-      : await tx.user.create({ data: { email, name, ...passwordData } });
+      : await tx.user.create({ data: { email, name, ...(passwordData as { passwordHash: string }) } });
 
     // Gán lại vai trò và cơ sở cho khớp đúng yêu cầu lần chạy này.
     await tx.userRoleLink.deleteMany({ where: { userId: u.id } });

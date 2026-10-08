@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { pageQuery } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import { notFound } from "../middleware/rbac";
@@ -64,6 +65,13 @@ router.put(
         if (def.max !== undefined && n > def.max) {
           throw new HttpError(400, `"${def.label}" không được lớn hơn ${def.max}`);
         }
+      }
+      if (def.type === "select" && !def.options?.some((o) => o.value === value)) {
+        throw new HttpError(400, `"${def.label}" chỉ nhận: ${def.options?.map((o) => o.label).join(", ")}`);
+      }
+      if (def.validate) {
+        const problem = def.validate(value);
+        if (problem) throw new HttpError(400, `"${def.label}": ${problem}`);
       }
       if (def.type === "boolean" && !["true", "false"].includes(value)) {
         throw new HttpError(400, `"${def.label}" phải là true hoặc false`);
@@ -199,8 +207,7 @@ router.get(
     const [items, total] = await Promise.all([
       delegate(def.key).findMany({
         where,
-        take: Math.min(Number(req.query.limit ?? 50), 200),
-        skip: Number(req.query.offset ?? 0),
+        ...pageQuery(req.query, { defaultLimit: 50, maxLimit: 200 }),
         orderBy: { createdAt: "desc" },
       }).catch(() =>
         // Vài bảng không có createdAt (SystemSetting) — thử lại không sắp xếp.

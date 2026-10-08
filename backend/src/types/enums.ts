@@ -36,6 +36,9 @@ export const AuditAction = makeEnum({
   LOGIN_FAILED: "LOGIN_FAILED",
   LOGOUT: "LOGOUT",
   BREAK_GLASS: "BREAK_GLASS",
+  ACCOUNT_LOCKED: "ACCOUNT_LOCKED",
+  MERGE: "MERGE",
+  IMPORT: "IMPORT",
 });
 export type AuditAction = (typeof AuditAction)[keyof typeof AuditAction];
 
@@ -46,6 +49,8 @@ export const AccessResourceType = makeEnum({
   CONSENT_FORM: "CONSENT_FORM",
   PROCEDURE: "PROCEDURE",
   REPORT_EXPORT: "REPORT_EXPORT",
+  /** Gửi nội dung chat của khách lên dịch vụ AI (Nghị định 13/2023). */
+  AI_PROCESSING: "AI_PROCESSING",
 });
 export type AccessResourceType = (typeof AccessResourceType)[keyof typeof AccessResourceType];
 
@@ -95,6 +100,71 @@ export const FunnelStage = makeEnum({
   MAT: "MAT",
 });
 export type FunnelStage = (typeof FunnelStage)[keyof typeof FunnelStage];
+
+/** Chế độ phòng khám (F6). INJECTION = nội khoa (tiêm), SURGERY = phẫu thuật. */
+export const ClinicMode = makeEnum({ INJECTION: "INJECTION", SURGERY: "SURGERY" });
+export type ClinicMode = (typeof ClinicMode)[keyof typeof ClinicMode];
+
+/** F1: 7 bước bán hàng của phòng khám tiêm + bước mất khách. */
+export const InjectionStage = makeEnum({
+  TIEP_CAN: "TIEP_CAN",
+  NHAN_TIN: "NHAN_TIN",
+  CO_ANH: "CO_ANH",
+  LICH_COC: "LICH_COC",
+  DEN_CO_SO: "DEN_CO_SO",
+  LAM_DICH_VU: "LAM_DICH_VU",
+  QUAY_LAI: "QUAY_LAI",
+  MAT_KHACH: "MAT_KHACH",
+});
+export type InjectionStage = (typeof InjectionStage)[keyof typeof InjectionStage];
+
+/** F1: lý do mất khách (bắt buộc khi chuyển sang bước mất khách). */
+export const LostReason = makeEnum({
+  CHE_GIA: "CHE_GIA",
+  O_XA: "O_XA",
+  CHUA_SAN_SANG: "CHUA_SAN_SANG",
+  KHONG_DU_DIEU_KIEN_Y_KHOA: "KHONG_DU_DIEU_KIEN_Y_KHOA",
+  SO_SANH_NOI_KHAC: "SO_SANH_NOI_KHAC",
+  KHONG_PHAN_HOI: "KHONG_PHAN_HOI",
+  KHAC: "KHAC",
+});
+export type LostReason = (typeof LostReason)[keyof typeof LostReason];
+
+export const StageSource = makeEnum({
+  MANUAL: "MANUAL",
+  AUTO: "AUTO",
+  IMPORT: "IMPORT",
+  MIGRATION: "MIGRATION",
+});
+export type StageSource = (typeof StageSource)[keyof typeof StageSource];
+
+/** F1: sự kiện nghiệp vụ làm khách tự chuyển bước. */
+export const StageEvent = makeEnum({
+  MESSAGE: "MESSAGE",
+  PHOTO: "PHOTO",
+  APPOINTMENT_BOOKED: "APPOINTMENT_BOOKED",
+  DEPOSIT_CONFIRMED: "DEPOSIT_CONFIRMED",
+  CHECK_IN: "CHECK_IN",
+  CONTRACT: "CONTRACT",
+  PROCEDURE_DONE: "PROCEDURE_DONE",
+  VISIT_SERVICE_DONE: "VISIT_SERVICE_DONE",
+});
+export type StageEvent = (typeof StageEvent)[keyof typeof StageEvent];
+
+/** F25: trạng thái cọc của lịch hẹn. */
+export const DepositStatus = makeEnum({
+  CHO_COC: "CHO_COC",
+  DA_COC: "DA_COC",
+  HOAN_COC: "HOAN_COC",
+});
+export type DepositStatus = (typeof DepositStatus)[keyof typeof DepositStatus];
+
+export const PaymentType = makeEnum({
+  DEPOSIT: "DEPOSIT",
+  PAYMENT: "PAYMENT",
+  REFUND: "REFUND",
+});
+export type PaymentType = (typeof PaymentType)[keyof typeof PaymentType];
 
 /** Thứ tự tiến của phễu — dùng để phát hiện "lùi trạng thái" (bắt buộc ghi lý do). */
 export const FUNNEL_ORDER: FunnelStage[] = [
@@ -269,6 +339,8 @@ export const PaymentMethod = makeEnum({
   QR: "QR",
   INSTALLMENT: "INSTALLMENT",
   OTHER: "OTHER",
+  /** F20: trừ bằng voucher. KHÔNG phải tiền thật: báo cáo doanh thu đã thu bỏ qua. */
+  VOUCHER: "VOUCHER",
 });
 export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
 
@@ -293,8 +365,14 @@ export type AnesthesiaType = (typeof AnesthesiaType)[keyof typeof AnesthesiaType
 export const PhotoStage = makeEnum({
   PRE_OP: "PRE_OP",
   INTRA_OP: "INTRA_OP",
+  /** F2: mốc ảnh dịch vụ tiêm D0 (trước tiêm), D7, D30. */
+  D0: "D0",
   D1: "D1",
   D7: "D7",
+  D30: "D30",
+  /** F2: ảnh khách tự gửi qua chat, ảnh chụp lúc tư vấn. */
+  CHAT: "CHAT",
+  CONSULT: "CONSULT",
   M1: "M1",
   M3: "M3",
   M6: "M6",
@@ -349,6 +427,16 @@ export const ActivityType = makeEnum({
   MEDICAL: "MEDICAL",
   PROCEDURE: "PROCEDURE",
   SYSTEM: "SYSTEM",
+  /** F10: chăm sóc sau điều trị (sinh việc, kết quả liên hệ). */
+  AFTERCARE: "AFTERCARE",
+  /** AI3: tóm tắt hội thoại + bước tiếp theo. */
+  AI_SUMMARY: "AI_SUMMARY",
+  /** Lô 8 · C4: cuộc gọi ghi tay (chiều, kết quả, thời lượng trong meta). */
+  CALL: "CALL",
+  /** Lô 8 · P6: mở, đóng cơ hội bán. */
+  OPPORTUNITY: "OPPORTUNITY",
+  /** Lô 8 · V3: dùng buổi gói liệu trình. */
+  PACKAGE: "PACKAGE",
 });
 export type ActivityType = (typeof ActivityType)[keyof typeof ActivityType];
 
@@ -471,3 +559,222 @@ export const TransferStatus = makeEnum({
   REJECTED: "REJECTED",
 });
 export type TransferStatus = (typeof TransferStatus)[keyof typeof TransferStatus];
+
+// ============================================================ LÔ 4 · ĐỢT 2
+
+/** F8: trạng thái một lần chạy tác vụ nền. */
+export const JobRunStatus = makeEnum({ RUNNING: "RUNNING", SUCCESS: "SUCCESS", FAILED: "FAILED" });
+export type JobRunStatus = (typeof JobRunStatus)[keyof typeof JobRunStatus];
+
+export const JobTrigger = makeEnum({ SCHEDULE: "SCHEDULE", MANUAL: "MANUAL" });
+export type JobTrigger = (typeof JobTrigger)[keyof typeof JobTrigger];
+
+/** Loại việc (Task.kind), để gom nhóm ở trang Việc của tôi và màn Chăm sóc. */
+export const TaskKind = makeEnum({
+  /** Gọi lại khách (quá giờ hẹn chưa đến, khách hẹn gọi lại). */
+  CALLBACK: "CALLBACK",
+  /** Nhắc khách chuyển cọc cho lịch hẹn. */
+  DEPOSIT_REMINDER: "DEPOSIT_REMINDER",
+  /** F10: chăm sóc sau điều trị theo mốc D0, D1, D3... */
+  AFTERCARE: "AFTERCARE",
+  /** F9 quy tắc 8: đến mốc tái tiêm, cơ hội bán. */
+  RETREAT: "RETREAT",
+  /** F9 quy tắc 4: khách kẹt ở bước Có ảnh, chăm lại. */
+  CARE_AGAIN: "CARE_AGAIN",
+  /** F11: ngoài cửa sổ 24 giờ của Facebook, sale tự nhắn. */
+  MANUAL_MESSAGE: "MANUAL_MESSAGE",
+  /** F20: nhắc sale chúc mừng sinh nhật khách. */
+  BIRTHDAY: "BIRTHDAY",
+  /** Lô 8 · J3: việc trong checklist của bước. */
+  STAGE_CHECKLIST: "STAGE_CHECKLIST",
+  /** Lô 8 · V6: chăm lại báo giá bị từ chối. */
+  QUOTE_FOLLOWUP: "QUOTE_FOLLOWUP",
+  /** Lô 8 · V3: nhắc khách đặt buổi tiếp của gói liệu trình. */
+  PACKAGE_REMINDER: "PACKAGE_REMINDER",
+  OTHER: "OTHER",
+});
+export type TaskKind = (typeof TaskKind)[keyof typeof TaskKind];
+
+/** F10: kết quả nút "Đã liên hệ". */
+export const AftercareResult = makeEnum({
+  /** Liên hệ được, khách ổn. */
+  REACHED_OK: "REACHED_OK",
+  /** Liên hệ được, khách có vấn đề: báo bác sĩ. */
+  REACHED_ISSUE: "REACHED_ISSUE",
+  /** Không nghe máy, không trả lời: việc giữ mở, dời hạn. */
+  NO_ANSWER: "NO_ANSWER",
+  /** Khách hẹn gọi lại: việc giữ mở, dời hạn theo ngày hẹn. */
+  CALL_BACK_LATER: "CALL_BACK_LATER",
+});
+export type AftercareResult = (typeof AftercareResult)[keyof typeof AftercareResult];
+
+/** F13: đợt ưu đãi giảm theo % hay số tiền. */
+export const PromotionKind = makeEnum({ PERCENT: "PERCENT", AMOUNT: "AMOUNT" });
+export type PromotionKind = (typeof PromotionKind)[keyof typeof PromotionKind];
+
+/** F21: duyệt giảm giá vượt trần. */
+export const ApprovalStatus = makeEnum({
+  NOT_REQUIRED: "NOT_REQUIRED",
+  PENDING: "PENDING",
+  APPROVED: "APPROVED",
+  REJECTED: "REJECTED",
+});
+export type ApprovalStatus = (typeof ApprovalStatus)[keyof typeof ApprovalStatus];
+
+export const BroadcastStatus = makeEnum({
+  QUEUED: "QUEUED",
+  RUNNING: "RUNNING",
+  DONE: "DONE",
+  CANCELLED: "CANCELLED",
+});
+export type BroadcastStatus = (typeof BroadcastStatus)[keyof typeof BroadcastStatus];
+
+export const RecipientStatus = makeEnum({
+  PENDING: "PENDING",
+  SENT: "SENT",
+  FAILED: "FAILED",
+  SKIPPED_OPT_OUT: "SKIPPED_OPT_OUT",
+  /** Ngoài cửa sổ 24 giờ Facebook: đã tạo việc cho sale thay vì tự gửi. */
+  TASK_CREATED: "TASK_CREATED",
+  CANCELLED: "CANCELLED",
+});
+export type RecipientStatus = (typeof RecipientStatus)[keyof typeof RecipientStatus];
+
+/** AI2: kết quả một lần gợi ý câu trả lời. */
+export const AiSuggestionStatus = makeEnum({
+  OK: "OK",
+  /** Lớp 1: tin khách có từ khoá y khoa, không sinh, đề nghị chuyển bác sĩ. */
+  BLOCKED_MEDICAL: "BLOCKED_MEDICAL",
+  /** Lớp 2: câu trả lời không qua tự kiểm. */
+  REJECTED_CHECK: "REJECTED_CHECK",
+  NOT_CONFIGURED: "NOT_CONFIGURED",
+  DISABLED: "DISABLED",
+  NO_CONSENT: "NO_CONSENT",
+  ERROR: "ERROR",
+});
+export type AiSuggestionStatus = (typeof AiSuggestionStatus)[keyof typeof AiSuggestionStatus];
+
+// ------------------------------------------------------------ LÔ 5 · ĐỢT 3
+
+/** F15: nguồn nhập chi phí quảng cáo theo ngày. */
+export const CostSource = makeEnum({
+  MANUAL: "MANUAL",
+  CSV_META: "CSV_META",
+  CSV_TIKTOK: "CSV_TIKTOK",
+  CSV_OTHER: "CSV_OTHER",
+});
+export type CostSource = (typeof CostSource)[keyof typeof CostSource];
+
+/** F17: FULL = sale chốt từ A đến Z; PARTIAL = sale kéo khách đến, bác sĩ chốt. */
+export const CloseType = makeEnum({ FULL: "FULL", PARTIAL: "PARTIAL" });
+export type CloseType = (typeof CloseType)[keyof typeof CloseType];
+
+/** F17: kỳ lương. CLOSED = đã khoá, không tính lại được. */
+export const PayrollStatus = makeEnum({ OPEN: "OPEN", CLOSED: "CLOSED" });
+export type PayrollStatus = (typeof PayrollStatus)[keyof typeof PayrollStatus];
+
+/** F17: phương án thưởng doanh số. */
+export const BonusScheme = makeEnum({ MILESTONE: "MILESTONE", PERCENT_TIER: "PERCENT_TIER" });
+export type BonusScheme = (typeof BonusScheme)[keyof typeof BonusScheme];
+
+/** F20: voucher. Hết hạn không lưu thành trạng thái, tính theo expiresAt. */
+export const VoucherStatus = makeEnum({ ACTIVE: "ACTIVE", REDEEMED: "REDEEMED", CANCELLED: "CANCELLED" });
+export type VoucherStatus = (typeof VoucherStatus)[keyof typeof VoucherStatus];
+
+export const VoucherSource = makeEnum({ MANUAL: "MANUAL", REFERRAL: "REFERRAL", BIRTHDAY: "BIRTHDAY", GIFT: "GIFT" });
+export type VoucherSource = (typeof VoucherSource)[keyof typeof VoucherSource];
+
+/** F19: hình thức thưởng giới thiệu. */
+export const ReferralRewardKind = makeEnum({ VOUCHER: "VOUCHER", CASH: "CASH" });
+export type ReferralRewardKind = (typeof ReferralRewardKind)[keyof typeof ReferralRewardKind];
+
+export const ReferralRewardStatus = makeEnum({ ISSUED: "ISSUED", PENDING_PAYOUT: "PENDING_PAYOUT", PAID: "PAID" });
+export type ReferralRewardStatus = (typeof ReferralRewardStatus)[keyof typeof ReferralRewardStatus];
+
+/** AI4: kết quả chấm một hội thoại. */
+export const ConversationScoreStatus = makeEnum({ SCORED: "SCORED", FAILED: "FAILED" });
+export type ConversationScoreStatus = (typeof ConversationScoreStatus)[keyof typeof ConversationScoreStatus];
+
+// ------------------------------------------------------------- Lô 6 · SAU 90 NGÀY
+
+/** F30: vùng mặt trên phiếu tư vấn (máy tính bảng). */
+export const FaceArea = makeEnum({
+  TRAN: "TRAN",
+  THAI_DUONG: "THAI_DUONG",
+  HOC_MAT: "HOC_MAT",
+  MUI: "MUI",
+  MA: "MA",
+  RANH_MUI_MA: "RANH_MUI_MA",
+  MOI: "MOI",
+  CAM: "CAM",
+  HAM: "HAM",
+  NONG_CAM: "NONG_CAM",
+  CO: "CO",
+  TOAN_MAT: "TOAN_MAT",
+});
+export type FaceArea = (typeof FaceArea)[keyof typeof FaceArea];
+
+/** AI5: nháp tin chăm lại. QUEUED = sale đã duyệt, đã đưa vào hàng đợi gửi F11. */
+export const ReengageDraftStatus = makeEnum({ PENDING: "PENDING", QUEUED: "QUEUED", REJECTED: "REJECTED", EXPIRED: "EXPIRED" });
+export type ReengageDraftStatus = (typeof ReengageDraftStatus)[keyof typeof ReengageDraftStatus];
+
+/** AI6: bản tin sáng do AI viết hay bản số liệu thuần (AI chưa cấu hình hoặc lỗi). */
+export const BriefingSource = makeEnum({ AI: "AI", FALLBACK: "FALLBACK" });
+export type BriefingSource = (typeof BriefingSource)[keyof typeof BriefingSource];
+
+// ------------------------------------------------------------ Lô 7 · CRM 360
+
+/** P1: nhiệt độ khách trên thẻ bảng bước. */
+export const Heat = makeEnum({ HOT: "HOT", WARM: "WARM", COLD: "COLD" });
+export type Heat = (typeof Heat)[keyof typeof Heat];
+
+/** P1: mức số ngày ở bước so với ngưỡng của bước. */
+export const StageAgeLevel = makeEnum({ OK: "OK", WARN: "WARN", OVERDUE: "OVERDUE", NONE: "NONE" });
+export type StageAgeLevel = (typeof StageAgeLevel)[keyof typeof StageAgeLevel];
+
+/** V1: ba phương án báo giá. */
+export const QuoteTier = makeEnum({ BASIC: "BASIC", RECOMMENDED: "RECOMMENDED", PACKAGE: "PACKAGE" });
+export type QuoteTier = (typeof QuoteTier)[keyof typeof QuoteTier];
+
+/** V2: nơi gợi ý bán kèm. */
+export const UpsellContext = makeEnum({ CONSULT: "CONSULT", COUNTER: "COUNTER", INBOX: "INBOX", QUOTE: "QUOTE" });
+export type UpsellContext = (typeof UpsellContext)[keyof typeof UpsellContext];
+
+/** V2: kết quả gợi ý bán kèm. */
+export const UpsellOfferStatus = makeEnum({ SUGGESTED: "SUGGESTED", ACCEPTED: "ACCEPTED", DECLINED: "DECLINED" });
+export type UpsellOfferStatus = (typeof UpsellOfferStatus)[keyof typeof UpsellOfferStatus];
+
+// ------------------------------------------------------------ Lô 8 · CRM 360 LÔ B
+
+/** P6: trạng thái cơ hội bán. WON = đã làm dịch vụ, LOST = mất. */
+export const OpportunityStatus = makeEnum({ OPEN: "OPEN", WON: "WON", LOST: "LOST" });
+export type OpportunityStatus = (typeof OpportunityStatus)[keyof typeof OpportunityStatus];
+
+/** P6: cơ hội sinh ra từ đâu. */
+export const OpportunitySource = makeEnum({ MIGRATION: "MIGRATION", AUTO: "AUTO", MANUAL: "MANUAL" });
+export type OpportunitySource = (typeof OpportunitySource)[keyof typeof OpportunitySource];
+
+/** P4: bước con tự tính theo cọc của lịch hẹn. */
+export const DepositSubStage = makeEnum({ HEN_CHUA_COC: "HEN_CHUA_COC", DA_COC: "DA_COC" });
+export type DepositSubStage = (typeof DepositSubStage)[keyof typeof DepositSubStage];
+
+/** P4 + P5: điều kiện còn thiếu khi kéo thẻ, và form mở sẵn khi thả thẻ. */
+export const StageRequirement = makeEnum({ APPOINTMENT: "APPOINTMENT", CONTRACT: "CONTRACT" });
+export type StageRequirement = (typeof StageRequirement)[keyof typeof StageRequirement];
+
+export const DropAction = makeEnum({
+  BOOK: "BOOK",
+  DEPOSIT: "DEPOSIT",
+  LOST_REASON: "LOST_REASON",
+  QUOTE: "QUOTE",
+  CONTRACT: "CONTRACT",
+});
+export type DropAction = (typeof DropAction)[keyof typeof DropAction];
+
+/** V3: gói liệu trình. */
+export const PackageStatus = makeEnum({ ACTIVE: "ACTIVE", COMPLETED: "COMPLETED", CANCELLED: "CANCELLED" });
+export type PackageStatus = (typeof PackageStatus)[keyof typeof PackageStatus];
+
+/** C4: kết quả cuộc gọi ghi tay. */
+export const CallResult = makeEnum({ ANSWERED: "ANSWERED", NO_ANSWER: "NO_ANSWER", BUSY: "BUSY", WRONG_NUMBER: "WRONG_NUMBER" });
+export type CallResult = (typeof CallResult)[keyof typeof CallResult];

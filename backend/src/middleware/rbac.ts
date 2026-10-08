@@ -170,3 +170,48 @@ export function maskPhone(phone: string | null | undefined): string | null {
 export function phoneFor(req: Request, phone: string | null | undefined): string | null {
   return hasPermission(req, "customer.view_phone") ? (phone ?? null) : maskPhone(phone);
 }
+
+function maskNested(value: unknown, depth: number): unknown {
+  if (depth > 10 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => maskNested(v, depth + 1));
+  if (value instanceof Date || Buffer.isBuffer(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k === "customer" && v && typeof v === "object" && !Array.isArray(v) && "phone" in v) {
+      const c = v as Record<string, unknown>;
+      out[k] = { ...(maskNested(c, depth + 1) as Record<string, unknown>), phone: maskPhone(c.phone as string | null) };
+    } else {
+      out[k] = maskNested(v, depth + 1);
+    }
+  }
+  return out;
+}
+
+/**
+ * Che SĐT của mọi đối tượng `customer` lồng trong dữ liệu trả về (lịch hẹn,
+ * hàng đợi, lịch mổ, hợp đồng, hoá đơn, kho...) cho vai trò không có
+ * `customer.view_phone`. Dùng hàm này thay vì tự nhớ gọi phoneFor ở từng chỗ.
+ */
+export function maskCustomerPhones<T>(req: Request, data: T): T {
+  if (hasPermission(req, "customer.view_phone")) return data;
+  return maskNested(data, 0) as T;
+}
+
+/**
+ * Middleware gắn ở cấp router: mọi res.json của router đó đi qua
+ * maskCustomerPhones. Router nào trả khách lồng bên trong (không phải màn khách
+ * hàng) thì gắn cái này, không phải sửa từng route.
+ */
+export function maskCustomerPhonesInResponse(req: Request, res: Response, next: NextFunction) {
+  const original = res.json.bind(res);
+  res.json = (body?: unknown) => original(maskCustomerPhones(req, body));
+  next();
+}
+
+/**
+ * Dữ liệu phát qua socket tới cả phòng cơ sở không biết người nhận có quyền
+ * xem SĐT hay không: luôn che. Màn hình cần số thật thì tải lại qua API.
+ */
+export function maskCustomerPhonesForBroadcast<T>(data: T): T {
+  return maskNested(data, 0) as T;
+}

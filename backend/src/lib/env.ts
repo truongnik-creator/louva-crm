@@ -24,13 +24,51 @@ const DEFAULT_DATABASE_URL = `file:${DEFAULT_SQLITE_PATH}`;
 // in the environment for anything internet-facing.
 const DEFAULT_JWT_SECRET = "dev-insecure-jwt-secret-change-me-in-production";
 
-const databaseUrl = process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL;
-const jwtSecret = process.env.JWT_SECRET ?? DEFAULT_JWT_SECRET;
+const nodeEnv = process.env.NODE_ENV ?? "development";
+const isProduction = nodeEnv === "production";
 
-if (!process.env.JWT_SECRET) {
-  console.warn(
-    "[env] JWT_SECRET chưa đặt — đang dùng khoá phát triển cố định. Bắt buộc đặt JWT_SECRET trước khi mở server ra Internet."
-  );
+const databaseUrl = process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL;
+
+/**
+ * S2: production mà thiếu JWT_SECRET (hoặc để đúng khoá phát triển công khai
+ * trong mã nguồn, hoặc quá ngắn) thì TỪ CHỐI khởi động. Khoá mặc định nằm
+ * trong repo, ai đọc được mã nguồn cũng ký được token đăng nhập hợp lệ.
+ */
+function resolveJwtSecret(): string {
+  const fromEnv = process.env.JWT_SECRET;
+  if (isProduction) {
+    if (!fromEnv || fromEnv === DEFAULT_JWT_SECRET || fromEnv.length < 32) {
+      throw new Error(
+        "[env] NODE_ENV=production nhưng JWT_SECRET chưa đặt, trùng khoá mặc định hoặc ngắn hơn 32 ký tự. Từ chối khởi động. Sinh khoá bằng: node -e \"console.log(require('crypto').randomBytes(48).toString('base64'))\""
+      );
+    }
+    return fromEnv;
+  }
+  if (!fromEnv) {
+    console.warn(
+      "[env] JWT_SECRET chưa đặt: đang dùng khoá phát triển cố định. Bắt buộc đặt JWT_SECRET trước khi mở server ra Internet."
+    );
+  }
+  return fromEnv ?? DEFAULT_JWT_SECRET;
+}
+
+const jwtSecret = resolveJwtSecret();
+
+function parseKey(raw: string, source: string): Buffer {
+  const trimmed = raw.trim();
+  const buf = /^[0-9a-fA-F]{64}$/.test(trimmed) ? Buffer.from(trimmed, "hex") : Buffer.from(trimmed, "base64");
+  if (buf.length !== 32) {
+    throw new Error(`${source} phải là 32 byte (64 ký tự hex hoặc 44 ký tự base64).`);
+  }
+  return buf;
+}
+
+/** Đường dẫn tệp khoá mã hoá đang dùng (null khi khoá lấy từ biến ENCRYPTION_KEY). */
+export function encryptionKeyFilePath(): string | null {
+  if (process.env.ENCRYPTION_KEY) return null;
+  return process.env.ENCRYPTION_KEY_FILE
+    ? path.resolve(process.env.ENCRYPTION_KEY_FILE)
+    : path.join(DATA_DIR, ".enc-key");
 }
 
 /**
@@ -45,25 +83,28 @@ if (!process.env.JWT_SECRET) {
  */
 function resolveEncryptionKey(): Buffer {
   const fromEnv = process.env.ENCRYPTION_KEY;
-  if (fromEnv) {
-    const buf = /^[0-9a-fA-F]{64}$/.test(fromEnv)
-      ? Buffer.from(fromEnv, "hex")
-      : Buffer.from(fromEnv, "base64");
-    if (buf.length !== 32) {
-      throw new Error("ENCRYPTION_KEY phải là 32 byte (64 ký tự hex hoặc 44 ký tự base64).");
-    }
-    return buf;
+  if (fromEnv) return parseKey(fromEnv, "ENCRYPTION_KEY");
+
+  // S3: ENCRYPTION_KEY_FILE cho phép đặt khoá NGOÀI thư mục data (ổ khác,
+  // thư mục chỉ root đọc được, ổ mã hoá...). Lộ bản sao thư mục data mà không
+  // lộ tệp khoá thì ảnh và token vẫn an toàn.
+  const keyFile = encryptionKeyFilePath()!;
+  const custom = Boolean(process.env.ENCRYPTION_KEY_FILE);
+
+  if (fs.existsSync(keyFile)) {
+    return parseKey(fs.readFileSync(keyFile, "utf8"), keyFile);
+  }
+  if (custom && isProduction) {
+    // Production trỏ tới tệp khoá mà tệp không tồn tại: gần như chắc chắn là
+    // mount hỏng. Sinh khoá mới lúc này = mất khả năng đọc toàn bộ dữ liệu cũ.
+    throw new Error(`[env] ENCRYPTION_KEY_FILE=${keyFile} không tồn tại. Từ chối khởi động để không sinh khoá mới đè lên dữ liệu đã mã hoá.`);
   }
 
-  const keyFile = path.join(DATA_DIR, ".enc-key");
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (fs.existsSync(keyFile)) {
-    return Buffer.from(fs.readFileSync(keyFile, "utf8").trim(), "hex");
-  }
+  fs.mkdirSync(path.dirname(keyFile), { recursive: true });
   const generated = crypto.randomBytes(32);
   fs.writeFileSync(keyFile, generated.toString("hex"), { mode: 0o600 });
   console.warn(
-    `[env] ENCRYPTION_KEY chưa đặt — đã sinh khoá mới tại ${keyFile}. Sao lưu tệp này cùng CSDL, mất khoá là mất ảnh và token Zalo.`
+    `[env] Đã sinh khoá mã hoá mới tại ${keyFile}. Sao lưu tệp này RIÊNG với CSDL, mất khoá là mất ảnh và token Zalo.`
   );
   return generated;
 }
@@ -80,8 +121,24 @@ function csv(value: string | undefined): string[] | undefined {
   return parts.length ? parts : undefined;
 }
 
+/**
+ * "trust proxy" của Express. Mặc định chỉ tin proxy chạy trên chính máy này
+ * (cloudflared, nginx cục bộ): tin mọi X-Forwarded-For như trước thì ai cũng
+ * giả được IP, vừa lách giới hạn đăng nhập vừa làm sai nhật ký kiểm toán.
+ */
+function resolveTrustProxy(): boolean | number | string {
+  const raw = process.env.TRUST_PROXY;
+  if (raw === undefined || raw === "") return "loopback";
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return raw;
+}
+
 export const env = {
-  nodeEnv: process.env.NODE_ENV ?? "development",
+  nodeEnv,
+  isProduction,
+  trustProxy: resolveTrustProxy(),
   port: Number(process.env.PORT ?? 4000),
   databaseUrl,
   dataDir: DATA_DIR,
@@ -105,4 +162,10 @@ export const env = {
   exportRowLimit: Number(process.env.EXPORT_ROW_LIMIT ?? 5000),
   /** Thời hạn của một lượt break-glass, tính bằng phút (mục 4.3). */
   breakGlassMinutes: Number(process.env.BREAK_GLASS_MINUTES ?? 30),
+  /** S6: số lần gọi /api/auth/login tối đa mỗi IP trong một cửa sổ. */
+  loginRateLimitMax: Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 10),
+  loginRateLimitWindowMs: Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
+  /** Thư mục chứa bản sao lưu (T1). Mặc định backend/backups, ngoài thư mục data. */
+  backupDir: process.env.BACKUP_DIR ?? path.join(BACKEND_ROOT, "backups"),
+  backupKeep: Number(process.env.BACKUP_KEEP ?? 14),
 };

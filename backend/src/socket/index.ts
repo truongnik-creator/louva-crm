@@ -52,6 +52,14 @@ export function initSocket(httpServer: HttpServer): SocketIOServer {
       if (!session || session.revokedAt || session.expiresAt.getTime() < Date.now()) {
         return next(new Error("Phiên đã bị thu hồi"));
       }
+      const user = await prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: { status: true, mustChangePassword: true },
+      });
+      // Như requireAuth: tài khoản khoá hoặc còn mật khẩu tạm thì không nhận tin realtime.
+      if (!user || user.status !== "ACTIVE" || user.mustChangePassword) {
+        return next(new Error("Tài khoản chưa được phép kết nối"));
+      }
 
       const branches = await prisma.userBranch.findMany({
         where: { userId: payload.sub },

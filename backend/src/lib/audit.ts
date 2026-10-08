@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import { logger } from "./logger";
 import { prisma } from "./prisma";
 import { AuditAction, AccessResourceType, AccessSeverity } from "../types/enums";
 
@@ -48,7 +49,7 @@ export async function writeAudit(input: AuditInput): Promise<void> {
       },
     });
   } catch (err) {
-    console.error("[audit] không ghi được AuditLog:", err);
+    logger.error({ err }, "[audit] không ghi được AuditLog:");
   }
 }
 
@@ -80,7 +81,7 @@ export async function writeAccessLog(input: AccessInput): Promise<void> {
       },
     });
   } catch (err) {
-    console.error("[audit] không ghi được DataAccessLog:", err);
+    logger.error({ err }, "[audit] không ghi được DataAccessLog:");
   }
 }
 

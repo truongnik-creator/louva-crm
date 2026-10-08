@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import { prisma } from "./prisma";
+import { formatDateTimeVN } from "./datetime";
 import { env } from "./env";
 import { getSettingNumber } from "./settings-catalog";
 import { currentUser } from "../middleware/auth";
@@ -98,7 +99,7 @@ export async function grantBreakGlass(req: Request, customerId: string, reason: 
     action: AuditAction.BREAK_GLASS,
     entity: "MedicalRecord",
     entityId: customerId,
-    summary: `${user.name} mở quyền khẩn cấp xem bệnh án tới ${expiresAt.toLocaleString("vi-VN")} — lý do: ${reason}`,
+    summary: `${user.name} mở quyền khẩn cấp xem bệnh án tới ${formatDateTimeVN(expiresAt)}. Lý do: ${reason}`,
   });
   await writeAccessLog({
     req,

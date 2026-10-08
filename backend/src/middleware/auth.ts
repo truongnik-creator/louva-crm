@@ -40,6 +40,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       email: true,
       name: true,
       status: true,
+      mustChangePassword: true,
       roleLinks: { select: { role: { select: { code: true } } } },
       branches: { select: { branchId: true, isPrimary: true } },
     },
@@ -47,6 +48,16 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   if (!user) return res.status(401).json({ error: "Tài khoản không tồn tại" });
   if (user.status !== UserStatus.ACTIVE) {
     return res.status(403).json({ error: "Tài khoản đã bị khoá hoặc đã nghỉ việc" });
+  }
+
+  // S1: tài khoản dùng mật khẩu tạm (seed, quản trị cấp) phải đổi mật khẩu
+  // trước khi làm bất cứ việc gì. Chỉ mở các đường /api/auth/* (xem hồ sơ,
+  // đổi mật khẩu, đăng xuất).
+  if (user.mustChangePassword && !req.originalUrl.startsWith("/api/auth/")) {
+    return res.status(403).json({
+      error: "Bắt buộc đổi mật khẩu trước khi tiếp tục làm việc.",
+      code: "MUST_CHANGE_PASSWORD",
+    });
   }
 
   const branchIds = user.branches.map((b) => b.branchId);

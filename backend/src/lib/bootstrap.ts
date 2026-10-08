@@ -2,11 +2,14 @@ import path from "node:path";
 import fs from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { prisma } from "./prisma";
 import { env, BACKEND_ROOT } from "./env";
 import { ensureStorageDir } from "./storage";
 import { PERMISSIONS, ROLES, RoleCode, expandGrant } from "./rbac-catalog";
+import { logger } from "./logger";
+import { backupBeforeMigrate } from "./backup";
+import { randomToken } from "./crypto";
 
 const execFileAsync = promisify(execFile);
 
@@ -19,7 +22,19 @@ const SCHEMA_PATH = path.join(BACKEND_ROOT, "prisma", "schema.prisma");
 const PRISMA_CLI_ENTRY = path.join(BACKEND_ROOT, "node_modules", "prisma", "build", "index.js");
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@louva.vn";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "admin123";
+const MIGRATIONS_DIR = path.join(BACKEND_ROOT, "prisma", "migrations");
+
+const ADMIN_EMAIL_DEFAULT_PASSWORD = "admin123";
+
+/**
+ * Mật khẩu tài khoản quản trị đầu tiên. Máy phát triển giữ `admin123` cho
+ * tiện; production (S1) không bao giờ dùng mật khẩu đoán được: không đặt
+ * ADMIN_PASSWORD thì sinh ngẫu nhiên và in ra đúng một lần.
+ */
+function initialAdminPassword(): string {
+  if (process.env.ADMIN_PASSWORD) return process.env.ADMIN_PASSWORD;
+  return env.isProduction ? randomToken(15) : ADMIN_EMAIL_DEFAULT_PASSWORD;
+}
 
 /**
  * Cơ sở khởi tạo. Hệ thống vẫn là ĐA CƠ SỞ (đó là xương sống của mô hình phân
@@ -52,6 +67,11 @@ function ensureSqliteDirExists() {
 async function applyMigrations() {
   ensureSqliteDirExists();
 
+  // T1: có migration mới thì chụp CSDL trước khi áp. Migration SQLite hay
+  // "dựng lại bảng" (tạo bảng mới, chép dữ liệu, xoá bảng cũ); hỏng giữa chừng
+  // mà không có bản chụp là mất dữ liệu thật.
+  await backupBeforeMigrate(MIGRATIONS_DIR);
+
   if (!fs.existsSync(PRISMA_CLI_ENTRY)) {
     throw new Error(
       `Không tìm thấy Prisma CLI tại ${PRISMA_CLI_ENTRY}. Gói "prisma" phải là dependency runtime, không chỉ devDependency.`
@@ -67,8 +87,8 @@ async function applyMigrations() {
     { cwd: BACKEND_ROOT, env: { ...process.env, DATABASE_URL: env.databaseUrl } }
   );
 
-  if (stdout?.trim()) console.log(stdout.trim());
-  if (stderr?.trim()) console.warn(stderr.trim());
+  if (stdout?.trim()) logger.info({ out: stdout.trim() }, "prisma migrate deploy");
+  if (stderr?.trim()) logger.warn({ out: stderr.trim() }, "prisma migrate deploy (stderr)");
 }
 
 /**
@@ -101,7 +121,7 @@ async function syncRbacCatalog() {
         for (const code of expandGrant(item)) {
           const permissionId = permissionIdByCode.get(code);
           if (!permissionId) {
-            console.warn(`[rbac] vai trò ${roleDef.code} tham chiếu quyền không tồn tại: ${code}`);
+            logger.warn(`[rbac] vai trò ${roleDef.code} tham chiếu quyền không tồn tại: ${code}`);
             continue;
           }
           await prisma.rolePermission.upsert({
@@ -135,10 +155,11 @@ async function ensureAdminAccount() {
   const branches = await prisma.branch.findMany({ select: { id: true, code: true } });
   const adminRole = await prisma.role.findUnique({ where: { code: RoleCode.QUAN_LY_HE_THONG } });
 
+  const password = initialAdminPassword();
   const user = await prisma.user.create({
     data: {
       email: ADMIN_EMAIL,
-      passwordHash: await bcrypt.hash(ADMIN_PASSWORD, 10),
+      passwordHash: await bcrypt.hash(password, 10),
       name: "Quản trị hệ thống",
       mustChangePassword: true,
       branches: {
@@ -149,24 +170,88 @@ async function ensureAdminAccount() {
     },
   });
 
-  console.log("=================================================");
-  console.log("Khởi động lần đầu — đã tạo tài khoản quản trị:");
-  console.log(`  email:    ${user.email}`);
-  console.log(`  mật khẩu: ${ADMIN_PASSWORD}`);
-  console.log("Bắt buộc đổi mật khẩu ngay sau lần đăng nhập đầu tiên.");
-  console.log("=================================================");
+  // In thẳng ra stdout (không qua logger JSON) để người cài đặt đọc được,
+  // và vì mật khẩu không được lọt vào hệ thống gom log.
+  if (process.env.NODE_ENV !== "test" && !process.env.VITEST) {
+    console.log("=================================================");
+    console.log("Khởi động lần đầu: đã tạo tài khoản quản trị");
+    console.log(`  email:    ${user.email}`);
+    console.log(`  mật khẩu: ${password}`);
+    console.log("Bắt buộc đổi mật khẩu ngay sau lần đăng nhập đầu tiên.");
+    console.log("=================================================");
+  }
 }
 
-export async function bootstrap() {
+/**
+ * B17: điền cột SĐT/tên chuẩn hoá cho dữ liệu có từ trước migration. Chạy mỗi
+ * lần khởi động nhưng chỉ đụng các dòng còn trống, nên sau lần đầu gần như
+ * không tốn gì. Việc tính toán nằm ở middleware trong lib/prisma.ts.
+ */
+export async function backfillNormalizedColumns(): Promise<{ customers: number; leads: number }> {
+  let customers = 0;
+  let leads = 0;
+  let cursor: string | undefined;
+  for (;;) {
+    const rows: Array<{ id: string; name: string; phone: string | null; updatedAt: Date }> =
+      await prisma.customer.findMany({
+      where: {
+        OR: [
+          { phone: { not: null }, phoneNormalized: null },
+          { nameNormalized: null },
+        ],
+      },
+      select: { id: true, name: true, phone: true, updatedAt: true },
+      orderBy: { id: "asc" },
+      take: 500,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    if (!rows.length) break;
+    for (const r of rows) {
+      // Giữ nguyên updatedAt: backfill không phải là "khách vừa được sửa".
+      await prisma.customer.update({
+        where: { id: r.id },
+        data: { phone: r.phone, name: r.name, updatedAt: r.updatedAt },
+      });
+      customers++;
+    }
+    cursor = rows[rows.length - 1].id;
+  }
+  cursor = undefined;
+  for (;;) {
+    const rows: Array<{ id: string; phone: string | null; updatedAt: Date }> = await prisma.lead.findMany({
+      where: { phone: { not: null }, phoneNormalized: null },
+      select: { id: true, phone: true, updatedAt: true },
+      orderBy: { id: "asc" },
+      take: 500,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    if (!rows.length) break;
+    for (const r of rows) {
+      await prisma.lead.update({ where: { id: r.id }, data: { phone: r.phone, updatedAt: r.updatedAt } });
+      leads++;
+    }
+    cursor = rows[rows.length - 1].id;
+  }
+  if (customers || leads) logger.info({ customers, leads }, "Đã chuẩn hoá SĐT/tên cho dữ liệu cũ");
+  return { customers, leads };
+}
+
+/**
+ * Chuẩn bị CSDL. `skipMigrate` dành cho bộ test: migration đã áp một lần ở
+ * tests/global-setup.ts, mỗi tệp test chỉ cần danh mục quyền + cơ sở.
+ * `exitOnError: false` để test thấy lỗi thật thay vì tiến trình bị kill.
+ */
+export async function bootstrap(opts: { skipMigrate?: boolean; exitOnError?: boolean } = {}) {
   try {
-    await applyMigrations();
+    if (!opts.skipMigrate) await applyMigrations();
     ensureStorageDir();
     await ensureBranches();
     await syncRbacCatalog();
     await ensureAdminAccount();
+    await backfillNormalizedColumns();
   } catch (err) {
-    console.error("Bootstrap thất bại: không chuẩn bị được CSDL. Server sẽ không khởi động.");
-    console.error(err);
+    logger.fatal({ err }, "Bootstrap thất bại: không chuẩn bị được CSDL. Server sẽ không khởi động.");
+    if (opts.exitOnError === false) throw err;
     process.exit(1);
   }
 }

@@ -1,12 +1,17 @@
 import { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
+import { MulterError } from "multer";
+import { logger } from "../lib/logger";
 
 // Thrown by route handlers to produce a specific HTTP status + message.
 export class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** Trường thêm trả kèm thông báo lỗi (ví dụ điều kiện còn thiếu khi đổi bước, Lô 8 · P4). */
+  extra?: Record<string, unknown>;
+  constructor(status: number, message: string, extra?: Record<string, unknown>) {
     super(message);
     this.status = status;
+    this.extra = extra;
   }
 }
 
@@ -24,13 +29,23 @@ export function asyncHandler(fn: AsyncHandler) {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function errorHandler(err: unknown, req: Request, res: Response, next: NextFunction) {
   if (err instanceof HttpError) {
-    return res.status(err.status).json({ error: err.message });
+    return res.status(err.status).json({ ...(err.extra ?? {}), error: err.message });
   }
 
   if (err instanceof ZodError) {
-    return res.status(400).json({ error: "Validation failed", details: err.flatten() });
+    return res.status(400).json({ error: "Dữ liệu không hợp lệ", details: err.flatten() });
   }
 
-  console.error("Unhandled error:", err);
-  return res.status(500).json({ error: "Internal server error" });
+  if (err instanceof MulterError) {
+    const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    return res.status(status).json({ error: `Tệp tải lên không hợp lệ (${err.code})` });
+  }
+
+  const log = (req as Request & { log?: typeof logger }).log ?? logger;
+  log.error({ err }, "Lỗi không xử lý được");
+  const requestId = (req as Request & { id?: unknown }).id;
+  return res.status(500).json({
+    error: "Lỗi máy chủ. Báo quản trị kèm mã yêu cầu để tra nhật ký.",
+    ...(requestId ? { requestId: String(requestId) } : {}),
+  });
 }

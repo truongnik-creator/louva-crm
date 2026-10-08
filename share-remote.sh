@@ -45,6 +45,22 @@ case "${1:-start}" in
     ;;
 esac
 
+# S7: quick tunnel = link công khai, không có lớp chặn nào ở biên. Không bao giờ
+# dùng với dữ liệu bệnh nhân thật.
+if [ "${NODE_ENV:-}" = "production" ]; then
+  echo "TỪ CHỐI: NODE_ENV=production. Quick tunnel không được dùng với dữ liệu thật."
+  echo "Vận hành thật phải dùng named tunnel + Cloudflare Access, hoặc máy chủ có TLS và tường lửa (xem README)."
+  exit 1
+fi
+
+cat <<'CANHBAO'
+================================================================
+CẢNH BÁO: link quick tunnel là CÔNG KHAI, ai có link đều mở được
+trang đăng nhập. Chỉ dùng để xem thử với DỮ LIỆU MẪU.
+KHÔNG dùng với dữ liệu khách, bệnh án, ảnh thật.
+================================================================
+CANHBAO
+
 if [ ! -x "$CLOUDFLARED" ]; then
   echo "Không tìm thấy cloudflared tại $CLOUDFLARED"
   echo "Cài bằng:"

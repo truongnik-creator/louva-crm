@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { pageQuery, CATALOG_PAGE } from "../lib/pagination";
 import { asyncHandler } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import { requirePermission, scopeOf, notFound } from "../middleware/rbac";
@@ -21,6 +22,7 @@ router.get(
     const user = currentUser(req);
     const canSeeAll = scopeOf(req, "settings.read") === PermissionScope.ALL;
     const branches = await prisma.branch.findMany({
+      ...pageQuery(req.query, CATALOG_PAGE),
       where: canSeeAll ? {} : { id: { in: user.branchIds } },
       orderBy: { code: "asc" },
     });
@@ -35,14 +37,30 @@ const branchSchema = z.object({
   address: z.string().optional(),
   phone: z.string().optional(),
   active: z.boolean().optional(),
+  // F24: chỉ dẫn đường cho khách.
+  mapUrl: z.string().trim().url("Link bản đồ phải là đường dẫn http(s)").max(500).nullable().optional().or(z.literal("")),
+  parkingGuide: z.string().trim().max(500).nullable().optional(),
+  buildingGuide: z.string().trim().max(500).nullable().optional(),
+  facadePhotoUrl: z.string().trim().url("Ảnh mặt tiền phải là đường dẫn http(s)").max(500).nullable().optional().or(z.literal("")),
+  // F25: tài khoản nhận cọc của cơ sở.
+  bankBin: z.string().trim().regex(/^\d{6}$/, "Mã BIN ngân hàng gồm 6 chữ số").nullable().optional().or(z.literal("")),
+  bankAccountNo: z.string().trim().regex(/^[0-9A-Za-z]{4,30}$/, "Số tài khoản không hợp lệ").nullable().optional().or(z.literal("")),
+  bankAccountName: z.string().trim().max(100).nullable().optional(),
 });
+
+/** Chuỗi rỗng từ form nghĩa là xoá giá trị. */
+function blankToNull<T extends Record<string, unknown>>(data: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) out[k] = v === "" ? null : v;
+  return out as T;
+}
 
 router.post(
   "/branches",
   requirePermission("settings.create"),
   asyncHandler(async (req, res) => {
-    const data = branchSchema.parse(req.body);
-    const branch = await prisma.branch.create({ data });
+    const data = blankToNull(branchSchema.parse(req.body));
+    const branch = await prisma.branch.create({ data: data as typeof data & { code: string; name: string } });
     await writeAudit({
       req,
       action: AuditAction.CREATE,
@@ -58,7 +76,7 @@ router.patch(
   "/branches/:id",
   requirePermission("settings.update"),
   asyncHandler(async (req, res) => {
-    const data = branchSchema.partial().parse(req.body);
+    const data = blankToNull(branchSchema.partial().parse(req.body));
     const before = await prisma.branch.findUnique({ where: { id: req.params.id } });
     if (!before) throw notFound("Không tìm thấy cơ sở");
 
@@ -84,6 +102,7 @@ router.get(
     const branchId = (req.query.branchId as string) ?? undefined;
     res.json(
       await prisma.department.findMany({
+        ...pageQuery(req.query, CATALOG_PAGE),
         where: {
           branchId: branchId ?? { in: user.branchIds },
           ...(req.query.active === "1" ? { active: true } : {}),
@@ -147,6 +166,7 @@ router.get(
     const branchId = (req.query.branchId as string) ?? user.activeBranchId ?? undefined;
     res.json(
       await prisma.room.findMany({
+        ...pageQuery(req.query, CATALOG_PAGE),
         where: {
           branchId: branchId && user.branchIds.includes(branchId) ? branchId : { in: user.branchIds },
           ...(req.query.type ? { type: String(req.query.type) } : {}),
