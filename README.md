@@ -145,6 +145,8 @@ Cả hai token đi bằng tham số URL, **không** có header `Authorization`.
 - `pancake.autoSync.enabled` — kéo hội thoại, tin nhắn về hộp thư.
 - `pancake.statsSync.enabled` — kéo thống kê hiệu suất nhân viên (F35).
 
+Tác vụ định kỳ chỉ kéo hôm qua và hôm nay. Muốn có số của những ngày trước khi bật tính năng thì bấm **"Nạp lại 30 ngày"** ở màn Kết nối.
+
 **Báo cáo hiệu suất nhân viên (F35)**: Đo lường › *Hiệu suất Pancake* — số tin một nhân viên xử lý, tốc độ phản hồi trung bình, số tin theo nền tảng và theo trang, theo ngày và theo giờ. Số do chính Pancake đo (`GET /pages/{page_id}/statistics/users`), nên tính cả tin nhân viên trả lời ngay trong app Pancake. Gắn nhân viên Pancake với tài khoản CRM ở Kết nối › *Nhân viên Pancake*.
 
 **Đã kiểm chứng với tài khoản thật** (08/10/2026): liệt kê trang, token trang, thống kê nhân viên, hội thoại, tin nhắn. Phát hiện **sáu chỗ tài liệu Pancake nói khác API thật** — mã nguồn đi theo API thật, chi tiết và căn cứ ở `docs/NANG-CAP-NOVA.md` mục F35.

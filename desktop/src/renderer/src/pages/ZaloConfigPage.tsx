@@ -94,14 +94,16 @@ function PancakePanel(): React.JSX.Element {
     }
   }
 
-  const syncStats = async (id: string): Promise<void> => {
+  const syncStats = async (id: string, days?: number): Promise<void> => {
     setBusy(id)
     try {
-      const r = await syncPancakeStats(id)
+      const r = await syncPancakeStats(id, days ? { days } : {})
       say(
-        r.started
-          ? 'Đã bắt đầu kéo thống kê hiệu suất chạy nền. Xem kết quả ở Đo lường › Hiệu suất Pancake sau ít phút.'
-          : 'Đang có một lượt kéo thống kê chạy nền, chờ lượt đó xong.'
+        !r.started
+          ? 'Đang có một lượt kéo thống kê chạy nền, chờ lượt đó xong.'
+          : days
+            ? `Đang nạp lại ${days} ngày lịch sử, chạy nền (vài phút với nhiều trang). Xem ở Đo lường › Hiệu suất Pancake.`
+            : 'Đã bắt đầu kéo thống kê hiệu suất chạy nền. Xem kết quả ở Đo lường › Hiệu suất Pancake sau ít phút.'
       )
       window.setTimeout(() => void load(), 5000)
     } catch (err) {
@@ -198,6 +200,14 @@ function PancakePanel(): React.JSX.Element {
                   </button>
                   <button className="btn sec sm" disabled={busy === c.id} onClick={() => void syncStats(c.id)}>
                     Kéo thống kê
+                  </button>
+                  <button
+                    className="btn sec sm"
+                    disabled={busy === c.id}
+                    title="Tác vụ nền chỉ kéo hôm qua và hôm nay. Bấm đây để có số của những ngày trước khi bật tính năng."
+                    onClick={() => void syncStats(c.id, 30)}
+                  >
+                    Nạp lại 30 ngày
                   </button>
                   <button className="btn sm" disabled={busy === c.id} onClick={() => void sync(c.id)}>
                     {busy === c.id ? 'Đang chạy…' : 'Đồng bộ ngay'}

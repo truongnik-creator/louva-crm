@@ -341,8 +341,12 @@ router.patch(
 /**
  * POST /api/pancake/:id/sync-stats — kéo thống kê hiệu suất NGAY.
  *
- * Bình thường tác vụ nền tự kéo mỗi 10 phút; nút này để quản trị kiểm tra ngay
- * sau khi vừa cấu hình. `?wait=1` thì chờ xong và trả kết quả.
+ * Bình thường tác vụ nền tự kéo mỗi 10 phút (hôm qua + hôm nay); nút này để
+ * quản trị kiểm tra ngay sau khi vừa cấu hình.
+ *
+ * `?days=N` NẠP LẠI LỊCH SỬ N ngày — cần cho báo cáo 7 ngày, theo tháng, vì tác
+ * vụ định kỳ không bao giờ chạm tới những ngày trước khi bật tính năng. Chặn ở
+ * 90 ngày cho khỏi treo hàng giờ. `?wait=1` thì chờ xong và trả kết quả.
  */
 router.post(
   "/:id/sync-stats",
@@ -355,11 +359,23 @@ router.post(
     if (!config.pages.length) throw new HttpError(400, 'Chưa có trang nào. Bấm "Dò trang" trước.');
     if (isStatsSyncRunning(config.id)) return res.status(202).json({ started: false, running: true });
 
-    if (req.query.wait === "1") return res.json(await syncConfigStats(config.id));
-    void syncConfigStats(config.id).catch((err) =>
+    const days = Math.min(90, Math.max(0, Number(req.query.days ?? 0) || 0));
+    if (days > 1) {
+      await writeAudit({
+        req,
+        action: AuditAction.UPDATE,
+        entity: "PancakeConfig",
+        entityId: config.id,
+        summary: `Nạp lại thống kê Pancake ${days} ngày cho "${config.label}"`,
+      });
+    }
+
+    const opts = days ? { days } : {};
+    if (req.query.wait === "1") return res.json(await syncConfigStats(config.id, new Date(), opts));
+    void syncConfigStats(config.id, new Date(), opts).catch((err) =>
       logger.warn({ err, configId: config.id }, "[pancake] kéo thống kê lỗi")
     );
-    res.status(202).json({ started: true, running: true });
+    res.status(202).json({ started: true, running: true, days: days || null });
   })
 );
 

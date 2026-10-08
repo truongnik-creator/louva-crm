@@ -316,6 +316,10 @@ gửi — cột "số tin một nhân viên xử lý" trống.
 
 - Ghi bằng upsert theo (trang, nhân viên, mốc giờ) nên kéo lại cùng khoảng thời
   gian KHÔNG cộng dồn. Cửa sổ kéo phủ cả hôm qua để chốt những giờ cuối ngày.
+- **Nạp lại lịch sử**: tác vụ 10 phút chỉ kéo hôm qua và hôm nay, nên báo cáo 7
+  ngày và theo tháng sẽ trống ở những ngày trước khi bật tính năng. Nút "Nạp lại
+  30 ngày" ở màn Kết nối (hoặc `POST /api/pancake/:id/sync-stats?days=N`, chặn
+  ở 90) kéo bù, chia theo từng tuần để phản hồi không quá lớn.
 - Trung bình phản hồi của cả kỳ tính CÓ TRỌNG SỐ theo số tin trong từng ô giờ.
 - Ô Pancake trả `average_response_time = 0` coi là KHÔNG ĐO ĐƯỢC (hiện "—"),
   không phải trả lời tức thì; nhưng số tin của ô đó vẫn được cộng.

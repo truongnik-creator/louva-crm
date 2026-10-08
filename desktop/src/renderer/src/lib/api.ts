@@ -1411,16 +1411,27 @@ export async function linkPancakeAgent(id: string, userId: string | null): Promi
   return data
 }
 
-/** F35: kéo thống kê hiệu suất ngay (bình thường tác vụ nền tự chạy 10 phút/lần). */
-export async function syncPancakeStats(configId: string): Promise<{
+/**
+ * F35: kéo thống kê hiệu suất ngay (bình thường tác vụ nền tự chạy 10 phút/lần).
+ *
+ * `days` nạp lại lịch sử N ngày — cần cho báo cáo 7 ngày, theo tháng, vì tác vụ
+ * định kỳ chỉ kéo hôm qua và hôm nay. Máy chủ chặn ở 90 ngày.
+ */
+export async function syncPancakeStats(
+  configId: string,
+  opts: { days?: number } = {}
+): Promise<{
   started?: boolean
   running?: boolean
+  days?: number | null
   pages?: number
   buckets?: number
   agents?: number
   errors?: string[]
 }> {
-  const { data } = await api.post(`/pancake/${configId}/sync-stats`)
+  const { data } = await api.post(`/pancake/${configId}/sync-stats`, null, {
+    params: opts.days ? { days: opts.days } : {}
+  })
   return data
 }
 

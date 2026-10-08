@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { setupTestContext, prisma, type TestContext } from "./helpers";
 import { encryptNullable } from "../src/lib/crypto";
 import { vnDayKey } from "../src/lib/datetime";
-import { syncConfigStats, pancakeDateRange, defaultStatsWindow } from "../src/services/pancake-stats";
+import { syncConfigStats, pancakeDateRange, defaultStatsWindow, backfillWindows } from "../src/services/pancake-stats";
 import {
   conversationPhone,
   extractAdSource,
@@ -149,6 +149,23 @@ describe("F35: kéo thống kê nhân viên Pancake", () => {
     // Cửa sổ mặc định phủ cả hôm qua: chạy lúc 00h05 vẫn chốt được hôm qua.
     const w = defaultStatsWindow(day);
     expect(w.dateRange).toBe("07/10/2026 00:00:00 - 08/10/2026 23:59:59");
+  });
+
+  it("nạp lại lịch sử chia theo tuần, phủ đủ số ngày yêu cầu, mới nhất trước", () => {
+    const now = new Date("2026-10-08T05:00:00Z"); // 12:00 giờ VN ngày 08/10
+    const w = backfillWindows(now, 30);
+    // 30 ngày chia theo tuần = 5 cửa sổ (7+7+7+7+2).
+    expect(w).toHaveLength(5);
+    expect(w[0].dateRange).toBe("02/10/2026 00:00:00 - 08/10/2026 23:59:59");
+    expect(w[1].dateRange).toBe("25/09/2026 00:00:00 - 01/10/2026 23:59:59");
+    // Cửa sổ cuối không được trườn quá 30 ngày.
+    expect(w[4].dateRange).toBe("09/09/2026 00:00:00 - 10/09/2026 23:59:59");
+    // Các cửa sổ liền kề nhau, không hở ngày nào và không trùng ngày nào.
+    for (let i = 1; i < w.length; i++) {
+      expect(w[i].to.getTime()).toBe(w[i - 1].from.getTime() - 86_400_000);
+    }
+    // Nạp 1 ngày vẫn ra một cửa sổ hợp lệ.
+    expect(backfillWindows(now, 1)).toHaveLength(1);
   });
 
   it("kéo số liệu, tự gắn nhân viên theo tên, và kéo lại KHÔNG cộng dồn", async () => {

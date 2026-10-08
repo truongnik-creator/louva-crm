@@ -71,11 +71,41 @@ export function pancakeDateRange(fromDay: Date, toDay: Date): string {
   return `${vnStamp(start)} - ${vnStamp(end)}`;
 }
 
-/** Cửa sổ kéo mặc định: từ LOOKBACK_DAYS ngày trước tới hết hôm nay (giờ VN). */
-export function defaultStatsWindow(now: Date = new Date()): { from: Date; to: Date; dateRange: string } {
+export interface StatsWindow {
+  from: Date;
+  to: Date;
+  dateRange: string;
+}
+
+/** Cửa sổ [hôm nay - daysBack, hết hôm nay] theo giờ Việt Nam. */
+export function statsWindow(now: Date, daysBack: number): StatsWindow {
   const to = startOfVnDay(now);
-  const from = new Date(to.getTime() - LOOKBACK_DAYS * DAY_MS);
+  const from = new Date(to.getTime() - Math.max(0, daysBack) * DAY_MS);
   return { from, to, dateRange: pancakeDateRange(from, to) };
+}
+
+/** Cửa sổ kéo mặc định mỗi 10 phút: hôm qua + hôm nay. */
+export function defaultStatsWindow(now: Date = new Date()): StatsWindow {
+  return statsWindow(now, LOOKBACK_DAYS);
+}
+
+/**
+ * Chia một khoảng dài thành nhiều cửa sổ ngắn, mới nhất trước.
+ *
+ * Nạp lại 90 ngày bằng MỘT lượt gọi thì phản hồi có thể lên hàng chục nghìn ô
+ * cho mỗi trang; chia theo tuần vừa nhẹ bộ nhớ, vừa cho phép nạp dở mà phần đã
+ * nạp vẫn dùng được.
+ */
+export function backfillWindows(now: Date, days: number, chunkDays = 7): StatsWindow[] {
+  const out: StatsWindow[] = [];
+  const today = startOfVnDay(now);
+  for (let offset = 0; offset < Math.max(1, days); offset += chunkDays) {
+    const to = new Date(today.getTime() - offset * DAY_MS);
+    const span = Math.min(chunkDays - 1, Math.max(0, days - offset - 1));
+    const from = new Date(to.getTime() - span * DAY_MS);
+    out.push({ from, to, dateRange: pancakeDateRange(from, to) });
+  }
+  return out;
 }
 
 interface StatFields {
@@ -395,8 +425,19 @@ export function isStatsSyncRunning(configId: string): boolean {
   return running.has(configId);
 }
 
-/** Kéo thống kê cho MỘT kết nối Pancake. */
-export async function syncConfigStats(configId: string, now: Date = new Date()): Promise<StatsSyncResult> {
+/**
+ * Kéo thống kê cho MỘT kết nối Pancake.
+ *
+ * `days` là số ngày về trước cần kéo. Bỏ trống = cửa sổ mặc định (hôm qua + hôm
+ * nay) cho tác vụ 10 phút. Đặt số lớn để NẠP LẠI LỊCH SỬ: báo cáo 7 ngày hay
+ * theo tháng cần dữ liệu của những ngày trước khi bật tính năng, mà tác vụ định
+ * kỳ không bao giờ chạm tới.
+ */
+export async function syncConfigStats(
+  configId: string,
+  now: Date = new Date(),
+  opts: { days?: number } = {}
+): Promise<StatsSyncResult> {
   if (running.has(configId)) return { pages: 0, buckets: 0, agents: 0, errors: ["Đang kéo số liệu, chờ lượt trước"] };
   running.add(configId);
   try {
@@ -406,22 +447,28 @@ export async function syncConfigStats(configId: string, now: Date = new Date()):
     });
     if (!config.active) return { pages: 0, buckets: 0, agents: 0, errors: ["Kết nối đã tắt"] };
 
-    const window = defaultStatsWindow(now);
+    const windows = opts.days && opts.days > LOOKBACK_DAYS + 1
+      ? backfillWindows(now, opts.days)
+      : [defaultStatsWindow(now)];
     const errors: string[] = [];
     const names = new Map<string, string>();
     let buckets = 0;
     let pages = 0;
 
     for (const page of config.pages) {
-      try {
-        await sleep(PACE_MS);
-        const r = await syncPageAgentStats(page, window);
-        buckets += r.buckets;
-        pages++;
-        for (const [uid, name] of r.agentNames) if (name) names.set(uid, name);
-      } catch (err) {
-        errors.push(`${page.name}: ${err instanceof Error ? err.message : String(err)}`);
+      let pageOk = false;
+      for (const window of windows) {
+        try {
+          await sleep(PACE_MS);
+          const r = await syncPageAgentStats(page, window);
+          buckets += r.buckets;
+          pageOk = true;
+          for (const [uid, name] of r.agentNames) if (name) names.set(uid, name);
+        } catch (err) {
+          errors.push(`${page.name} (${window.dateRange}): ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
+      if (pageOk) pages++;
     }
 
     // Tên nhân viên lấy luôn từ chính phản hồi thống kê: không cần gọi thêm
@@ -438,12 +485,12 @@ export async function syncConfigStats(configId: string, now: Date = new Date()):
 }
 
 /** Kéo thống kê cho MỌI kết nối đang bật. Bộ chạy tác vụ nền gọi hàm này. */
-export async function syncAllPancakeStats(now: Date = new Date()): Promise<StatsSyncResult> {
+export async function syncAllPancakeStats(now: Date = new Date(), opts: { days?: number } = {}): Promise<StatsSyncResult> {
   const configs = await prisma.pancakeConfig.findMany({ where: { active: true }, select: { id: true, label: true } });
   const total: StatsSyncResult = { pages: 0, buckets: 0, agents: 0, errors: [] };
   for (const c of configs) {
     try {
-      const r = await syncConfigStats(c.id, now);
+      const r = await syncConfigStats(c.id, now, opts);
       total.pages += r.pages;
       total.buckets += r.buckets;
       total.agents += r.agents;
