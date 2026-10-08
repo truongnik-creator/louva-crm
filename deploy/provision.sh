@@ -110,9 +110,15 @@ install -m 644 "$APP_DIR/deploy/louva-crm.service" /etc/systemd/system/louva-crm
 systemctl daemon-reload
 systemctl enable louva-crm -q
 systemctl restart louva-crm
-sleep 4
-systemctl is-active --quiet louva-crm || { journalctl -u louva-crm -n 40 --no-pager; exit 1; }
-curl -fsS http://127.0.0.1:4000/health && echo "" || { echo "backend không trả lời /health"; exit 1; }
+# Chờ backend bind cổng: lần khởi động đầu còn phải áp 15 migration trước khi
+# nghe, nên một sleep cố định là không đủ. Hỏi lại /health tới 60 giây.
+for i in $(seq 1 30); do
+  if curl -fsS -m 3 http://127.0.0.1:4000/health >/dev/null 2>&1; then break; fi
+  systemctl is-active --quiet louva-crm || { journalctl -u louva-crm -n 40 --no-pager; exit 1; }
+  sleep 2
+done
+curl -fsS -m 5 http://127.0.0.1:4000/health || { echo "backend không trả lời /health sau 60s"; journalctl -u louva-crm -n 40 --no-pager; exit 1; }
+echo
 echo "    louva-crm đang chạy"
 
 echo "==> 7/9 nginx + TLS"

@@ -37,10 +37,13 @@ chown -R louva:louva "$APP"
 
 # bootstrap.ts tự chụp CSDL rồi áp migration mới khi khởi động lại.
 systemctl restart louva-crm
-sleep 5
-systemctl is-active --quiet louva-crm || { journalctl -u louva-crm -n 40 --no-pager; exit 1; }
-curl -fsS http://127.0.0.1:4000/health \
-  && echo "    /health OK" || echo "    (không có /health, bỏ qua)"
+for i in $(seq 1 30); do
+  curl -fsS -m 3 http://127.0.0.1:4000/health >/dev/null 2>&1 && break
+  systemctl is-active --quiet louva-crm || { journalctl -u louva-crm -n 40 --no-pager; exit 1; }
+  sleep 2
+done
+curl -fsS -m 5 http://127.0.0.1:4000/health || { echo "    /health không trả lời sau 60s"; journalctl -u louva-crm -n 30 --no-pager; exit 1; }
+echo
 echo "    louva-crm đã chạy lại"
 REMOTE
 echo "==> Xong"
