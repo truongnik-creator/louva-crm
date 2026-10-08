@@ -34,6 +34,12 @@ import type {
   StaffUser,
   TimelineEntry,
   Visit,
+  WorkPostRating,
+  WorkReportEntry,
+  WorkReportOverview,
+  WorkReportSource,
+  WorkReportSyncMode,
+  WorkTaskStatus,
   ZaloOAConfigView
 } from './types'
 
@@ -1752,5 +1758,115 @@ export async function quickAdjust(payload: {
   reason?: string
 }): Promise<{ quantity: number }> {
   const { data } = await api.post('/inventory/quick-adjust', payload)
+  return data
+}
+
+// ------------------------------------------- F36 BÁO CÁO CÔNG VIỆC TRANG TÍNH
+
+export async function fetchWorkReportOverview(params: {
+  year?: number
+  month?: number
+  departmentId?: string
+}): Promise<WorkReportOverview> {
+  const { data } = await api.get('/work-reports/overview', { params })
+  return data
+}
+
+export async function fetchWorkReportSources(params?: {
+  departmentId?: string
+  active?: boolean
+}): Promise<WorkReportSource[]> {
+  const { data } = await api.get('/work-reports/sources', { params })
+  return data
+}
+
+export async function fetchWorkReportEntries(params: {
+  userId?: string
+  year?: number
+  month?: number
+  from?: string
+  to?: string
+  statusCode?: WorkTaskStatus
+  channel?: string
+  q?: string
+  includeEmpty?: boolean
+  limit?: number
+}): Promise<{ total: number; entries: WorkReportEntry[] }> {
+  const { data } = await api.get('/work-reports/entries', { params })
+  return data
+}
+
+export async function fetchWorkReportUnlinked(): Promise<
+  Array<{
+    id: string
+    name: string
+    title: string | null
+    email: string
+    department: { id: string; code: string; name: string } | null
+  }>
+> {
+  const { data } = await api.get('/work-reports/unlinked')
+  return data
+}
+
+/** Gắn trang tính cho một nhân viên. Token chỉ hiện MỘT LẦN trong kết quả này. */
+export async function createWorkReportSource(payload: {
+  userId: string
+  url: string
+  year?: number
+  note?: string | null
+  syncMode?: WorkReportSyncMode
+}): Promise<{ source: WorkReportSource; token: string }> {
+  const { data } = await api.post('/work-reports/sources', payload)
+  return data
+}
+
+export async function updateWorkReportSource(
+  id: string,
+  payload: {
+    url?: string
+    year?: number
+    active?: boolean
+    note?: string | null
+    syncMode?: WorkReportSyncMode
+  }
+): Promise<WorkReportSource> {
+  const { data } = await api.patch(`/work-reports/sources/${id}`, payload)
+  return data
+}
+
+export async function deleteWorkReportSource(id: string): Promise<void> {
+  await api.delete(`/work-reports/sources/${id}`)
+}
+
+/**
+ * Lấy đoạn mã Apps Script để dán vào trang tính.
+ *
+ * Mỗi lần gọi là CẤP TOKEN MỚI (token cũ chết ngay) — vì token không lưu dạng
+ * gốc nên không đọc lại được. Lấy mã rồi thì phải dán, không huỷ giữa đường.
+ */
+export async function fetchWorkReportAppsScript(id: string): Promise<string> {
+  const { data } = await api.get(`/work-reports/sources/${id}/apps-script`, {
+    responseType: 'text',
+    transformResponse: [(raw) => raw]
+  })
+  return data as string
+}
+
+export async function syncWorkReportSource(
+  id: string,
+  months?: number[]
+): Promise<{ entries: number; tabs: number; errors: string[] }> {
+  const { data } = await api.post(`/work-reports/sources/${id}/sync`, { months })
+  return data
+}
+
+export async function previewWorkReportSheet(url: string): Promise<{
+  spreadsheetId: string
+  title: string | null
+  tabs: Array<{ gid: string; name: string; month: number | null }>
+  sample: { gid: string; name: string; rows: string[][] } | null
+}> {
+  const { data } = await api.get('/work-reports/preview', { params: { url } })
   return data
 }

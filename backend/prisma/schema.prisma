@@ -816,24 +816,29 @@ model Conversation {
 }
 
 model ChatMessage {
-  id             String       @id @default(uuid())
-  conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  direction      String // MessageDirection: IN | OUT
-  type           String       @default("TEXT") // MessageType
-  content        String
-  senderUserId   String?
-  senderUser     User?        @relation("ChatMessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
-  senderName     String?
-  status         String       @default("SENT") // MessageStatus
-  externalId     String?      @unique // zalo message id — chống ghi trùng webhook
-  errorMessage   String?
-  createdAt      DateTime     @default(now())
+  id              String       @id @default(uuid())
+  conversationId  String
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction       String // MessageDirection: IN | OUT
+  type            String       @default("TEXT") // MessageType
+  content         String
+  senderUserId    String?
+  senderUser      User?        @relation("ChatMessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+  senderName      String?
+  /// F35: UUID nhân viên bên Pancake đã gửi tin này (từ `from.uid`).
+  /// Giữ lại vì senderUserId chỉ điền được khi nhân viên ĐÃ gắn tài khoản CRM;
+  /// gắn muộn thì nhờ cột này quy lại được số của những tin đã về trước đó.
+  pancakeAgentUid String?
+  status          String       @default("SENT") // MessageStatus
+  externalId      String?      @unique // zalo message id — chống ghi trùng webhook
+  errorMessage    String?
+  createdAt       DateTime     @default(now())
 
   attachments MessageAttachment[]
 
   @@index([conversationId, createdAt])
   @@index([createdAt])
+  @@index([pancakeAgentUid])
   @@map("chat_messages")
 }
 

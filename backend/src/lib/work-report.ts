@@ -107,8 +107,10 @@ export interface HeaderInfo {
   /** Số dòng đầu là tiêu đề, cần bỏ qua. */
   headerRows: number;
   columns: ColumnMap;
-  /** true khi không dò ra tiêu đề và đã rơi về vị trí cột mặc định. */
+  /** true khi không dò ra tiêu đề nào và đã rơi hẳn về vị trí cột mặc định. */
   fallback: boolean;
+  /** Cột dò không ra tiêu đề nên phải lấy theo vị trí mặc định của mẫu. */
+  inferred: WorkReportColumn[];
 }
 
 /**
@@ -123,7 +125,7 @@ export function detectHeader(rows: string[][]): HeaderInfo {
     const joined = norm(scan[r].join(" "));
     if (/tien do|trang thai|cong viec|kenh trien khai|take note/.test(joined)) lastHeaderRow = r;
   }
-  if (lastHeaderRow < 0) return { headerRows: 0, columns: { ...DEFAULT_COLUMNS }, fallback: true };
+  if (lastHeaderRow < 0) return { headerRows: 0, columns: { ...DEFAULT_COLUMNS }, fallback: true, inferred: [] };
 
   const width = Math.max(...scan.slice(0, lastHeaderRow + 1).map((r) => r.length), 0);
   const merged: string[] = [];
@@ -149,17 +151,42 @@ export function detectHeader(rows: string[][]): HeaderInfo {
     }
   }
 
-  // Cột thứ nằm ngay sau cột ngày và không có tiêu đề riêng.
-  if (columns.date !== undefined && columns.weekday === undefined) {
-    const next = columns.date + 1;
-    if (!taken.has(next)) columns.weekday = next;
-  }
-
   // Thiếu cột việc thì coi như dò thất bại — thà dùng vị trí mặc định còn hơn
   // nhận bừa một cột khác làm tên công việc.
-  if (columns.task === undefined) return { headerRows: lastHeaderRow + 1, columns: { ...DEFAULT_COLUMNS }, fallback: true };
+  if (columns.task === undefined) {
+    return { headerRows: lastHeaderRow + 1, columns: { ...DEFAULT_COLUMNS }, fallback: true, inferred: [] };
+  }
 
-  return { headerRows: lastHeaderRow + 1, columns, fallback: false };
+  // Vá theo vị trí cho những cột KHÔNG CÓ TIÊU ĐỀ ĐỌC ĐƯỢC.
+  //
+  // Trên trang tính thật, ô tiêu đề "🕒Time" và "Công/ngày" là Ô GỘP; Google
+  // trả về ô rỗng cho mọi dòng của vùng gộp, nên dò theo chữ không bao giờ ra
+  // hai cột này — dù mắt người vẫn thấy tiêu đề. Mất cột ngày là mất toàn bộ
+  // khả năng xếp việc theo ngày, tức là mất cả màn theo dõi tiến độ.
+  //
+  // Chỉ vá khi đã dò ra ÍT NHẤT 3 cột theo tiêu đề: lúc đó bố cục chắc chắn
+  // khớp mẫu nên vị trí mặc định là suy luận an toàn. Cột đã bị cột khác nhận
+  // thì không vá, tránh hai vai cùng trỏ một cột.
+  const inferred: WorkReportColumn[] = [];
+  if (Object.keys(columns).length >= 3) {
+    for (const [key, idx] of Object.entries(DEFAULT_COLUMNS) as Array<[WorkReportColumn, number]>) {
+      if (columns[key] !== undefined || taken.has(idx) || idx >= width) continue;
+      columns[key] = idx;
+      taken.add(idx);
+      inferred.push(key);
+    }
+  }
+
+  // Cột thứ nằm ngay sau cột ngày và không bao giờ có tiêu đề riêng.
+  if (columns.date !== undefined && columns.weekday === undefined) {
+    const next = columns.date + 1;
+    if (!taken.has(next)) {
+      columns.weekday = next;
+      inferred.push("weekday");
+    }
+  }
+
+  return { headerRows: lastHeaderRow + 1, columns, fallback: false, inferred };
 }
 
 /** "01/01/2026", "1/1/2026", "2026-01-01" -> 00:00 giờ Việt Nam. */
@@ -269,8 +296,10 @@ export interface ParseSheetResult {
   entries: ParsedWorkEntry[];
   headerRows: number;
   columns: ColumnMap;
-  /** true khi phải dùng vị trí cột mặc định — nên cảnh báo trên giao diện. */
+  /** true khi phải dùng vị trí cột mặc định cho TOÀN BỘ — nên cảnh báo trên giao diện. */
   fallbackColumns: boolean;
+  /** Các cột phải suy ra theo vị trí vì tiêu đề là ô gộp (thường là date, dayCredit). */
+  inferredColumns: WorkReportColumn[];
   /** Số dòng có nội dung nhưng không gán được ngày (ô ngày trống từ đầu sheet). */
   rowsWithoutDate: number;
 }
@@ -366,6 +395,7 @@ export function parseSheet(input: ParseSheetInput): ParseSheetResult {
     headerRows,
     columns: col,
     fallbackColumns: header.fallback,
+    inferredColumns: header.inferred,
     rowsWithoutDate,
   };
 }

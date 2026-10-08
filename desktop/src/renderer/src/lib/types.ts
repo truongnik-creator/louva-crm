@@ -550,3 +550,133 @@ export interface ShiftAssignment {
   user: UserRef & { department?: { name: string } | null }
   template: ShiftTemplate | null
 }
+
+// ---------------------------------------------------------------------------
+// F36: báo cáo công việc hàng ngày lấy từ trang tính (media, mkt, design, content)
+// ---------------------------------------------------------------------------
+
+export type WorkTaskStatus =
+  | 'DONE'
+  | 'IN_PROGRESS'
+  | 'LATE'
+  | 'PENDING'
+  | 'CANCELLED'
+  | 'DAY_OFF'
+  | 'UNKNOWN'
+
+export type WorkPostRating = 'BAD' | 'AVERAGE' | 'GOOD' | 'EXCELLENT'
+export type WorkReportSyncMode = 'PUSH' | 'PULL'
+export type WorkReportSyncStatus = 'NEVER' | 'OK' | 'ERROR'
+
+export interface WorkReportTabView {
+  gid: string
+  name: string
+  month: number | null
+  rowCount: number
+  lastSyncAt: string | null
+}
+
+export interface WorkReportSource {
+  id: string
+  userId: string
+  branchId: string | null
+  spreadsheetId: string
+  url: string
+  title: string | null
+  year: number
+  active: boolean
+  note: string | null
+  syncMode: WorkReportSyncMode
+  /** Token gốc không bao giờ ra khỏi backend — chỉ còn 8 ký tự đầu để nhận diện. */
+  tokenPrefix: string | null
+  hasToken: boolean
+  tokenCreatedAt: string | null
+  tokenLastUsedAt: string | null
+  lastSyncStatus: WorkReportSyncStatus
+  lastSyncAt: string | null
+  lastSyncError: string | null
+  rowCount: number
+  lastEntryDate: string | null
+  createdAt: string
+  user: {
+    id: string
+    name: string
+    title: string | null
+    email: string
+    status: string
+    department: { id: string; code: string; name: string } | null
+  }
+  tabs: WorkReportTabView[]
+}
+
+export interface WorkReportEntry {
+  id: string
+  rowIndex: number
+  workDate: string | null
+  dayKey: string | null
+  weekday: string | null
+  channel: string | null
+  taskName: string | null
+  progress: string | null
+  status: string | null
+  rating: string | null
+  linkText: string | null
+  linkUrl: string | null
+  note: string | null
+  summary: string | null
+  dayCredit: number | null
+  statusCode: WorkTaskStatus
+  ratingCode: WorkPostRating | null
+  isDayOff: boolean
+  year: number
+  month: number
+  user: UserRef
+  tab: { gid: string; name: string }
+  source: { id: string; spreadsheetId: string }
+  /** Mở đúng sheet, đúng dòng trong trang tính gốc. */
+  sheetUrl: string
+}
+
+export interface WorkReportDayCell {
+  tasks: number
+  done: number
+  dayOff: boolean
+}
+
+export interface WorkReportOverviewRow {
+  source: WorkReportSource
+  totals: Record<'tasks' | WorkTaskStatus, number>
+  ratings: Record<WorkPostRating, number>
+  channels: Array<{ name: string; count: number }>
+  /** Số công tháng = giá trị lớn nhất của cột "Công/ngày" (ô đó tích luỹ). */
+  dayCredit: number | null
+  daysReported: number
+  daysOff: number
+  /** Ngày đã qua, không nghỉ, không ghi việc nào. */
+  daysMissing: number
+  /** Số ngày kể từ dòng việc mới nhất. */
+  staleDays: number | null
+  byDay: Record<string, WorkReportDayCell>
+}
+
+export interface WorkReportOverview {
+  year: number
+  month: number
+  today: string
+  days: Array<{ day: number; dayKey: string; isFuture: boolean }>
+  rows: WorkReportOverviewRow[]
+  unlinked: Array<{
+    id: string
+    name: string
+    title: string | null
+    department: { id: string; code: string; name: string } | null
+  }>
+  summary: {
+    people: number
+    tasks: number
+    done: number
+    daysMissing: number
+    syncErrors: number
+    neverSynced: number
+  }
+}
