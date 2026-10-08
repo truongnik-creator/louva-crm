@@ -21,6 +21,10 @@ BACKUP_DIR=/var/backups/louva
 ENV_FILE="$ETC_DIR/louva.env"
 DOMAIN="${DOMAIN:-}"
 CF_PROXY="${CF_PROXY:-0}"
+# SKIP_CERTBOT=1: có DOMAIN nhưng dùng chứng thư tự ký ở gốc thay vì gọi
+# Let's Encrypt. Dùng khi đứng sau proxy Cloudflare: biên Cloudflare đã có
+# chứng thư hợp lệ cho khách, HTTP-01 qua proxy thì hay vỡ lúc gia hạn.
+SKIP_CERTBOT="${SKIP_CERTBOT:-0}"
 
 [ "$(id -u)" -eq 0 ] || { echo "Phải chạy bằng root"; exit 1; }
 
@@ -121,7 +125,7 @@ sed "s/__SERVER_NAME__/$SERVER_NAME/g" "$APP_DIR/deploy/nginx-louva.conf.templat
 ln -sf /etc/nginx/sites-available/louva /etc/nginx/sites-enabled/louva
 rm -f /etc/nginx/sites-enabled/default
 
-if [ -n "$DOMAIN" ]; then
+if [ -n "$DOMAIN" ] && [ "$SKIP_CERTBOT" != "1" ]; then
   apt-get install -y -qq certbot python3-certbot-nginx
   # Tạm phục vụ HTTP để certbot xác thực, sau đó nó tự sửa file thành 443 + redirect.
   sed -i 's/__TLS_BLOCK__//' /etc/nginx/sites-available/louva
@@ -137,23 +141,17 @@ else
       -subj "/CN=$SERVER_NAME" >/dev/null 2>&1
     chmod 600 /etc/nginx/tls/louva.key
   fi
-  sed -i 's|__TLS_BLOCK__|listen 443 ssl http2;\n    ssl_certificate /etc/nginx/tls/louva.crt;\n    ssl_certificate_key /etc/nginx/tls/louva.key;|' \
+  sed -i 's|__TLS_BLOCK__|listen 443 ssl;\n    http2 on;\n    ssl_certificate /etc/nginx/tls/louva.crt;\n    ssl_certificate_key /etc/nginx/tls/louva.key;|' \
     /etc/nginx/sites-available/louva
   nginx -t && systemctl reload nginx
-  echo "    TLS TỰ KÝ — trình duyệt sẽ cảnh báo, PWA không cài được như app."
-  echo "    Trỏ một tên miền về $SERVER_NAME rồi chạy lại với DOMAIN=... để có TLS thật."
-fi
-
-if [ "$CF_PROXY" = "1" ]; then
-  echo "    proxy Cloudflare: nạp dải IP để lấy IP thật từ CF-Connecting-IP"
-  bash "$APP_DIR/deploy/cloudflare-realip.sh"
-  cat > /etc/cron.d/louva-cf-realip <<CFCRON
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-17 4 * * 1 root bash $APP_DIR/deploy/cloudflare-realip.sh >> /var/log/louva-cf-realip.log 2>&1
-CFCRON
-  chmod 644 /etc/cron.d/louva-cf-realip
-  echo "    cron nạp lại dải IP Cloudflare mỗi thứ Hai 4:17"
+  if [ "$CF_PROXY" = "1" ]; then
+    echo "    TLS gốc tự ký; khách thấy chứng thư hợp lệ của biên Cloudflare."
+    echo "    Đặt Cloudflare SSL/TLS về Full. Muốn Full (strict) thì thay bằng"
+    echo "    Cloudflare Origin Certificate vào /etc/nginx/tls/louva.{crt,key}."
+  else
+    echo "    TLS TỰ KÝ — trình duyệt sẽ cảnh báo, PWA không cài được như app."
+    echo "    Trỏ một tên miền về $SERVER_NAME rồi chạy lại với DOMAIN=... để có TLS thật."
+  fi
 fi
 
 echo "==> 8/9 Tường lửa"
