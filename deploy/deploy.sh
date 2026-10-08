@@ -20,6 +20,7 @@ echo "==> Triển khai lên $HOST (nhánh $BRANCH)"
 ssh -o BatchMode=yes "$HOST" BRANCH="$BRANCH" bash -s <<'REMOTE'
 set -euo pipefail
 APP=/opt/louva/app
+git config --global --add safe.directory "$APP" 2>/dev/null || true
 cd "$APP"
 echo "    trước:  $(git log --oneline -1)"
 git fetch --depth 1 origin "$BRANCH" -q

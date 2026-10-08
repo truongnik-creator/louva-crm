@@ -88,11 +88,18 @@ fi
 chown root:louva "$ENV_FILE"; chmod 640 "$ENV_FILE"
 
 echo "==> 4/9 Lấy mã nguồn"
+# Thư mục app thuộc user louva, nhưng script chạy bằng root: không khai
+# safe.directory thì mọi lệnh git của root bị chặn "dubious ownership". Trước
+# đây lỗi đó nằm trong chuỗi && nên set -e bỏ qua, và repo IM LẶNG không được
+# cập nhật qua các lần chạy lại — build vẫn chạy nhưng trên mã cũ.
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
 if [ -d "$APP_DIR/.git" ]; then
-  git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH" -q && git -C "$APP_DIR" reset --hard "origin/$BRANCH" -q
+  git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH" -q
+  git -C "$APP_DIR" reset --hard "origin/$BRANCH" -q
 else
   git clone --depth 1 -b "$BRANCH" "$REPO" "$APP_DIR" -q
 fi
+git -C "$APP_DIR" log --oneline -1 >/dev/null || { echo "git trong $APP_DIR không dùng được"; exit 1; }
 chown -R louva:louva "$APP_DIR"
 echo "    $(git -C "$APP_DIR" log --oneline -1)"
 
