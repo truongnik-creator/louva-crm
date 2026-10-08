@@ -9,6 +9,7 @@ import {
   ResponsePanel,
   RetentionPanel
 } from '../components/lo5-finance-parts'
+import { PancakePerformancePanel } from '../components/pancake-hieu-suat'
 import { Empty } from '../components/ui'
 
 /* ĐO LƯỜNG ĐỢT 3: một trang, nhiều thẻ; thẻ nào hiện tuỳ quyền của người xem
@@ -27,6 +28,12 @@ const TABS: TabDef[] = [
   { key: 'weekly', label: 'Chỉ số tuần', show: (_c, cross) => cross('lead.read') || cross('accounting.read'), render: () => <WeeklyPanel /> },
   { key: 'adcost', label: 'Chi phí quảng cáo', show: (can) => can('lead.read'), render: () => <AdCostPanel /> },
   { key: 'response', label: 'Tốc độ trả lời', show: (_c, cross) => cross('lead.read') || cross('hr.read') || cross('accounting.read'), render: () => <ResponsePanel /> },
+  {
+    key: 'pancake',
+    label: 'Hiệu suất Pancake',
+    show: (_c, cross) => cross('hr.read') || cross('inbox.read') || cross('accounting.read'),
+    render: () => <PancakePerformancePanel />
+  },
   { key: 'margin', label: 'Lãi gộp', show: (_c, cross) => cross('accounting.read'), render: () => <MarginPanel /> },
   { key: 'retention', label: 'Quay lại & tái tiêm', show: (_c, cross) => cross('accounting.read') || cross('lead.read') || cross('customer.read'), render: () => <RetentionPanel /> },
   { key: 'ltv', label: 'Trọn đời', show: (_c, cross) => cross('accounting.read') || cross('lead.read'), render: () => <LtvPanel /> },

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { setupTestContext, uniquePhone, prisma, api, type TestContext } from "./helpers";
-import { encryptNullable } from "../src/lib/crypto";
+import { decryptNullable, encryptNullable } from "../src/lib/crypto";
 import { extractVnPhones } from "../src/lib/extract";
 import { setAiClientForTests, type AiClient, type AiRequest } from "../src/lib/ai";
 import { ingestMessageMedia } from "../src/lib/chat-media";
@@ -150,7 +150,7 @@ describe("F4: nhập khách từ CSV", () => {
   });
 });
 
-async function pancakeFixture(opts: { secret?: string } = {}) {
+async function pancakeFixture(opts: { secret?: string; pageToken?: string | null } = {}) {
   const config = await prisma.pancakeConfig.create({
     data: {
       label: `Pancake ${uid()}`,
@@ -160,7 +160,15 @@ async function pancakeFixture(opts: { secret?: string } = {}) {
     },
   });
   const page = await prisma.pancakePage.create({
-    data: { configId: config.id, pageId: `pg${uid()}`, name: "Trang NOVA", platform: "FACEBOOK", branchId: ctx.branchId },
+    data: {
+      configId: config.id,
+      pageId: `pg${uid()}`,
+      name: "Trang NOVA",
+      platform: "FACEBOOK",
+      branchId: ctx.branchId,
+      // API cấp trang của Pancake chỉ nhận page_access_token.
+      pageAccessTokenEnc: opts.pageToken === null ? null : encryptNullable(opts.pageToken ?? "pancake-page-token-456"),
+    },
   });
   return { config, page };
 }
@@ -194,10 +202,15 @@ describe("F5: Pancake", () => {
     expect(res.body.status).toBe("SENT");
     expect(res.body.channel).toBe("PANCAKE");
     expect(calls).toHaveLength(1);
+    // Tài liệu Pancake: API cấp trang nằm ở /api/public_api/v1 và token đi bằng
+    // tham số URL page_access_token, KHÔNG có header Authorization.
+    expect(calls[0].url).toContain("/api/public_api/v1");
     expect(calls[0].url).toContain(`/pages/${page.pageId}/conversations/${conv.pancakeConversationId}/messages`);
     expect(calls[0].url).not.toContain("zalo");
-    expect(calls[0].url).not.toContain("access_token");
-    expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe("Bearer pancake-test-token-123");
+    expect(calls[0].url).toContain("page_access_token=pancake-page-token-456");
+    // Token người dùng không được dùng cho API cấp trang.
+    expect(calls[0].url).not.toContain("pancake-test-token-123");
+    expect((calls[0].init?.headers as Record<string, string>).Authorization).toBeUndefined();
     // F1: nhắn tin thì khách sang bước Nhắn tin.
     expect((await prisma.customer.findUniqueOrThrow({ where: { id: c.id } })).stage).toBe("NHAN_TIN");
   });
@@ -251,6 +264,44 @@ describe("F5: Pancake", () => {
     expect(again.status).toBe(200);
     expect(again.body.created).toBe(0);
     expect(await prisma.chatMessage.count({ where: { conversationId: conv.id } })).toBe(1);
+  });
+
+  it("trang chưa có token riêng thì tự sinh token trang một lần rồi lưu lại", async () => {
+    const { page } = await pancakeFixture({ pageToken: null });
+    const conv = await prisma.conversation.create({
+      data: {
+        title: "Khách chưa có token trang",
+        kind: "CUSTOMER",
+        channel: "FACEBOOK",
+        branchId: ctx.branchId,
+        pancakePageId: page.id,
+        pancakeConversationId: `pc-${uid()}`,
+      },
+    });
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        calls.push(u);
+        const body = u.includes("generate_page_access_token")
+          ? { page_access_token: "pat-vua-sinh" }
+          : { id: `m-${uid()}` };
+        return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+      })
+    );
+
+    const res = await ctx.as("QUAN_LY_CO_SO").post(`/api/conversations/${conv.id}/messages`).send({ content: "Chào chị" });
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe("SENT");
+    // Lượt 1: sinh token bằng token người dùng. Lượt 2: gửi tin bằng token trang.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain("generate_page_access_token");
+    expect(calls[0]).toContain("access_token=pancake-test-token-123");
+    expect(calls[1]).toContain("page_access_token=pat-vua-sinh");
+    // Đã lưu lại nên lần sau không gọi sinh token nữa.
+    const saved = await prisma.pancakePage.findUniqueOrThrow({ where: { id: page.id } });
+    expect(decryptNullable(saved.pageAccessTokenEnc)).toBe("pat-vua-sinh");
   });
 
   it("đồng bộ tay chạy nền trả 202", async () => {

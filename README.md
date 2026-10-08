@@ -108,7 +108,7 @@ Toàn bộ biến có trong [`backend/.env.example`](backend/.env.example) (khô
 | `BACKUP_DIR`, `BACKUP_KEEP` | tuỳ chọn | Nơi lưu và số bản sao lưu (mặc định 14) |
 | `DISABLE_JOBS=1` | tuỳ chọn | Tắt bộ hẹn giờ tác vụ nền (khi chạy thêm tiến trình thử trên cùng CSDL) |
 | `ANTHROPIC_API_KEY` | tuỳ chọn | Khoá Claude API cho AI1 đến AI6. Để trống thì AI tự tắt |
-| `PANCAKE_WEBHOOK_SECRET`, `PANCAKE_TOKEN_MODE`, `PANCAKE_API_BASE` | khi dùng Pancake | Xem mục Pancake |
+| `PANCAKE_WEBHOOK_SECRET`, `PANCAKE_TOKEN_MODE`, `PANCAKE_API_BASE`, `PANCAKE_PAGE_API_BASE`, `PANCAKE_PAGE_API_V2_BASE`, `PANCAKE_PACE_MS`, `PANCAKE_STATS_LOOKBACK_DAYS` | khi dùng Pancake | Xem mục Pancake |
 | `BANK_BIN`, `BANK_ACCOUNT_NO`, `BANK_ACCOUNT_NAME` | tuỳ chọn | Mặc định tài khoản nhận cọc (sửa được trong Cài đặt) |
 | `SEED_DEMO`, `SEED_DEMO_KEEP_PASSWORD`, `SEED_DEMO_PASSWORD` | khi seed | Xem mục Chạy thử |
 
@@ -133,7 +133,21 @@ Luật cứng (Nghị định 13/2023): khách chưa được ghi nhận đồng
 
 Khai kết nối ở Cài đặt. Trả lời hội thoại nguồn Pancake đi qua API Pancake. Webhook `POST /api/pancake/webhook` xác thực bằng `X-Pancake-Signature` (HMAC-SHA256 thân yêu cầu) hoặc `X-Webhook-Secret`. Nút đồng bộ tay vẫn giữ làm dự phòng.
 
-> **TODO-VERIFY**: phần tích hợp Pancake dựng theo mô tả công khai, **chưa thử với tài khoản Pancake thật**. Các chỗ cần đối chiếu tài liệu API thật được đánh dấu `TODO-VERIFY` trong `backend/src/services/pancake.ts` và `backend/src/routes/pancake.ts` (đường dẫn API, token gửi qua header hay query `PANCAKE_TOKEN_MODE`, định dạng chữ ký webhook, trường nguồn quảng cáo, tải ảnh đính kèm).
+**Hai loại token** (theo tài liệu chính thức developer.pancake.biz):
+
+- `access_token` của NGƯỜI DÙNG — nhập ở ô "API token Pancake" của kết nối. Chỉ dùng cho `https://pages.fm/api/v1`: liệt kê trang và sinh token trang.
+- `page_access_token` của TỪNG TRANG — mọi API cấp trang (hội thoại, tin nhắn, thống kê, nhân viên) chỉ nhận token này. Để trống thì hệ thống tự sinh một lần rồi lưu mã hoá; muốn dùng token dán tay thì bấm "Dán token" ở bảng trang (lấy trong Pancake: Cài đặt trang › Công cụ).
+
+Cả hai token đi bằng tham số URL, **không** có header `Authorization`.
+
+**Tác vụ nền mỗi 10 phút** (bật tắt ở Cài đặt, nhóm *Tự động hoá*):
+
+- `pancake.autoSync.enabled` — kéo hội thoại, tin nhắn về hộp thư.
+- `pancake.statsSync.enabled` — kéo thống kê hiệu suất nhân viên (F35).
+
+**Báo cáo hiệu suất nhân viên (F35)**: Đo lường › *Hiệu suất Pancake* — số tin một nhân viên xử lý, tốc độ phản hồi trung bình, số tin theo nền tảng và theo trang, theo ngày và theo giờ. Số do chính Pancake đo (`GET /pages/{page_id}/statistics/users`), nên tính cả tin nhân viên trả lời ngay trong app Pancake. Gắn nhân viên Pancake với tài khoản CRM ở Kết nối › *Nhân viên Pancake*.
+
+> **TODO-VERIFY**: đường dẫn API, hai loại token và cách đọc mốc thời gian đã đối chiếu bản OpenAPI chính thức, nhưng **chưa thử với tài khoản Pancake thật**. Còn phải xác minh: định dạng chữ ký webhook, trường nguồn quảng cáo, tải ảnh đính kèm (các chỗ `TODO-VERIFY` còn lại trong `backend/src/routes/pancake.ts`), và API thống kê có trong gói thuê bao của phòng khám.
 
 ---
 

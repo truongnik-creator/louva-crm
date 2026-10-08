@@ -17,6 +17,7 @@ import {
   type PancakeMessageRaw,
 } from "../services/pancake";
 import { ingestPancakeConversation, isSyncRunning, syncPancakeConfig } from "../services/pancake-sync";
+import { discoverAgents, isStatsSyncRunning, syncConfigStats } from "../services/pancake-stats";
 import { AuditAction } from "../types/enums";
 
 // Cấu hình và đồng bộ Pancake.
@@ -130,7 +131,11 @@ router.get(
         connected: Boolean(r.accessTokenEnc),
         lastSyncAt: r.lastSyncAt,
         lastSyncNote: r.lastSyncNote,
-        pages: r.pages,
+        // Token trang cũng không trả ra ngoài, chỉ trả cờ "đã có".
+        pages: r.pages.map(({ pageAccessTokenEnc, ...p }) => ({
+          ...p,
+          hasPageToken: Boolean(pageAccessTokenEnc),
+        })),
       }))
     );
   })
@@ -231,9 +236,137 @@ router.patch(
         channelId: z.string().uuid().nullable().optional(),
         branchId: z.string().uuid().nullable().optional(),
         active: z.boolean().optional(),
+        /**
+         * Token riêng của trang, dán tay từ Pancake (Cài đặt trang › Công cụ).
+         * Để trống thì hệ thống tự sinh từ API token của kết nối khi cần.
+         */
+        pageAccessToken: z.string().min(10).nullable().optional(),
       })
       .parse(req.body);
-    res.json(await prisma.pancakePage.update({ where: { id: req.params.id }, data: body }));
+
+    const { pageAccessToken, ...rest } = body;
+    const page = await prisma.pancakePage.update({
+      where: { id: req.params.id },
+      data: {
+        ...rest,
+        ...(pageAccessToken !== undefined ? { pageAccessTokenEnc: encryptNullable(pageAccessToken) } : {}),
+      },
+    });
+    const { pageAccessTokenEnc, ...safe } = page;
+    res.json({ ...safe, hasPageToken: Boolean(pageAccessTokenEnc) });
+  })
+);
+
+// ------------------------------------------------- F35 NHÂN VIÊN & THỐNG KÊ
+
+/** GET /api/pancake/:id/agents — nhân viên Pancake của kết nối và tài khoản CRM đã gắn. */
+router.get(
+  "/:id/agents",
+  requirePermission("settings.read"),
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.pancakeAgent.findMany({
+      where: { configId: req.params.id },
+      orderBy: [{ active: "desc" }, { name: "asc" }],
+      select: {
+        id: true,
+        pancakeUserId: true,
+        name: true,
+        active: true,
+        userId: true,
+        user: { select: { id: true, name: true } },
+      },
+    });
+    res.json(rows);
+  })
+);
+
+/**
+ * POST /api/pancake/:id/discover-agents — hỏi Pancake xem trang có nhân viên nào,
+ * và tự gắn với tài khoản CRM khi tên khớp duy nhất.
+ */
+router.post(
+  "/:id/discover-agents",
+  requirePermission("settings.update"),
+  asyncHandler(async (req, res) => {
+    const config = await prisma.pancakeConfig.findUniqueOrThrow({
+      where: { id: req.params.id },
+      include: { pages: { where: { active: true }, select: { id: true } } },
+    });
+    if (!config.pages.length) throw new HttpError(400, 'Chưa có trang nào. Bấm "Dò trang" trước.');
+
+    const r = await discoverAgents(config.id);
+    await writeAudit({
+      req,
+      action: AuditAction.UPDATE,
+      entity: "PancakeConfig",
+      entityId: config.id,
+      summary: `Dò nhân viên Pancake "${config.label}": ${r.found} người`,
+    });
+    res.json(r);
+  })
+);
+
+/**
+ * PATCH /api/pancake/agents/:id — gắn (hoặc bỏ gắn) nhân viên Pancake với một
+ * tài khoản CRM. Một tài khoản CRM chỉ gắn được với MỘT nhân viên Pancake trong
+ * cùng kết nối: gắn hai người vào một tài khoản thì số tin bị cộng đôi.
+ */
+router.patch(
+  "/agents/:id",
+  requirePermission("settings.update"),
+  asyncHandler(async (req, res) => {
+    const body = z.object({ userId: z.string().uuid().nullable() }).parse(req.body);
+    const agent = await prisma.pancakeAgent.findUnique({ where: { id: req.params.id } });
+    if (!agent) throw notFound();
+
+    if (body.userId) {
+      const clash = await prisma.pancakeAgent.findFirst({
+        where: { configId: agent.configId, userId: body.userId, id: { not: agent.id } },
+        select: { name: true },
+      });
+      if (clash) throw new HttpError(400, `Tài khoản này đã gắn với nhân viên Pancake "${clash.name}"`);
+    }
+
+    const updated = await prisma.pancakeAgent.update({
+      where: { id: agent.id },
+      data: { userId: body.userId },
+      select: { id: true, name: true, userId: true, user: { select: { id: true, name: true } } },
+    });
+    await writeAudit({
+      req,
+      action: AuditAction.UPDATE,
+      entity: "PancakeAgent",
+      entityId: agent.id,
+      summary: body.userId
+        ? `Gắn nhân viên Pancake "${agent.name}" với tài khoản ${updated.user?.name ?? body.userId}`
+        : `Bỏ gắn nhân viên Pancake "${agent.name}"`,
+    });
+    res.json(updated);
+  })
+);
+
+/**
+ * POST /api/pancake/:id/sync-stats — kéo thống kê hiệu suất NGAY.
+ *
+ * Bình thường tác vụ nền tự kéo mỗi 10 phút; nút này để quản trị kiểm tra ngay
+ * sau khi vừa cấu hình. `?wait=1` thì chờ xong và trả kết quả.
+ */
+router.post(
+  "/:id/sync-stats",
+  requirePermission("settings.update"),
+  asyncHandler(async (req, res) => {
+    const config = await prisma.pancakeConfig.findUniqueOrThrow({
+      where: { id: req.params.id },
+      include: { pages: { where: { active: true }, select: { id: true } } },
+    });
+    if (!config.pages.length) throw new HttpError(400, 'Chưa có trang nào. Bấm "Dò trang" trước.');
+    if (isStatsSyncRunning(config.id)) return res.status(202).json({ started: false, running: true });
+
+    if (req.query.wait === "1") return res.json(await syncConfigStats(config.id));
+    void syncConfigStats(config.id).catch((err) =>
+      logger.warn({ err, configId: config.id }, "[pancake] kéo thống kê lỗi")
+    );
+    res.status(202).json({ started: true, running: true });
   })
 );
 

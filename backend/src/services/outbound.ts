@@ -17,7 +17,18 @@ export function channelOf(conv: OutboundConversation): "PANCAKE" | "ZALO" {
   return conv.pancakeConversationId ? "PANCAKE" : "ZALO";
 }
 
-export async function sendToChannel(conv: OutboundConversation, text: string): Promise<SendResult> {
-  if (channelOf(conv) === "PANCAKE") return sendPancakeReply(conv, text);
+/**
+ * `senderUserId` là người trong CRM bấm gửi. Chuyển tiếp xuống Pancake
+ * (tham số sender_id) để Pancake quy tin này về đúng nhân viên — nhờ đó báo cáo
+ * hiệu suất (F35, số liệu do Pancake đo) tính cả tin gửi từ CRM, không chỉ tin
+ * gõ trong app Pancake. Hàng đợi gửi tin theo nhóm không có người gửi cụ thể
+ * nên bỏ trống.
+ */
+export async function sendToChannel(
+  conv: OutboundConversation,
+  text: string,
+  opts: { senderUserId?: string | null } = {}
+): Promise<SendResult> {
+  if (channelOf(conv) === "PANCAKE") return sendPancakeReply(conv, text, opts);
   return sendZaloMessage(conv, text);
 }

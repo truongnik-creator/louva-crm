@@ -9,7 +9,10 @@ import {
   extractAdSource,
   fetchConversations,
   fetchMessages,
-  resolveToken,
+  isFromCustomer,
+  parsePancakeTime,
+  resolvePageToken,
+  staffUidOf,
   type PancakeConversationRaw,
   type PancakeMessageRaw,
 } from "./pancake";
@@ -36,6 +39,19 @@ interface PageRef {
   configId: string;
 }
 
+/**
+ * UUID nhân viên Pancake -> id tài khoản CRM (F35). Nhờ bảng này, tin nhân viên
+ * trả lời NGAY TRONG app Pancake vẫn quy được về người thật trong CRM, nên báo
+ * cáo tốc độ trả lời của CRM không còn trống khi phòng khám chat bên Pancake.
+ */
+export async function agentUserMap(configId: string): Promise<Map<string, string>> {
+  const rows = await prisma.pancakeAgent.findMany({
+    where: { configId, userId: { not: null } },
+    select: { pancakeUserId: true, userId: true },
+  });
+  return new Map(rows.map((r) => [r.pancakeUserId, r.userId!]));
+}
+
 export interface IngestResult {
   conversationId: string;
   created: number;
@@ -46,6 +62,17 @@ function isImage(f: { type?: string; mime_type?: string }): boolean {
   return f.type === "photo" || f.type === "image" || Boolean(f.mime_type?.startsWith("image/"));
 }
 
+/**
+ * Số tin chưa đọc Pancake báo. Bản cũ có `unread_count`; API v2 chỉ có cờ
+ * `seen`, lúc đó "chưa xem" quy về 1 tin chưa đọc để huy hiệu hộp thư vẫn sáng.
+ * null = Pancake không nói gì, giữ nguyên số cũ của CRM.
+ */
+function unreadFromPancake(c: PancakeConversationRaw): number | null {
+  if (typeof c.unread_count === "number") return c.unread_count;
+  if (typeof c.seen === "boolean") return c.seen ? 0 : 1;
+  return null;
+}
+
 /** Ghi một hội thoại Pancake và các tin của nó. */
 export async function ingestPancakeConversation(opts: {
   page: PageRef;
@@ -54,9 +81,16 @@ export async function ingestPancakeConversation(opts: {
   messages: PancakeMessageRaw[];
   /** Webhook đẩy từng tin mới: tăng số chưa đọc thay vì lấy số Pancake báo. */
   incremental?: boolean;
+  /** id bên mở hội thoại (conv_from.id) — để biết tin nào của khách. */
+  convFromId?: string;
+  /** UUID nhân viên Pancake -> id tài khoản CRM. Trống thì không quy được. */
+  agents?: Map<string, string>;
 }): Promise<IngestResult> {
   const { page, conversation: c } = opts;
-  const title = c.customer_name?.trim() || `Khách ${page.platform}`;
+  const title = c.customer_name?.trim() || c.from?.name?.trim() || `Khách ${page.platform}`;
+  const fromCustomer = (m: PancakeMessageRaw): boolean =>
+    isFromCustomer(m, { pageId: page.pageId, ...(opts.convFromId ? { convFromId: opts.convFromId } : {}) });
+  const agents = opts.agents ?? (await agentUserMap(page.configId));
   const ad = extractAdSource(c);
 
   // Tìm khách theo SĐT chuẩn hoá (T4/B17), bằng cột có index.
@@ -69,8 +103,8 @@ export async function ingestPancakeConversation(opts: {
       })
     : null;
 
-  const lastAt = c.updated_at ? new Date(c.updated_at) : new Date();
-  const lastIn = [...opts.messages].reverse().find((m) => m.from_customer);
+  const lastAt = parsePancakeTime(c.updated_at);
+  const lastIn = [...opts.messages].reverse().find(fromCustomer);
   const preview = (c.snippet ?? lastIn?.message ?? opts.messages[opts.messages.length - 1]?.message)?.slice(0, 160);
   const existing = await prisma.conversation.findUnique({ where: { pancakeConversationId: String(c.id) } });
 
@@ -80,8 +114,8 @@ export async function ingestPancakeConversation(opts: {
         data: {
           title: existing.customerId ? existing.title : title,
           unreadCount: opts.incremental
-            ? { increment: opts.messages.filter((m) => m.from_customer).length }
-            : (c.unread_count ?? existing.unreadCount),
+            ? { increment: opts.messages.filter(fromCustomer).length }
+            : (unreadFromPancake(c) ?? existing.unreadCount),
           lastMessageAt: lastAt,
           ...(preview ? { lastMessagePreview: preview } : {}),
           ...(customer && !existing.customerId ? { customerId: customer.id } : {}),
@@ -100,7 +134,7 @@ export async function ingestPancakeConversation(opts: {
           channel: page.platform,
           title,
           customerId: customer?.id ?? null,
-          unreadCount: opts.incremental ? opts.messages.filter((m) => m.from_customer).length : (c.unread_count ?? 0),
+          unreadCount: opts.incremental ? opts.messages.filter(fromCustomer).length : (unreadFromPancake(c) ?? 0),
           lastMessageAt: lastAt,
           lastMessagePreview: preview,
           adId: ad.adId,
@@ -156,15 +190,19 @@ export async function ingestPancakeConversation(opts: {
     const r = await prisma.chatMessage.createMany({
       data: fresh.map((m) => {
         const files = (m.attachments ?? []).filter((f) => f.url?.startsWith("https://"));
+        const mine = !fromCustomer(m);
+        const uid = staffUidOf(m);
         return {
           conversationId: conv.id,
           externalId: String(m.id),
-          direction: m.from_customer ? MessageDirection.IN : MessageDirection.OUT,
+          direction: mine ? MessageDirection.OUT : MessageDirection.IN,
           type: files.some(isImage) ? MessageType.IMAGE : files.length ? MessageType.FILE : MessageType.TEXT,
-          content: m.message ?? (files.length ? "[Tệp đính kèm]" : "[Nội dung không đọc được]"),
-          senderName: m.sender_name ?? (m.from_customer ? title : null),
+          content: m.message ?? m.original_message ?? (files.length ? "[Tệp đính kèm]" : "[Nội dung không đọc được]"),
+          // F35: tin nhân viên gửi bên Pancake quy về tài khoản CRM đã gắn.
+          senderUserId: mine && uid ? (agents.get(uid) ?? null) : null,
+          senderName: m.sender_name ?? m.from?.admin_name ?? m.from?.name ?? (mine ? null : title),
           status: MessageStatus.DELIVERED,
-          createdAt: m.inserted_at ? new Date(m.inserted_at) : new Date(),
+          createdAt: parsePancakeTime(m.inserted_at),
         };
       }),
     });
@@ -193,7 +231,7 @@ export async function ingestPancakeConversation(opts: {
         ),
       });
       scheduleMediaIngest(
-        withFiles.filter((m) => m.from_customer).map((m) => idOf.get(String(m.id))!).filter(Boolean)
+        withFiles.filter(fromCustomer).map((m) => idOf.get(String(m.id))!).filter(Boolean)
       );
     }
 
@@ -201,13 +239,13 @@ export async function ingestPancakeConversation(opts: {
     await noteMessageBatch(
       conv.id,
       fresh.map((m) => ({
-        direction: m.from_customer ? ("IN" as const) : ("OUT" as const),
-        at: m.inserted_at ? new Date(m.inserted_at) : new Date(),
+        direction: fromCustomer(m) ? ("IN" as const) : ("OUT" as const),
+        at: parsePancakeTime(m.inserted_at),
       }))
     );
-    if (fresh.some((m) => m.from_customer)) await autoAssignConversation(conv.id);
+    if (fresh.some(fromCustomer)) await autoAssignConversation(conv.id);
 
-    if (conv.customerId && fresh.some((m) => m.from_customer)) {
+    if (conv.customerId && fresh.some(fromCustomer)) {
       await prisma.customer.update({ where: { id: conv.customerId }, data: { lastContactAt: new Date() } });
       await applyStageEventSafe(conv.customerId, StageEvent.MESSAGE);
     }
@@ -220,6 +258,10 @@ export async function ingestPancakeConversation(opts: {
 /** Đồng bộ kéo toàn bộ trang của một kết nối. Có khoá để không chạy chồng. */
 const running = new Set<string>();
 
+/** Giới hạn Pancake: 5 lượt/trang/giây. 220ms giữa các lượt là ~4,5 lượt/giây. */
+const PACE_MS = Number(process.env.PANCAKE_PACE_MS ?? 220);
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 export function isSyncRunning(configId: string): boolean {
   return running.has(configId);
 }
@@ -228,26 +270,33 @@ export async function syncPancakeConfig(configId: string): Promise<{ conversatio
   if (running.has(configId)) return { conversations: 0, messages: 0, errors: ["Đang đồng bộ, chờ lượt trước chạy xong"] };
   running.add(configId);
   try {
-    const token = await resolveToken(configId);
-    if (!token) throw new Error("Kết nối Pancake chưa có token hoặc đã tắt");
     const config = await prisma.pancakeConfig.findUniqueOrThrow({
       where: { id: configId },
       include: { pages: { where: { active: true } } },
     });
+    if (!config.active) throw new Error("Kết nối Pancake đã tắt");
 
+    const agents = await agentUserMap(configId);
     let convCount = 0;
     let msgCount = 0;
     const errors: string[] = [];
     for (const page of config.pages) {
       try {
+        // API cấp trang chỉ nhận page_access_token; chưa có thì tự sinh và lưu.
+        const token = await resolvePageToken(page);
+        if (!token) throw new Error("Chưa lấy được token trang (kiểm tra API token của kết nối)");
         const conversations = await fetchConversations(token, page.pageId);
         for (const c of conversations) {
-          const messages = await fetchMessages(token, page.pageId, String(c.id));
+          // Pancake chặn ở 5 lượt/trang/giây: nghỉ giữa các lượt lấy tin.
+          await sleep(PACE_MS);
+          const fetched = await fetchMessages(token, page.pageId, String(c.id));
           const r = await ingestPancakeConversation({
             page: { ...page, configId },
             configBranchId: config.branchId,
             conversation: c,
-            messages,
+            messages: fetched.messages,
+            ...(fetched.convFromId ? { convFromId: fetched.convFromId } : {}),
+            agents,
           });
           convCount++;
           msgCount += r.created;

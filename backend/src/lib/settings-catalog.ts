@@ -326,6 +326,26 @@ export const SETTINGS: SettingDef[] = [
     usedIn: "Nhật ký tác vụ",
   },
   {
+    key: "pancake.autoSync.enabled",
+    group: "Tự động hoá",
+    label: "Pancake: tự kéo hội thoại và tin nhắn mỗi 10 phút",
+    type: "boolean",
+    defaultValue: "true",
+    description:
+      "Dự phòng cho webhook. Tắt thì chỉ còn webhook đẩy tin; webhook rớt là sót tin của khách.",
+    usedIn: "Hộp thư · Nhật ký tác vụ",
+  },
+  {
+    key: "pancake.statsSync.enabled",
+    group: "Tự động hoá",
+    label: "Pancake: tự kéo thống kê hiệu suất nhân viên mỗi 10 phút",
+    type: "boolean",
+    defaultValue: "true",
+    description:
+      "Kéo số tin đã xử lý và tốc độ phản hồi do chính Pancake đo. Tắt thì báo cáo Hiệu suất Pancake đứng số ở lần kéo cuối.",
+    usedIn: "Đo lường · Hiệu suất Pancake",
+  },
+  {
     key: "automation.unanswered.enabled",
     group: "Tự động hoá",
     label: "Quy tắc 1: tin chưa trả lời quá lâu thì báo trưởng nhóm",

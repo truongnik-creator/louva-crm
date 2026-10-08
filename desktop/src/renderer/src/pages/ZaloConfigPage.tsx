@@ -1,16 +1,22 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import {
+  discoverPancakeAgents,
   discoverPancakePages,
   fetchBranches,
   fetchChannels,
+  fetchPancakeAgents,
   fetchPancakeConfigs,
+  fetchStaff,
   fetchZaloAuthorizeUrl,
   fetchZaloConfigs,
   getApiErrorMessage,
+  linkPancakeAgent,
   savePancakeConfig,
   saveZaloConfig,
   syncPancake,
+  syncPancakeStats,
   updatePancakePage,
+  type PancakeAgentConfigRow,
   type PancakeConfigRow
 } from '../lib/api'
 import { useAuth } from '../lib/auth-context'
@@ -74,6 +80,23 @@ function PancakePanel(): React.JSX.Element {
       const r = await discoverPancakePages(id)
       say(`Tìm thấy ${r.found} trang, thêm mới ${r.created}.`)
       void load()
+    } catch (err) {
+      fail(getApiErrorMessage(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const syncStats = async (id: string): Promise<void> => {
+    setBusy(id)
+    try {
+      const r = await syncPancakeStats(id)
+      say(
+        r.started
+          ? 'Đã bắt đầu kéo thống kê hiệu suất chạy nền. Xem kết quả ở Đo lường › Hiệu suất Pancake sau ít phút.'
+          : 'Đang có một lượt kéo thống kê chạy nền, chờ lượt đó xong.'
+      )
+      window.setTimeout(() => void load(), 5000)
     } catch (err) {
       fail(getApiErrorMessage(err))
     } finally {
@@ -165,6 +188,9 @@ function PancakePanel(): React.JSX.Element {
                   <button className="btn sec sm" disabled={busy === c.id} onClick={() => void discover(c.id)}>
                     Dò trang
                   </button>
+                  <button className="btn sec sm" disabled={busy === c.id} onClick={() => void syncStats(c.id)}>
+                    Kéo thống kê
+                  </button>
                   <button className="btn sm" disabled={busy === c.id} onClick={() => void sync(c.id)}>
                     {busy === c.id ? 'Đang chạy…' : 'Đồng bộ ngay'}
                   </button>
@@ -182,7 +208,9 @@ function PancakePanel(): React.JSX.Element {
                     <th>Nền tảng</th>
                     <th>ID Pancake</th>
                     <th>Nguồn khách (để tính ROAS)</th>
+                    <th>Token trang</th>
                     <th>Đồng bộ lần cuối</th>
+                    <th>Kéo thống kê</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -222,12 +250,41 @@ function PancakePanel(): React.JSX.Element {
                           (p.channel?.name ?? '—')
                         )}
                       </td>
+                      <td>
+                        {p.hasPageToken ? (
+                          <span className="tag ok">đã có</span>
+                        ) : can('settings.update') ? (
+                          <button
+                            className="btn sec sm"
+                            onClick={async () => {
+                              const token = window.prompt(
+                                'Dán Page Access Token của trang (Pancake: Cài đặt trang › Công cụ).\nĐể trống thì hệ thống tự sinh từ API token của kết nối khi cần.'
+                              )
+                              if (!token?.trim()) return
+                              try {
+                                await updatePancakePage(p.id, { pageAccessToken: token.trim() })
+                                say('Đã lưu token trang.')
+                                void load()
+                              } catch (err) {
+                                fail(getApiErrorMessage(err))
+                              }
+                            }}
+                          >
+                            Dán token
+                          </button>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
                       <td className="muted">{p.lastSyncAt ? dateTimeVi(p.lastSyncAt) : '—'}</td>
+                      <td className="muted">{p.statsSyncAt ? dateTimeVi(p.statsSyncAt) : '—'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
+
+            <PancakeAgentsBlock configId={c.id} />
           </div>
         ))
       )}
@@ -243,6 +300,142 @@ function PancakePanel(): React.JSX.Element {
         />
       ) : null}
     </>
+  )
+}
+
+/**
+ * F35: nhân viên bên Pancake và tài khoản CRM tương ứng.
+ *
+ * Vì sao phải gắn: báo cáo hiệu suất lấy số từ Pancake, mà Pancake chỉ biết
+ * "user Pancake" của nó. Chưa gắn thì vẫn xem được theo tên Pancake, nhưng số
+ * đó không nối được vào bảng lương, bảng thi đua của CRM.
+ */
+function PancakeAgentsBlock({ configId }: { configId: string }): React.JSX.Element {
+  const { can } = useAuth()
+  const { say, fail } = useToast()
+  const [open, setOpen] = useState(false)
+  const [agents, setAgents] = useState<PancakeAgentConfigRow[]>([])
+  const [staff, setStaff] = useState<Array<{ id: string; name: string }>>([])
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const [a, s] = await Promise.all([
+        fetchPancakeAgents(configId),
+        fetchStaff({ status: 'ACTIVE' }).catch(() => [])
+      ])
+      setAgents(a)
+      setStaff(s.map((u) => ({ id: u.id, name: u.name })))
+    } catch (err) {
+      fail(getApiErrorMessage(err))
+    }
+  }, [configId, fail])
+
+  useEffect(() => {
+    if (open) void load()
+  }, [open, load])
+
+  const discover = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const r = await discoverPancakeAgents(configId)
+      say(
+        r.errors.length
+          ? `Tìm thấy ${r.found} nhân viên. Lỗi: ${r.errors.join(' | ')}`
+          : `Tìm thấy ${r.found} nhân viên. Tên khớp duy nhất đã được gắn tự động.`
+      )
+      void load()
+    } catch (err) {
+      fail(getApiErrorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <div className="row" style={{ marginTop: 10 }}>
+        <button className="btn sec sm" onClick={() => setOpen(true)}>
+          Nhân viên Pancake (gắn với tài khoản CRM)
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ marginTop: 12, borderTop: '1px solid var(--bd, #e5e7eb)', paddingTop: 10 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <b>Nhân viên Pancake</b>
+        <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
+          Gắn để số tin và tốc độ phản hồi quy về đúng người trong CRM
+        </span>
+        <div className="row" style={{ marginLeft: 'auto', gap: 6 }}>
+          {can('settings.update') ? (
+            <button className="btn sec sm" disabled={busy} onClick={() => void discover()}>
+              {busy ? 'Đang dò…' : 'Dò nhân viên'}
+            </button>
+          ) : null}
+          <button className="btn sec sm" onClick={() => setOpen(false)}>
+            Ẩn
+          </button>
+        </div>
+      </div>
+
+      {agents.length === 0 ? (
+        <Empty>
+          Chưa dò được nhân viên nào. Bấm “Dò nhân viên”.
+          <br />
+          <span className="muted">Cần có trang đã dò và token trang hợp lệ.</span>
+        </Empty>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Tên trên Pancake</th>
+              <th>Trạng thái</th>
+              <th>Tài khoản CRM</th>
+            </tr>
+          </thead>
+          <tbody>
+            {agents.map((a) => (
+              <tr key={a.id}>
+                <td>
+                  <b>{a.name}</b>
+                </td>
+                <td>{a.active ? <span className="tag ok">đang dùng</span> : <span className="tag">đã tắt</span>}</td>
+                <td>
+                  {can('settings.update') ? (
+                    <select
+                      className="input"
+                      style={{ width: 220 }}
+                      value={a.userId ?? ''}
+                      onChange={async (e) => {
+                        try {
+                          await linkPancakeAgent(a.id, e.target.value || null)
+                          say('Đã cập nhật.')
+                          void load()
+                        } catch (err) {
+                          fail(getApiErrorMessage(err))
+                        }
+                      }}
+                    >
+                      <option value="">— chưa gắn —</option>
+                      {staff.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    (a.user?.name ?? '—')
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   )
 }
 

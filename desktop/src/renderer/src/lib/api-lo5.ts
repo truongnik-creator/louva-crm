@@ -415,3 +415,67 @@ export async function saveContractAttribution(
 ): Promise<void> {
   await api.patch(`/sales/contracts/${id}/attribution`, body)
 }
+
+/* ------------------------------------- F35 · HIỆU SUẤT NHÂN VIÊN PANCAKE */
+
+export interface PancakeAgentRow {
+  pancakeUserId: string
+  name: string
+  userId: string | null
+  userName: string | null
+  messages: number
+  inboxCount: number
+  commentCount: number
+  conversations: number
+  privateReplyCount: number
+  phones: number
+  /** Trung bình có trọng số, GIÂY. null = Pancake không đo được kỳ này. */
+  avgResponseSeconds: number | null
+}
+
+export interface PancakeGroupRow {
+  key: string
+  label: string
+  messages: number
+  inboxCount: number
+  commentCount: number
+  conversations: number
+  phones: number
+  avgResponseSeconds: number | null
+  agents: number
+}
+
+export interface PancakeAgentReport {
+  from: string
+  to: string
+  totals: {
+    messages: number
+    inboxCount: number
+    commentCount: number
+    conversations: number
+    phones: number
+    avgResponseSeconds: number | null
+    agents: number
+  }
+  agents: PancakeAgentRow[]
+  platforms: PancakeGroupRow[]
+  pages: PancakeGroupRow[]
+  days: Array<{
+    dayKey: string
+    messages: number
+    conversations: number
+    phones: number
+    avgResponseSeconds: number | null
+    agents: number
+  }>
+  hours: Array<{ hour: number; messages: number; avgResponseSeconds: number | null }>
+  unmappedAgents: number
+  lastSyncAt: string | null
+  pagesNeverSynced: string[]
+}
+
+export async function fetchPancakeAgentReport(
+  params: { period?: string; from?: string; to?: string } = {}
+): Promise<PancakeAgentReport> {
+  return (await api.get('/reports/pancake-agents', { params })).data
+}

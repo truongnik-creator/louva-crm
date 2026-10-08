@@ -277,7 +277,7 @@ async function deliverMessage(
     },
   });
 
-  const result = await sendToChannel(conv, content);
+  const result = await sendToChannel(conv, content, { senderUserId: me.id });
 
   const saved = await prisma.chatMessage.update({
     where: { id: message.id },

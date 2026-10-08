@@ -1318,6 +1318,10 @@ export interface PancakePageRow {
   platform: string
   active: boolean
   lastSyncAt: string | null
+  /** F35: lần kéo thống kê hiệu suất gần nhất của trang. */
+  statsSyncAt?: string | null
+  /** Trang đã có page_access_token riêng (token thật không bao giờ trả ra). */
+  hasPageToken?: boolean
   channel: { id: string; name: string } | null
 }
 
@@ -1367,9 +1371,54 @@ export async function syncPancake(configId: string): Promise<{
 
 export async function updatePancakePage(
   id: string,
-  payload: { channelId?: string | null; branchId?: string | null; active?: boolean }
+  payload: {
+    channelId?: string | null
+    branchId?: string | null
+    active?: boolean
+    /** Dán tay token trang (Pancake: Cài đặt trang › Công cụ). null = xoá. */
+    pageAccessToken?: string | null
+  }
 ): Promise<PancakePageRow> {
   const { data } = await api.patch(`/pancake/pages/${id}`, payload)
+  return data
+}
+
+/* F35: nhân viên Pancake và việc gắn với tài khoản CRM. */
+
+export interface PancakeAgentConfigRow {
+  id: string
+  pancakeUserId: string
+  name: string
+  active: boolean
+  userId: string | null
+  user: { id: string; name: string } | null
+}
+
+export async function fetchPancakeAgents(configId: string): Promise<PancakeAgentConfigRow[]> {
+  const { data } = await api.get(`/pancake/${configId}/agents`)
+  return data
+}
+
+export async function discoverPancakeAgents(configId: string): Promise<{ found: number; errors: string[] }> {
+  const { data } = await api.post(`/pancake/${configId}/discover-agents`)
+  return data
+}
+
+export async function linkPancakeAgent(id: string, userId: string | null): Promise<PancakeAgentConfigRow> {
+  const { data } = await api.patch(`/pancake/agents/${id}`, { userId })
+  return data
+}
+
+/** F35: kéo thống kê hiệu suất ngay (bình thường tác vụ nền tự chạy 10 phút/lần). */
+export async function syncPancakeStats(configId: string): Promise<{
+  started?: boolean
+  running?: boolean
+  pages?: number
+  buckets?: number
+  agents?: number
+  errors?: string[]
+}> {
+  const { data } = await api.post(`/pancake/${configId}/sync-stats`)
   return data
 }
 

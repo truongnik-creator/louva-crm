@@ -15,6 +15,7 @@ import {
 import { writeAccessLog } from "../lib/audit";
 import { getSettingNumber } from "../lib/settings-catalog";
 import { buildDepartments } from "../lib/department-scorecard";
+import { buildPancakeAgentReport } from "../lib/pancake-report";
 import { getClinicMode, stagesFor } from "../lib/stages";
 import {
   resolvePeriod,
@@ -532,6 +533,26 @@ router.get(
       byUser: shape(byUser, (k) => nameById.get(k) ?? "—"),
       byChannel: shape(byChannel, (k) => k),
     });
+  })
+);
+
+/**
+ * GET /api/reports/pancake-agents — F35: HIỆU SUẤT NHÂN VIÊN TRÊN PANCAKE.
+ *
+ * Số liệu do chính Pancake đo, CRM kéo về mỗi 10 phút (lib/pancake-jobs.ts).
+ *
+ * Khác gì /response-time? /response-time đo bằng tin nhắn ĐÃ VÀO CRM và chỉ quy
+ * được về người gửi khi tin đó gửi TỪ CRM. Nhân viên trả lời khách ngay trong
+ * app Pancake thì /response-time không biết ai trả lời, còn báo cáo này biết —
+ * vì Pancake tự ghi. Hai báo cáo bổ sung cho nhau, không thay thế nhau.
+ */
+router.get(
+  "/pancake-agents",
+  requireCrossPersonPermission("hr.read", "inbox.read", "accounting.read"),
+  asyncHandler(async (req, res) => {
+    const period = resolvePeriod(req.query as Record<string, unknown>);
+    const scope = reportBranchScope(req);
+    res.json(await buildPancakeAgentReport({ from: period.from, to: period.to }, scope));
   })
 );
 

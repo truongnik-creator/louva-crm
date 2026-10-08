@@ -1,51 +1,111 @@
 import { prisma } from "../lib/prisma";
-import { decryptNullable } from "../lib/crypto";
+import { decryptNullable, encryptNullable } from "../lib/crypto";
+import { logger } from "../lib/logger";
 
-// Tích hợp Pancake (pancake.vn) — gom Facebook, Instagram, TikTok, Zalo về một
-// hộp thư duy nhất trong CRM.
+// Tích hợp Pancake (pancake.vn / pages.fm) — gom Facebook, Instagram, TikTok,
+// Zalo về một hộp thư duy nhất trong CRM.
 //
-// LƯU Ý TRIỂN KHAI: Pancake có thay đổi đường dẫn và tên trường giữa các bản
-// API. Toàn bộ chỗ phụ thuộc vào hình dạng phản hồi đều gom vào `normalize*`
-// bên dưới, nên khi Pancake đổi thì chỉ sửa một chỗ chứ không phải rải khắp
-// mã nguồn. Đối chiếu lại với tài liệu Pancake trước khi chạy thật.
+// ĐÃ ĐỐI CHIẾU VỚI TÀI KHOẢN THẬT (08/10/2026, 4 trang Facebook). SÁU CHỖ TÀI
+// LIỆU developer.pancake.biz NÓI KHÁC API THẬT — mã nguồn đi theo API thật:
+//
+//   1. GET /pages trả `categorized.activated`, KHÔNG phải `categorized_pages`.
+//   2. Mỗi trang trong GET /pages mang sẵn `settings.page_access_token`, nên
+//      KHÔNG cần gọi generate_page_access_token (lệnh đó VÔ HIỆU token cũ, có
+//      thể làm sập tích hợp khác của phòng khám).
+//   3. `average_response_time` của API thống kê tính bằng GIÂY, không phải
+//      miligiây (dữ liệu thật: trung vị 437 -> 7,3 phút; nếu là ms thì thành
+//      0,44 giây, vô lý với người trả lời thật).
+//   4. `hour` của API thống kê là GIỜ ĐỊA PHƯƠNG CỦA TRANG (UTC+7), không phải
+//      UTC. Trường `hour_in_integer` mới là UTC (206/206 ô lệch đúng 7 giờ).
+//   5. GET messages trả tin CŨ TRƯỚC (12/12 hội thoại), tài liệu nói mới trước.
+//   6. Trường `message` là HTML (`<div>`, `<br key='n_0' />`); `original_message`
+//      mới là văn bản sạch.
+//
+// Những điều tài liệu nói ĐÚNG và đã kiểm chứng:
+//
+//   · HAI loại token, cả hai truyền bằng THAM SỐ URL, KHÔNG có header
+//     Authorization:
+//       - access_token       (token người dùng) chỉ dùng cho API cấp tài khoản
+//         ở https://pages.fm/api/v1 — liệt kê trang và sinh token trang.
+//       - page_access_token  (token trang) dùng cho MỌI API cấp trang ở
+//         https://pages.fm/api/public_api/v1 và /v2 — hội thoại, tin nhắn,
+//         thống kê, khách, nhân viên.
+//   · Token trang không hết hạn; token người dùng sống tối đa 90 ngày.
+//   · Giới hạn 5 lượt gọi / trang / giây -> gọi tuần tự theo trang, có nghỉ.
+//   · Mọi mốc thời gian API trả về là UTC+0. Ngoại lệ: tham số `date_range` của
+//     API thống kê tính theo giờ địa phương của trang (UTC+7 với trang VN).
+//
+// Toàn bộ chỗ phụ thuộc hình dạng phản hồi gom vào `normalize*` / `fetch*` bên
+// dưới, nên khi Pancake đổi thì chỉ sửa một chỗ.
 
-const PANCAKE_BASE = process.env.PANCAKE_API_BASE ?? "https://pages.fm/api/v1";
+/** API cấp tài khoản (access_token). */
+const USER_BASE = process.env.PANCAKE_API_BASE ?? "https://pages.fm/api/v1";
+/** API cấp trang v1 (page_access_token): tin nhắn, thống kê, nhân viên. */
+const PAGE_BASE_V1 = process.env.PANCAKE_PAGE_API_BASE ?? "https://pages.fm/api/public_api/v1";
+/** API cấp trang v2 (page_access_token): danh sách hội thoại. */
+const PAGE_BASE_V2 = process.env.PANCAKE_PAGE_API_V2_BASE ?? "https://pages.fm/api/public_api/v2";
 
 /**
- * F5: cách gửi token. "header" (mặc định an toàn hơn: token không lọt vào log
- * proxy, lịch sử trình duyệt) hoặc "query" (?access_token=).
- * TODO-VERIFY: đối chiếu tài liệu API Pancake thật xem endpoint có nhận token ở
- * header không. Nếu Pancake chỉ nhận query thì đặt PANCAKE_TOKEN_MODE=query.
+ * Cách gửi token. Tài liệu Pancake nói CHỈ nhận tham số URL, nên mặc định là
+ * "query". Giữ lại "header" làm cửa thoát nếu một bản API nội bộ nào đó yêu cầu
+ * khác (đặt PANCAKE_TOKEN_MODE=header).
  */
-const TOKEN_MODE = (process.env.PANCAKE_TOKEN_MODE ?? "header").toLowerCase() === "query" ? "query" : "header";
+const TOKEN_MODE = (process.env.PANCAKE_TOKEN_MODE ?? "query").toLowerCase() === "header" ? "header" : "query";
 
-function authorize(url: URL, headers: Record<string, string>, token: string): void {
-  if (TOKEN_MODE === "query") {
-    url.searchParams.set("access_token", token);
-  } else {
-    // TODO-VERIFY: tên header Pancake chấp nhận (Authorization: Bearer hay access_token).
+const TIMEOUT_MS = 20_000;
+
+function authorize(url: URL, headers: Record<string, string>, token: string, param: "access_token" | "page_access_token"): void {
+  if (TOKEN_MODE === "header") {
     headers.Authorization = `Bearer ${token}`;
+    return;
   }
+  url.searchParams.set(param, token);
+}
+
+/** Một nhân viên của trang, theo GET /pages (không cần token trang). */
+export interface PancakePageUserRaw {
+  user_id?: string;
+  name?: string;
+  fb_id?: string;
+  /** active | removed | deactivated | no_permission */
+  status?: string;
 }
 
 export interface PancakePageRaw {
   id: string;
   name: string;
+  /** API thật trả chữ thường: "facebook". */
   platform?: string;
+  /** Lệch giờ của trang so với UTC, API thật trả 7.0 với trang Việt Nam. */
+  timezone?: number;
+  /** Token riêng của trang nằm sẵn ở đây — khỏi phải sinh token mới. */
+  settings?: { page_access_token?: string };
+  users?: PancakePageUserRaw[];
+}
+
+/** Token trang lấy từ chính phản hồi GET /pages. */
+export function pageTokenOf(p: PancakePageRaw): string | null {
+  const t = p.settings?.page_access_token;
+  return t ? String(t) : null;
 }
 
 export interface PancakeConversationRaw {
   id: string;
   page_id?: string;
+  /** INBOX | COMMENT | LIVESTREAM | POST */
+  type?: string;
   customer_name?: string;
   customer_phone?: string;
   snippet?: string;
   unread_count?: number;
+  /** v2 dùng `seen`; chưa xem thì coi như 1 tin chưa đọc. */
+  seen?: boolean;
   updated_at?: string;
   assignee_name?: string;
+  /** v2: bên mở hội thoại (thường là khách). */
+  from?: { id?: string; name?: string };
   /**
-   * F5: nguồn quảng cáo khi khách nhắn từ quảng cáo Facebook (click-to-message).
-   * TODO-VERIFY: tên trường thật trong API Pancake (ad_id, post_id, ads[]...).
+   * Nguồn quảng cáo khi khách nhắn từ quảng cáo Facebook (click-to-message).
    */
   ad_id?: string | number;
   post_id?: string;
@@ -75,12 +135,67 @@ export function extractAdSource(c: PancakeConversationRaw): AdSource {
 export interface PancakeMessageRaw {
   id: string;
   conversation_id?: string;
+  page_id?: string;
   message?: string;
+  original_message?: string;
+  /** Bản cũ / webhook có cờ sẵn. API v1 thì suy ra từ `from` (xem isFromCustomer). */
   from_customer?: boolean;
   inserted_at?: string;
   sender_name?: string;
+  /** API v1: thông tin người gửi. `uid` có giá trị khi tin do NHÂN VIÊN gửi. */
+  from?: {
+    id?: string;
+    name?: string;
+    email?: string | null;
+    /** UUID nhân viên bên Pancake — khoá quy tin nhắn về người thật (F35). */
+    uid?: string | null;
+    admin_id?: string | null;
+    admin_name?: string | null;
+    is_automated?: boolean;
+  };
   /** Ảnh, tệp khách gửi (B13). Pancake dùng type "photo" | "image" | "file" | "video". */
   attachments?: Array<{ type?: string; url?: string; name?: string; mime_type?: string }>;
+}
+
+/**
+ * Tin này của khách hay của mình?
+ *
+ * Thứ tự xét: cờ `from_customer` (webhook, bản cũ) -> dấu hiệu nhân viên
+ * (`from.uid`, `from.admin_id`) -> người gửi chính là trang -> còn lại là khách.
+ * `convFromId` là id bên mở hội thoại (MessagesResponse.conv_from.id): khớp thì
+ * chắc chắn là khách.
+ */
+export function isFromCustomer(m: PancakeMessageRaw, ctx: { pageId?: string; convFromId?: string } = {}): boolean {
+  if (typeof m.from_customer === "boolean") return m.from_customer;
+  const from = m.from;
+  if (from?.uid || from?.admin_id) return false;
+  if (from?.id && ctx.pageId && String(from.id) === String(ctx.pageId)) return false;
+  if (from?.id && ctx.convFromId) return String(from.id) === String(ctx.convFromId);
+  return true;
+}
+
+/** UUID nhân viên Pancake đã gửi tin (null khi tin của khách hoặc do máy gửi). */
+export function staffUidOf(m: PancakeMessageRaw): string | null {
+  const uid = m.from?.uid;
+  return uid ? String(uid) : null;
+}
+
+/**
+ * Đọc mốc thời gian Pancake trả về.
+ *
+ * Tài liệu: mọi mốc thời gian trong phản hồi là UTC+0, và chuỗi ISO KHÔNG kèm
+ * hậu tố múi giờ ("2026-01-15T10:00:00"). JavaScript lại hiểu chuỗi dạng đó là
+ * GIỜ MÁY, nên chạy trên máy đặt giờ Việt Nam sẽ lệch 7 tiếng — đủ để tin nhắn
+ * rơi sang ngày khác và báo cáo theo ngày sai. Vì vậy chuỗi không có múi giờ
+ * thì gắn thêm "Z".
+ */
+export function parsePancakeTime(raw: string | number | null | undefined, fallback: Date = new Date()): Date {
+  if (raw == null || raw === "") return fallback;
+  if (typeof raw === "number") return new Date(raw < 1e12 ? raw * 1000 : raw);
+  const s = String(raw).trim();
+  const hasZone = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(s);
+  const d = new Date(hasZone ? s : `${s.replace(" ", "T")}Z`);
+  return Number.isNaN(d.getTime()) ? fallback : d;
 }
 
 /** Nền tảng Pancake trả về không thống nhất hoa/thường — chuẩn hoá một chỗ. */
@@ -98,76 +213,183 @@ export async function resolveToken(configId: string): Promise<string | null> {
   return decryptNullable(row.accessTokenEnc);
 }
 
-async function callPancake<T>(
-  token: string,
-  path: string,
-  params: Record<string, string> = {}
-): Promise<T> {
-  const url = new URL(`${PANCAKE_BASE}${path}`);
-  const headers: Record<string, string> = { Accept: "application/json" };
-  authorize(url, headers, token);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-
-  const res = await fetch(url.toString(), { headers });
-  if (!res.ok) {
-    throw new Error(`Pancake trả về HTTP ${res.status} cho ${path}`);
-  }
+async function callJson<T>(url: URL, headers: Record<string, string>, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(url.toString(), { ...init, headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  if (res.status === 429) throw new Error("Pancake chặn vì gọi quá nhanh (giới hạn 5 lượt/trang/giây). Thử lại sau.");
+  if (!res.ok) throw new Error(`Pancake trả về HTTP ${res.status} cho ${url.pathname}`);
   return (await res.json()) as T;
 }
 
-export async function fetchPages(token: string): Promise<PancakePageRaw[]> {
-  const data = await callPancake<{ categorized_pages?: { activated?: PancakePageRaw[] }; pages?: PancakePageRaw[] }>(
-    token,
-    "/pages"
-  );
-  return data.categorized_pages?.activated ?? data.pages ?? [];
+/** API cấp tài khoản: dùng access_token của người dùng. */
+async function callUserApi<T>(token: string, path: string, params: Record<string, string> = {}): Promise<T> {
+  const url = new URL(`${USER_BASE}${path}`);
+  const headers: Record<string, string> = { Accept: "application/json" };
+  authorize(url, headers, token, "access_token");
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  return callJson<T>(url, headers);
 }
 
+/** API cấp trang: dùng page_access_token. */
+async function callPageApi<T>(
+  base: string,
+  pageToken: string,
+  path: string,
+  params: Record<string, string> = {}
+): Promise<T> {
+  const url = new URL(`${base}${path}`);
+  const headers: Record<string, string> = { Accept: "application/json" };
+  authorize(url, headers, pageToken, "page_access_token");
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  return callJson<T>(url, headers);
+}
+
+// --------------------------------------------------------------- TOKEN TRANG
+
+export interface PageTokenRef {
+  /** id bản ghi PancakePage trong CRM. */
+  id: string;
+  /** id trang bên Pancake. */
+  pageId: string;
+  configId: string;
+  pageAccessTokenEnc: string | null;
+}
+
+/**
+ * Token của một trang. Lấy từ CSDL; chưa có thì sinh bằng token người dùng
+ * (POST /pages/{page_id}/generate_page_access_token) rồi lưu mã hoá để lần sau
+ * không gọi lại — token trang không hết hạn.
+ *
+ * LƯU Ý: sinh lại token sẽ VÔ HIỆU token cũ bên Pancake, nên chỉ sinh khi thực
+ * sự chưa có; quản trị muốn dùng token dán tay thì nhập ở màn Kết nối.
+ */
+export async function resolvePageToken(page: PageTokenRef): Promise<string | null> {
+  const saved = decryptNullable(page.pageAccessTokenEnc);
+  if (saved) return saved;
+
+  const userToken = await resolveToken(page.configId);
+  if (!userToken) return null;
+  const generated = await generatePageAccessToken(userToken, page.pageId);
+  if (!generated) return null;
+  await prisma.pancakePage
+    .update({ where: { id: page.id }, data: { pageAccessTokenEnc: encryptNullable(generated) } })
+    .catch((err) => logger.warn({ err, pageId: page.pageId }, "[pancake] không lưu được token trang"));
+  return generated;
+}
+
+/** Sinh (hoặc làm mới) token trang. Trả null khi Pancake không trả token nào. */
+export async function generatePageAccessToken(userToken: string, pageId: string): Promise<string | null> {
+  const url = new URL(`${USER_BASE}/pages/${encodeURIComponent(pageId)}/generate_page_access_token`);
+  const headers: Record<string, string> = { Accept: "application/json" };
+  authorize(url, headers, userToken, "access_token");
+  url.searchParams.set("page_id", pageId);
+  const data = await callJson<{
+    page_access_token?: string;
+    access_token?: string;
+    data?: { page_access_token?: string; access_token?: string };
+  }>(url, headers, { method: "POST" });
+  const token = data.page_access_token ?? data.access_token ?? data.data?.page_access_token ?? data.data?.access_token;
+  return token ? String(token) : null;
+}
+
+// --------------------------------------------------------------------- TRANG
+
+export async function fetchPages(token: string): Promise<PancakePageRaw[]> {
+  const data = await callUserApi<{
+    categorized?: { activated?: PancakePageRaw[] };
+    categorized_pages?: { activated?: PancakePageRaw[] };
+    pages?: PancakePageRaw[];
+  }>(token, "/pages");
+  // API thật dùng `categorized`; `categorized_pages` giữ lại cho bản cũ.
+  const bucket = data.categorized ?? data.categorized_pages;
+  return bucket?.activated ?? data.pages ?? [];
+}
+
+// ----------------------------------------------------------------- HỘI THOẠI
+
 export async function fetchConversations(
-  token: string,
+  pageToken: string,
   pageId: string,
-  sinceIso?: string
+  opts: { sinceIso?: string; lastConversationId?: string } = {}
 ): Promise<PancakeConversationRaw[]> {
-  const data = await callPancake<{ conversations?: PancakeConversationRaw[] }>(
-    token,
-    `/pages/${pageId}/conversations`,
-    sinceIso ? { since: sinceIso } : {}
+  const params: Record<string, string> = {};
+  // v2 nhận `since` là Unix giây.
+  if (opts.sinceIso) {
+    const t = Date.parse(opts.sinceIso);
+    if (!Number.isNaN(t)) params.since = String(Math.floor(t / 1000));
+  }
+  if (opts.lastConversationId) params.last_conversation_id = opts.lastConversationId;
+  const data = await callPageApi<{ conversations?: PancakeConversationRaw[] }>(
+    PAGE_BASE_V2,
+    pageToken,
+    `/pages/${encodeURIComponent(pageId)}/conversations`,
+    params
   );
   return data.conversations ?? [];
 }
 
-export async function fetchMessages(
-  token: string,
-  pageId: string,
-  conversationId: string
-): Promise<PancakeMessageRaw[]> {
-  const data = await callPancake<{ messages?: PancakeMessageRaw[] }>(
-    token,
-    `/pages/${pageId}/conversations/${conversationId}/messages`
-  );
-  return data.messages ?? [];
+export interface FetchedMessages {
+  messages: PancakeMessageRaw[];
+  /** id bên mở hội thoại — dùng để biết tin nào của khách. */
+  convFromId?: string;
+  customerName?: string;
 }
 
+export async function fetchMessages(
+  pageToken: string,
+  pageId: string,
+  conversationId: string
+): Promise<FetchedMessages> {
+  const data = await callPageApi<{
+    messages?: PancakeMessageRaw[];
+    conv_from?: { id?: string; name?: string };
+  }>(
+    PAGE_BASE_V1,
+    pageToken,
+    `/pages/${encodeURIComponent(pageId)}/conversations/${encodeURIComponent(conversationId)}/messages`
+  );
+  // Pancake trả MỚI TRƯỚC; CRM ghi theo thứ tự thời gian.
+  const messages = [...(data.messages ?? [])].reverse();
+  return {
+    messages,
+    ...(data.conv_from?.id ? { convFromId: String(data.conv_from.id) } : {}),
+    ...(data.conv_from?.name ? { customerName: String(data.conv_from.name) } : {}),
+  };
+}
+
+// ---------------------------------------------------------------- GỬI TIN
+
 export async function sendMessage(
-  token: string,
+  pageToken: string,
   pageId: string,
   conversationId: string,
-  message: string
+  message: string,
+  opts: { senderId?: string | null } = {}
 ): Promise<{ ok: boolean; error?: string; externalId?: string }> {
   try {
-    // TODO-VERIFY: đường dẫn và thân lệnh gửi tin của Pancake (action "reply_inbox", trường message).
-    const url = new URL(`${PANCAKE_BASE}/pages/${encodeURIComponent(pageId)}/conversations/${encodeURIComponent(conversationId)}/messages`);
+    const url = new URL(
+      `${PAGE_BASE_V1}/pages/${encodeURIComponent(pageId)}/conversations/${encodeURIComponent(conversationId)}/messages`
+    );
     const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
-    authorize(url, headers, token);
+    authorize(url, headers, pageToken, "page_access_token");
 
     const res = await fetch(url.toString(), {
       method: "POST",
       headers,
-      body: JSON.stringify({ action: "reply_inbox", message }),
-      signal: AbortSignal.timeout(20_000),
+      // `sender_id` để Pancake quy tin này về đúng nhân viên — nhờ vậy báo cáo
+      // hiệu suất (F35) tính cả tin gửi từ CRM, không chỉ tin gửi trong app Pancake.
+      body: JSON.stringify({ action: "reply_inbox", message, ...(opts.senderId ? { sender_id: opts.senderId } : {}) }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok) return { ok: false, error: `Pancake trả về HTTP ${res.status}` };
-    const data = (await res.json().catch(() => ({}))) as { id?: string | number; message_id?: string | number; data?: { id?: string | number } };
+    const data = (await res.json().catch(() => ({}))) as {
+      success?: boolean;
+      message_code?: string;
+      id?: string | number;
+      message_id?: string | number;
+      data?: { id?: string | number };
+    };
+    // Pancake có thể trả HTTP 200 kèm success: false (ví dụ content_id hết hạn).
+    if (data.success === false) return { ok: false, error: `Pancake từ chối: ${data.message_code ?? "không rõ lý do"}` };
     const id = data.message_id ?? data.id ?? data.data?.id;
     return { ok: true, ...(id != null ? { externalId: String(id) } : {}) };
   } catch (err) {
@@ -176,20 +398,99 @@ export async function sendMessage(
 }
 
 /**
- * F5: trả lời một hội thoại nguồn Pancake qua chính Pancake (không qua Zalo OA).
+ * Trả lời một hội thoại nguồn Pancake qua chính Pancake (không qua Zalo OA).
  * Trả về cùng dạng với sendZaloMessage để routes/inbox.ts xử lý chung.
  */
 export async function sendPancakeReply(
   conversation: { pancakeConversationId: string | null; pancakePageId: string | null },
-  text: string
+  text: string,
+  opts: { senderUserId?: string | null } = {}
 ): Promise<{ ok: boolean; error?: string; externalId?: string }> {
   if (!conversation.pancakeConversationId || !conversation.pancakePageId) {
     return { ok: false, error: "Hội thoại chưa gắn trang Pancake" };
   }
   const page = await prisma.pancakePage.findUnique({ where: { id: conversation.pancakePageId } });
   if (!page) return { ok: false, error: "Không tìm thấy trang Pancake của hội thoại" };
-  const token = await resolveToken(page.configId);
+  const token = await resolvePageToken(page);
   if (!token) return { ok: false, error: "Kết nối Pancake chưa có token hoặc đã tắt. Vào Cài đặt, Kết nối" };
+
+  // Người gửi trong CRM có gắn với một nhân viên Pancake thì gửi kèm sender_id.
+  const agent = opts.senderUserId
+    ? await prisma.pancakeAgent.findFirst({
+        where: { configId: page.configId, userId: opts.senderUserId },
+        select: { pancakeUserId: true },
+      })
+    : null;
+
   // externalId trả về trùng id tin khi đồng bộ lại, nên lần đồng bộ sau không nhân bản tin.
-  return sendMessage(token, page.pageId, conversation.pancakeConversationId, text);
+  return sendMessage(token, page.pageId, conversation.pancakeConversationId, text, {
+    senderId: agent?.pancakeUserId ?? null,
+  });
+}
+
+// ---------------------------------------------- NHÂN VIÊN & THỐNG KÊ (F35)
+
+export interface PancakeUserRaw {
+  id: string;
+  name?: string;
+  fb_id?: string;
+  status?: string;
+  status_in_page?: string;
+  is_online?: boolean;
+}
+
+export interface PancakePageUsers {
+  users: PancakeUserRaw[];
+  disabledUsers: PancakeUserRaw[];
+}
+
+/** Danh sách nhân viên của một trang (GET /pages/{page_id}/users). */
+export async function fetchPageUsers(pageToken: string, pageId: string): Promise<PancakePageUsers> {
+  const data = await callPageApi<{ users?: PancakeUserRaw[]; disabled_users?: PancakeUserRaw[] }>(
+    PAGE_BASE_V1,
+    pageToken,
+    `/pages/${encodeURIComponent(pageId)}/users`
+  );
+  return { users: data.users ?? [], disabledUsers: data.disabled_users ?? [] };
+}
+
+/** Một ô số liệu Pancake trả về cho một nhân viên trong một mốc giờ. */
+export interface PancakeUserStatBucket {
+  hour?: string;
+  inbox_count?: number;
+  comment_count?: number;
+  unique_inbox_count?: number;
+  unique_comment_count?: number;
+  private_reply_count?: number;
+  phone_number_count?: number;
+  /** Miligiây. */
+  average_response_time?: number;
+}
+
+export interface PancakeUserStats {
+  /** UUID nhân viên -> các ô số liệu theo giờ. */
+  statistics: Record<string, PancakeUserStatBucket[]>;
+  /** UUID nhân viên -> tên và tổng của cả khoảng. */
+  users: Record<string, PancakeUserStatBucket & { user_name?: string; user_fb_id?: string }>;
+}
+
+/**
+ * Thống kê nhân viên của một trang (GET /pages/{page_id}/statistics/users).
+ *
+ * `dateRange` theo đúng định dạng Pancake đòi: "DD/MM/YYYY HH:MM:SS -
+ * DD/MM/YYYY HH:MM:SS", tính theo GIỜ ĐỊA PHƯƠNG CỦA TRANG (trang VN = UTC+7).
+ * Mốc `hour` trong phản hồi lại là UTC+0.
+ */
+export async function fetchUserStatistics(
+  pageToken: string,
+  pageId: string,
+  dateRange: string
+): Promise<PancakeUserStats> {
+  const data = await callPageApi<{ success?: boolean; data?: PancakeUserStats }>(
+    PAGE_BASE_V1,
+    pageToken,
+    `/pages/${encodeURIComponent(pageId)}/statistics/users`,
+    { date_range: dateRange }
+  );
+  return { statistics: data.data?.statistics ?? {}, users: data.data?.users ?? {} };
 }
