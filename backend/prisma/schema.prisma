@@ -98,6 +98,7 @@ model Branch {
   pancakeConfigs       PancakeConfig[]
   pancakePages         PancakePage[]
   stockTransfers       StockTransfer[]
+  workReportSources    WorkReportSource[]    @relation("WorkReportSourceBranch")
 
   @@map("branches")
 }
@@ -197,6 +198,8 @@ model User {
   casesMarketingApproved    CaseStudy[]           @relation("CaseMarketingApprover")
   transfersRequested        StockTransfer[]       @relation("TransferRequester")
   transfersApproved         StockTransfer[]       @relation("TransferApprover")
+  workReportSource          WorkReportSource?     @relation("WorkReportSourceUser")
+  workReportEntries         WorkReportEntry[]     @relation("WorkReportEntryUser")
 
   @@index([status])
   @@map("users")
@@ -2861,4 +2864,143 @@ model PackageSession {
 
   @@unique([packageId, sessionNo])
   @@map("package_sessions")
+}
+
+// =============================================================================
+// F36. BÁO CÁO CÔNG VIỆC HÀNG NGÀY TỪ TRANG TÍNH (media, mkt, design, content)
+// =============================================================================
+//
+// Mỗi nhân viên có MỘT trang tính riêng, trong đó 12 sheet "T1".."T12" là 12
+// tháng (có thể có thêm sheet phụ như "Quy trình Media" — bỏ qua khi đồng bộ).
+//
+// Hai chiều lấy dữ liệu:
+//   · ĐẨY (chính)  — Apps Script trong chính trang tính POST về
+//     /api/work-reports/ingest kèm token riêng của nguồn. Dùng được cho trang
+//     tính ẨN, không cần chia sẻ công khai, không cần tài khoản dịch vụ Google.
+//   · KÉO (dự phòng) — backend tự đọc qua endpoint gviz khi trang tính được
+//     chia sẻ "bất kỳ ai có liên kết". Tiện để thử nhanh, không dùng cho sheet ẩn.
+
+model WorkReportSource {
+  id       String  @id @default(uuid())
+  /// Mỗi nhân viên đúng một trang tính.
+  userId   String  @unique
+  user     User    @relation("WorkReportSourceUser", fields: [userId], references: [id], onDelete: Cascade)
+  /// Cơ sở chính của nhân viên, chép xuống để cổng 3 (phạm vi BRANCH) lọc được.
+  branchId String?
+  branch   Branch? @relation("WorkReportSourceBranch", fields: [branchId], references: [id], onDelete: SetNull)
+
+  /// ID trang tính trích từ URL (/spreadsheets/d/<id>/...).
+  spreadsheetId String  @unique
+  url           String
+  /// Tên tệp lấy được khi đồng bộ, ví dụ "Báo Cáo Kim Sơn Media".
+  title         String?
+  /// Năm mà 12 sheet T1..T12 đại diện. Trang tính sang năm mới thì đổi số này.
+  year          Int
+  active        Boolean @default(true)
+  note          String?
+
+  /// WorkReportSyncMode: PUSH (Apps Script đẩy về) | PULL (backend tự kéo).
+  syncMode String @default("PUSH")
+
+  /// Token của Apps Script — CHỈ lưu hash, giống refresh token. Mất thì cấp lại.
+  tokenHash       String?   @unique
+  /// 8 ký tự đầu để nhận diện trên giao diện ("abc12xyz…").
+  tokenPrefix     String?
+  tokenCreatedAt  DateTime?
+  tokenLastUsedAt DateTime?
+
+  /// WorkReportSyncStatus: NEVER | OK | ERROR
+  lastSyncStatus String    @default("NEVER")
+  lastSyncAt     DateTime?
+  lastSyncError  String?
+  /// Tổng số dòng việc đang giữ, cập nhật sau mỗi lần đồng bộ.
+  rowCount       Int       @default(0)
+  /// Ngày làm việc mới nhất có dòng việc — dùng để biết ai đang bỏ trống báo cáo.
+  lastEntryDate  DateTime?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tabs    WorkReportTab[]
+  entries WorkReportEntry[]
+
+  @@index([branchId, active])
+  @@index([lastSyncStatus])
+  @@map("work_report_sources")
+}
+
+model WorkReportTab {
+  id         String           @id @default(uuid())
+  sourceId   String
+  source     WorkReportSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  /// gid của sheet trong trang tính.
+  gid        String
+  name       String
+  /// 1..12 với sheet tháng; null với sheet phụ (quy trình, ghi chú...).
+  month      Int?
+  rowCount   Int              @default(0)
+  /// Dòng tiêu đề đã bỏ qua khi phân tích (mẫu hiện tại: 2).
+  headerRows Int              @default(2)
+  lastSyncAt DateTime?
+
+  entries WorkReportEntry[]
+
+  @@unique([sourceId, gid])
+  @@index([sourceId, month])
+  @@map("work_report_tabs")
+}
+
+/// Một DÒNG VIỆC trong sheet tháng. Dữ liệu gốc là trang tính nên mỗi lần đồng
+/// bộ sẽ thay toàn bộ dòng của sheet đó (xoá rồi ghi lại) — không hợp nhất tay.
+model WorkReportEntry {
+  id       String           @id @default(uuid())
+  sourceId String
+  source   WorkReportSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  tabId    String
+  tab      WorkReportTab    @relation(fields: [tabId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User             @relation("WorkReportEntryUser", fields: [userId], references: [id], onDelete: Cascade)
+  branchId String?
+
+  year     Int
+  month    Int
+  /// Số dòng trong sheet (1-based) — giữ để đối chiếu khi người dùng mở trang tính.
+  rowIndex Int
+
+  /// Ngày làm việc, 00:00 giờ Việt Nam. Ô ngày gộp nhiều dòng nên được điền xuôi.
+  workDate DateTime?
+  dayKey   String?
+  weekday  String?
+
+  /// Kênh triển khai: TikTok, Fanpage, Khác, NGHỈ...
+  channel   String?
+  taskName  String?
+  progress  String?
+  status    String?
+  rating    String?
+  linkText  String?
+  linkUrl   String?
+  note      String?
+  summary   String?
+  /// Cột "Công/ngày" — số công tích luỹ, chỉ điền ở dòng đầu mỗi ngày.
+  dayCredit Float?
+
+  /// WorkTaskStatus chuẩn hoá từ cột Tiến độ / Trạng thái để đếm được.
+  statusCode String  @default("UNKNOWN")
+  /// WorkPostRating chuẩn hoá từ cột Đánh giá bài đăng.
+  ratingCode String?
+  isDayOff   Boolean @default(false)
+
+  /// Dòng gốc dạng JSON — giữ để không mất dữ liệu khi mẫu trang tính đổi cột.
+  raw String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([tabId, rowIndex])
+  @@index([userId, workDate])
+  @@index([sourceId, year, month])
+  @@index([branchId, workDate])
+  @@index([statusCode])
+  @@map("work_report_entries")
 }

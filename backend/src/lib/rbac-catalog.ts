@@ -56,6 +56,7 @@ const MODULES: ModuleDef[] = [
   { key: "accounting", module: "E3", label: "Kế toán & báo cáo quản trị" },
   { key: "settings", module: "E4", label: "Phân quyền & cài đặt" },
   { key: "audit", module: "E4b", label: "Nhật ký kiểm toán", actions: ["read"] },
+  { key: "work_report", module: "E5", label: "Báo cáo công việc theo trang tính", actions: ["read"] },
 ];
 
 /** Bốn quyền đặc biệt tách khỏi CRUD (mục 4.4). */
@@ -159,6 +160,20 @@ const SPECIAL_PERMISSIONS: PermissionDef[] = [
     isSpecial: true,
   },
   {
+    code: "work_report.manage_source",
+    module: "E5",
+    action: "manage_source",
+    name: "Gắn, đổi, ngắt trang tính báo cáo của nhân viên và cấp lại token Apps Script",
+    isSpecial: true,
+  },
+  {
+    code: "work_report.sync",
+    module: "E5",
+    action: "sync",
+    name: "Bấm đồng bộ trang tính báo cáo ngay (không chờ tác vụ nền)",
+    isSpecial: true,
+  },
+  {
     code: "report.export",
     module: "E4c",
     action: "export",
@@ -204,6 +219,9 @@ export const RoleCode = {
   KHO: "KHO",
   KE_TOAN: "KE_TOAN",
   MARKETING: "MARKETING",
+  MEDIA: "MEDIA",
+  DESIGN: "DESIGN",
+  CONTENT: "CONTENT",
 } as const;
 export type RoleCode = (typeof RoleCode)[keyof typeof RoleCode];
 
@@ -279,6 +297,9 @@ export const ROLES: RoleDef[] = [
           "settings:crud",
           "audit.read",
           "report.export",
+          "work_report.read",
+          "work_report.manage_source",
+          "work_report.sync",
           "medical.break_glass",
         ],
       },
@@ -323,6 +344,9 @@ export const ROLES: RoleDef[] = [
           "settings.read",
           "audit.read",
           "report.export",
+          "work_report.read",
+          "work_report.manage_source",
+          "work_report.sync",
           "medical.break_glass",
         ],
       },
@@ -375,6 +399,9 @@ export const ROLES: RoleDef[] = [
           "settings.read",
           "audit.read",
           "report.export",
+          "work_report.read",
+          "work_report.manage_source",
+          "work_report.sync",
         ],
       },
     ],
@@ -553,7 +580,64 @@ export const ROLES: RoleDef[] = [
     grants: [
       { scope: ALL, items: ["customer.read", "lead:crud", "sales_order.read", "case_study.read"] },
       { scope: BR, items: ["inbox.read", "service.read"] },
-      { scope: OWN, items: ["shift.read", "hr.read"] },
+      { scope: OWN, items: ["shift.read", "hr.read", "work_report.read"] },
+    ],
+  },
+
+  // ---------------------------------------------------------------------------
+  // F36: ba vai trò sáng tạo nội dung (bộ phận Media, Design, Content).
+  //
+  // Bộ phận MKT dùng lại vai trò MARKETING sẵn có — nó đã đúng việc (phễu,
+  // chiến dịch, số liệu) nên thêm một vai "MKT" trùng chức năng chỉ làm bảng
+  // phân quyền rối. Ba vai dưới đây thì KHÔNG có vai nào sẵn tương đương.
+  //
+  // Nguyên tắc cấp quyền: đủ để làm việc và tự xem báo cáo của mình, KHÔNG
+  // chạm dữ liệu y khoa và KHÔNG thấy số điện thoại khách (thiếu
+  // `customer.view_phone` nên SĐT bị che ở mọi màn). Trưởng bộ phận cần xem
+  // báo cáo cả nhóm thì nâng `work_report.read` lên phạm vi BRANCH ở màn
+  // Người dùng & Phân quyền — không phải sửa mã nguồn.
+  {
+    code: RoleCode.MEDIA,
+    name: "Media (quay, dựng)",
+    description:
+      "Quay, dựng, đăng nội dung trên các kênh. Xem được dịch vụ, case đã duyệt và báo cáo công việc của chính mình.",
+    grants: [
+      { scope: BR, items: ["customer.read", "service.read", "case_study.read", "inbox.read"] },
+      { scope: OWN, items: ["appointment.read", "shift.read", "hr.read", "work_report.read"] },
+    ],
+  },
+  {
+    code: RoleCode.DESIGN,
+    name: "Design (thiết kế)",
+    description:
+      "Thiết kế ấn phẩm, ảnh trước-sau đã được phép dùng marketing, backdrop, voucher. Xem báo cáo công việc của chính mình.",
+    grants: [
+      { scope: BR, items: ["customer.read", "service.read", "case_study.read", "inbox.read"] },
+      { scope: OWN, items: ["appointment.read", "shift.read", "hr.read", "work_report.read"] },
+    ],
+  },
+  {
+    code: RoleCode.CONTENT,
+    name: "Content (nội dung)",
+    description:
+      "Viết nội dung, kịch bản bán hàng chuẩn cho AI gợi ý trả lời. Xem báo cáo công việc của chính mình.",
+    grants: [
+      {
+        scope: BR,
+        items: ["customer.read", "service.read", "case_study.read", "inbox.read", "inbox.manage_scripts"],
+      },
+      { scope: OWN, items: ["appointment.read", "shift.read", "hr.read", "work_report.read"] },
     ],
   },
 ];
+
+/** F36: bốn bộ phận dùng cơ chế báo cáo công việc theo trang tính. */
+export const WORK_REPORT_DEPARTMENTS = [
+  { code: "MEDIA", name: "Media" },
+  { code: "MKT", name: "Marketing (MKT)" },
+  { code: "DESIGN", name: "Design" },
+  { code: "CONTENT", name: "Content" },
+] as const;
+
+/** Mã bộ phận mặc định được coi là "khối báo cáo trang tính" trên giao diện. */
+export const WORK_REPORT_DEPARTMENT_CODES: string[] = WORK_REPORT_DEPARTMENTS.map((d) => d.code);

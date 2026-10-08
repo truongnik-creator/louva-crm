@@ -10,15 +10,17 @@ import { decryptNullable, encryptNullable, verifyHmac } from "../lib/crypto";
 import { logger } from "../lib/logger";
 import { writeAudit } from "../lib/audit";
 import {
-  fetchPages,
-  normalizePlatform,
-  pageTokenOf,
   resolveToken,
   type PancakeConversationRaw,
   type PancakeMessageRaw,
 } from "../services/pancake";
 import { ingestPancakeConversation, isSyncRunning, syncPancakeConfig } from "../services/pancake-sync";
-import { discoverAgents, isStatsSyncRunning, syncConfigStats, upsertAgents } from "../services/pancake-stats";
+import {
+  discoverAgents,
+  discoverPagesAndAgents,
+  isStatsSyncRunning,
+  syncConfigStats,
+} from "../services/pancake-stats";
 import { AuditAction } from "../types/enums";
 
 // Cấu hình và đồng bộ Pancake.
@@ -192,84 +194,29 @@ router.put(
 /**
  * POST /api/pancake/:id/discover-pages — hỏi Pancake xem tài khoản có trang nào.
  *
- * Một lượt gọi này lấy được ba thứ, nên làm luôn cả ba:
- *   · danh sách trang (id, tên, nền tảng),
- *   · TOKEN RIÊNG của từng trang (`settings.page_access_token`) — nhờ vậy không
- *     phải gọi generate_page_access_token, lệnh đó sẽ VÔ HIỆU token cũ và có
- *     thể làm sập tích hợp khác mà phòng khám đang dùng,
- *   · danh sách NHÂN VIÊN của từng trang (F35).
+ * Một lượt gọi GET /pages lấy được cả ba: danh sách trang, token riêng của từng
+ * trang, và danh sách nhân viên (F35). Logic ở services/pancake-stats.ts để
+ * script vận hành trên máy chủ dùng lại được.
  */
 router.post(
   "/:id/discover-pages",
   requirePermission("settings.update"),
   asyncHandler(async (req, res) => {
-    const token = await resolveToken(req.params.id);
-    if (!token) throw new HttpError(400, "Kết nối Pancake chưa có token hoặc đã tắt");
+    const config = await prisma.pancakeConfig.findUniqueOrThrow({ where: { id: req.params.id } });
+    if (!config.active) throw new HttpError(400, "Kết nối Pancake đã tắt");
 
-    const pages = await fetchPages(token);
-    let created = 0;
-    let tokens = 0;
-
-    for (const p of pages) {
-      const platform = normalizePlatform(p.platform);
-      const pageToken = pageTokenOf(p);
-      const existing = await prisma.pancakePage.findUnique({ where: { pageId: String(p.id) } });
-      if (existing) {
-        await prisma.pancakePage.update({
-          where: { id: existing.id },
-          data: {
-            name: p.name,
-            platform,
-            // Token dán tay hay đã lưu thì giữ; chỉ ghi khi đang trống.
-            ...(pageToken && !existing.pageAccessTokenEnc
-              ? { pageAccessTokenEnc: encryptNullable(pageToken) }
-              : {}),
-          },
-        });
-        if (pageToken && !existing.pageAccessTokenEnc) tokens++;
-        continue;
-      }
-      await prisma.pancakePage.create({
-        data: {
-          configId: req.params.id,
-          pageId: String(p.id),
-          name: p.name,
-          platform,
-          pageAccessTokenEnc: pageToken ? encryptNullable(pageToken) : null,
-        },
-      });
-      created++;
-      if (pageToken) tokens++;
-    }
-
-    // F35: nhân viên đi kèm ngay trong phản hồi, lấy luôn cho khỏi phải bấm thêm.
-    const mine = new Set((await prisma.pancakePage.findMany({ where: { configId: req.params.id }, select: { pageId: true } })).map((x) => x.pageId));
-    const people = new Map<string, { pancakeUserId: string; name: string; fbId?: string | null; active: boolean }>();
-    for (const p of pages) {
-      if (!mine.has(String(p.id))) continue;
-      for (const u of p.users ?? []) {
-        if (!u?.user_id) continue;
-        const active = (u.status ?? "active").toLowerCase() === "active";
-        const prev = people.get(String(u.user_id));
-        people.set(String(u.user_id), {
-          pancakeUserId: String(u.user_id),
-          name: u.name?.trim() || prev?.name || "",
-          fbId: u.fb_id ?? prev?.fbId ?? null,
-          active: active || Boolean(prev?.active),
-        });
-      }
-    }
-    const agents = await upsertAgents(req.params.id, [...people.values()]).catch(() => 0);
+    const r = await discoverPagesAndAgents(config.id);
+    if (!r.found && r.errors.length) throw new HttpError(400, r.errors.join(" | "));
 
     await writeAudit({
       req,
       action: AuditAction.UPDATE,
       entity: "PancakeConfig",
-      entityId: req.params.id,
-      summary: `Dò trang Pancake: tìm thấy ${pages.length}, thêm mới ${created}, lưu ${tokens} token trang, ${agents} nhân viên`,
+      entityId: config.id,
+      summary: `Dò trang Pancake: tìm thấy ${r.found}, thêm mới ${r.created}, lưu ${r.tokens} token trang, ${r.agents} nhân viên`,
     });
 
-    res.json({ found: pages.length, created, tokens, agents });
+    res.json(r);
   })
 );
 

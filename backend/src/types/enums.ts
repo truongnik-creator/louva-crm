@@ -778,3 +778,48 @@ export type PackageStatus = (typeof PackageStatus)[keyof typeof PackageStatus];
 /** C4: kết quả cuộc gọi ghi tay. */
 export const CallResult = makeEnum({ ANSWERED: "ANSWERED", NO_ANSWER: "NO_ANSWER", BUSY: "BUSY", WRONG_NUMBER: "WRONG_NUMBER" });
 export type CallResult = (typeof CallResult)[keyof typeof CallResult];
+
+// ---------------------------------------------------------------------------
+// F36: báo cáo công việc hàng ngày lấy từ trang tính Google
+// ---------------------------------------------------------------------------
+
+/** Cách dữ liệu đi từ trang tính về CRM. */
+export const WorkReportSyncMode = makeEnum({
+  /** Apps Script trong trang tính tự POST về CRM — dùng được cho trang tính ẩn. */
+  PUSH: "PUSH",
+  /** Backend tự đọc trang tính; chỉ chạy khi link chia sẻ công khai. */
+  PULL: "PULL",
+});
+export type WorkReportSyncMode = (typeof WorkReportSyncMode)[keyof typeof WorkReportSyncMode];
+
+export const WorkReportSyncStatus = makeEnum({ NEVER: "NEVER", OK: "OK", ERROR: "ERROR" });
+export type WorkReportSyncStatus = (typeof WorkReportSyncStatus)[keyof typeof WorkReportSyncStatus];
+
+/**
+ * Tiến độ một dòng việc, chuẩn hoá từ chữ người dùng tự gõ trong trang tính
+ * ("Hoàn thành", "Đang làm", "Trễ"...) để đếm và lọc được.
+ */
+export const WorkTaskStatus = makeEnum({
+  DONE: "DONE",
+  IN_PROGRESS: "IN_PROGRESS",
+  LATE: "LATE",
+  PENDING: "PENDING",
+  CANCELLED: "CANCELLED",
+  /** Dòng ghi "NGHỈ" — không phải việc, nhưng phải giữ để biết ngày nghỉ. */
+  DAY_OFF: "DAY_OFF",
+  UNKNOWN: "UNKNOWN",
+});
+export type WorkTaskStatus = (typeof WorkTaskStatus)[keyof typeof WorkTaskStatus];
+
+/** Cột "Đánh giá bài đăng" theo bậc view của mẫu trang tính. */
+export const WorkPostRating = makeEnum({
+  /** Chưa tốt — dưới 5k view. */
+  BAD: "BAD",
+  /** Trung bình — từ 5k view. */
+  AVERAGE: "AVERAGE",
+  /** Tốt — từ 10k view. */
+  GOOD: "GOOD",
+  /** Xuất sắc — từ 50k view. */
+  EXCELLENT: "EXCELLENT",
+});
+export type WorkPostRating = (typeof WorkPostRating)[keyof typeof WorkPostRating];

@@ -3,12 +3,16 @@ import { logger } from "../lib/logger";
 import { normalizeName } from "../lib/text";
 import { startOfVnDay, vnDayKey, BUSINESS_TZ } from "../lib/datetime";
 import { UserStatus } from "../types/enums";
+import { encryptNullable } from "../lib/crypto";
 import {
   fetchPages,
   fetchUserStatistics,
+  normalizePlatform,
+  pageTokenOf,
   parseStatHour,
   resolvePageToken,
   resolveToken,
+  type PancakePageRaw,
   type PancakeUserStatBucket,
 } from "./pancake";
 
@@ -270,36 +274,14 @@ export async function upsertAgents(
   return touched;
 }
 
-/**
- * Dò nhân viên của một kết nối.
- *
- * Lấy từ GET /pages (một lượt gọi, token người dùng) chứ không gọi
- * /pages/{id}/users cho từng trang: phản hồi /pages đã mang sẵn `users[]` với
- * user_id, tên, fb_id và trạng thái, nên ít lượt gọi hơn và không cần token
- * trang. Trang nào CRM chưa đăng ký thì bỏ qua — không ôm nhân viên của trang
- * phòng khám không dùng.
- */
-export async function discoverAgents(configId: string): Promise<{ found: number; errors: string[] }> {
-  const config = await prisma.pancakeConfig.findUniqueOrThrow({
-    where: { id: configId },
-    include: { pages: { select: { pageId: true } } },
-  });
-  const token = await resolveToken(configId);
-  if (!token) return { found: 0, errors: ["Kết nối chưa có API token hoặc đã tắt"] };
-
-  const mine = new Set(config.pages.map((p) => p.pageId));
-  const errors: string[] = [];
+/** Gom nhân viên của những trang CRM đã đăng ký từ phản hồi GET /pages. */
+function agentsFromPages(
+  pages: PancakePageRaw[],
+  registered: Set<string>
+): Array<{ pancakeUserId: string; name: string; fbId?: string | null; active: boolean }> {
   const people = new Map<string, { pancakeUserId: string; name: string; fbId?: string | null; active: boolean }>();
-
-  let raw: Awaited<ReturnType<typeof fetchPages>>;
-  try {
-    raw = await fetchPages(token);
-  } catch (err) {
-    return { found: 0, errors: [err instanceof Error ? err.message : String(err)] };
-  }
-
-  for (const p of raw) {
-    if (!mine.has(String(p.id))) continue;
+  for (const p of pages) {
+    if (!registered.has(String(p.id))) continue;
     for (const u of p.users ?? []) {
       if (!u?.user_id) continue;
       const active = (u.status ?? "active").toLowerCase() === "active";
@@ -313,10 +295,97 @@ export async function discoverAgents(configId: string): Promise<{ found: number;
       });
     }
   }
-  if (!people.size) errors.push("Pancake không trả nhân viên nào cho các trang đã đăng ký");
+  return [...people.values()];
+}
 
-  const found = await upsertAgents(configId, [...people.values()]);
-  return { found, errors };
+export interface DiscoverResult {
+  found: number;
+  created: number;
+  /** Số trang vừa lưu được token riêng. */
+  tokens: number;
+  agents: number;
+  errors: string[];
+}
+
+/**
+ * Dò trang + token trang + nhân viên của một kết nối, bằng MỘT lượt gọi
+ * GET /pages.
+ *
+ * Phản hồi đó mang sẵn cả ba thứ (xem chú thích đầu services/pancake.ts), nên
+ * không cần gọi generate_page_access_token — lệnh ấy vô hiệu token cũ và có thể
+ * làm đứt tích hợp khác của phòng khám.
+ *
+ * Để ở service (không nằm trong route) vì cả route và script vận hành trên máy
+ * chủ đều cần chạy nó.
+ */
+export async function discoverPagesAndAgents(configId: string): Promise<DiscoverResult> {
+  const token = await resolveToken(configId);
+  if (!token) return { found: 0, created: 0, tokens: 0, agents: 0, errors: ["Kết nối chưa có API token hoặc đã tắt"] };
+
+  const pages = await fetchPages(token);
+  let created = 0;
+  let tokens = 0;
+
+  for (const p of pages) {
+    const platform = normalizePlatform(p.platform);
+    const pageToken = pageTokenOf(p);
+    const existing = await prisma.pancakePage.findUnique({ where: { pageId: String(p.id) } });
+    if (existing) {
+      // Token dán tay hay đã lưu thì giữ; chỉ ghi khi đang trống.
+      const fresh = pageToken && !existing.pageAccessTokenEnc;
+      await prisma.pancakePage.update({
+        where: { id: existing.id },
+        data: { name: p.name, platform, ...(fresh ? { pageAccessTokenEnc: encryptNullable(pageToken) } : {}) },
+      });
+      if (fresh) tokens++;
+      continue;
+    }
+    await prisma.pancakePage.create({
+      data: {
+        configId,
+        pageId: String(p.id),
+        name: p.name,
+        platform,
+        pageAccessTokenEnc: pageToken ? encryptNullable(pageToken) : null,
+      },
+    });
+    created++;
+    if (pageToken) tokens++;
+  }
+
+  const registered = new Set(
+    (await prisma.pancakePage.findMany({ where: { configId }, select: { pageId: true } })).map((x) => x.pageId)
+  );
+  const people = agentsFromPages(pages, registered);
+  const agents = await upsertAgents(configId, people);
+
+  return {
+    found: pages.length,
+    created,
+    tokens,
+    agents,
+    errors: people.length ? [] : ["Pancake không trả nhân viên nào cho các trang đã đăng ký"],
+  };
+}
+
+/** Chỉ dò lại NHÂN VIÊN (không đụng tới danh sách trang). */
+export async function discoverAgents(configId: string): Promise<{ found: number; errors: string[] }> {
+  const token = await resolveToken(configId);
+  if (!token) return { found: 0, errors: ["Kết nối chưa có API token hoặc đã tắt"] };
+
+  let pages: PancakePageRaw[];
+  try {
+    pages = await fetchPages(token);
+  } catch (err) {
+    return { found: 0, errors: [err instanceof Error ? err.message : String(err)] };
+  }
+
+  const registered = new Set(
+    (await prisma.pancakePage.findMany({ where: { configId }, select: { pageId: true } })).map((x) => x.pageId)
+  );
+  const people = agentsFromPages(pages, registered);
+  const found = await upsertAgents(configId, people);
+  return { found, errors: people.length ? [] : ["Pancake không trả nhân viên nào cho các trang đã đăng ký"] };
 }
 
 /** Khoá chống chạy chồng trong tiến trình (ngoài khoá của bộ chạy tác vụ). */
