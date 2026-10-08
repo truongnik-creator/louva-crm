@@ -9,7 +9,16 @@ export interface TagStyle {
   fg: string
 }
 
+/** Nhãn của CẢ HAI bộ bước (tra cứu). Danh sách bước đang dùng lấy từ useClinic().stages. */
 export const STAGES: Record<FunnelStage, TagStyle> = {
+  TIEP_CAN: { t: 'Tiếp cận', bg: '#EEF2FF', fg: '#4338CA' },
+  NHAN_TIN: { t: 'Nhắn tin', bg: '#FEF3C7', fg: '#B45309' },
+  CO_ANH: { t: 'Có ảnh', bg: '#FAE8FF', fg: '#A21CAF' },
+  LICH_COC: { t: 'Lịch cọc', bg: '#DBEAFE', fg: '#1D4ED8' },
+  DEN_CO_SO: { t: 'Đến cơ sở', bg: '#CFFAFE', fg: '#0E7490' },
+  LAM_DICH_VU: { t: 'Làm dịch vụ', bg: '#DCFCE7', fg: '#15803D' },
+  QUAY_LAI: { t: 'Quay lại', bg: '#D1FAE5', fg: '#047857' },
+  MAT_KHACH: { t: 'Mất khách', bg: '#FEE2E2', fg: '#B91C1C' },
   MOI: { t: 'Mới', bg: '#EEF2FF', fg: '#4338CA' },
   LIENHE: { t: 'Đã liên hệ', bg: '#FEF3C7', fg: '#B45309' },
   HEN: { t: 'Đã hẹn', bg: '#DBEAFE', fg: '#1D4ED8' },
@@ -77,6 +86,10 @@ export const LEAD_STAGE: Record<string, TagStyle> = {
 }
 
 export const PHOTO_STAGE_LABEL: Record<string, string> = {
+  D0: 'D0 (trước tiêm)',
+  D30: 'D30',
+  CHAT: 'Khách gửi qua chat',
+  CONSULT: 'Lúc tư vấn',
   PRE_OP: 'Trước mổ',
   INTRA_OP: 'Trong mổ',
   D1: 'Ngày 1',
@@ -85,6 +98,12 @@ export const PHOTO_STAGE_LABEL: Record<string, string> = {
   M3: 'Tháng 3',
   M6: 'Tháng 6',
   OTHER: 'Khác'
+}
+
+export const DEPOSIT_STATUS: Record<string, TagStyle> = {
+  CHO_COC: { t: 'Chờ cọc', bg: '#FEF3C7', fg: '#B45309' },
+  DA_COC: { t: 'Đã cọc', bg: '#DCFCE7', fg: '#15803D' },
+  HOAN_COC: { t: 'Đã hoàn cọc', bg: '#F1F5F9', fg: '#475569' }
 }
 
 export const PAYMENT_METHOD_LABEL: Record<string, string> = {

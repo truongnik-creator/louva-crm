@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, safeStorage } from 'electron'
 import { join } from 'path'
 import { is } from './is'
 import Store from 'electron-store'
@@ -17,6 +17,41 @@ const store = new Store<StoreSchema>({
   name: 'crm-auth',
   defaults: { accessToken: null, refreshToken: null, branchId: null }
 })
+
+/*
+ * T5: token KHÔNG lưu dạng rõ trong tệp JSON của electron-store nữa. Mã hoá
+ * bằng safeStorage (Keychain trên macOS, DPAPI trên Windows, libsecret trên
+ * Linux) rồi lưu base64 kèm tiền tố "enc:". Máy không có kho khoá hệ điều
+ * hành (Linux thiếu libsecret) thì KHÔNG lưu token: người dùng đăng nhập lại
+ * mỗi lần mở app, còn hơn để refresh token 7 ngày nằm trần trên đĩa.
+ */
+const ENC_PREFIX = 'enc:'
+
+function sealToken(value: string | null): string | null {
+  if (!value) return null
+  if (!safeStorage.isEncryptionAvailable()) return null
+  return ENC_PREFIX + safeStorage.encryptString(value).toString('base64')
+}
+
+function openToken(stored: string | null): string | null {
+  if (!stored) return null
+  if (!stored.startsWith(ENC_PREFIX)) return null // bản rõ cũ: bỏ, bắt đăng nhập lại
+  try {
+    return safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64'))
+  } catch {
+    return null
+  }
+}
+
+/** Chỉ cho mở ra ngoài các liên kết http/https (chặn file:, javascript:, smb:...). */
+function isSafeExternalUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
 
 let currentBackendStatus: BackendStatus = 'checking'
 
@@ -40,7 +75,9 @@ function createWindow(): BrowserWindow {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      // T5: preload chỉ dùng contextBridge + ipcRenderer nên chạy được trong sandbox.
+      sandbox: true,
+      webSecurity: true
     }
   })
 
@@ -49,8 +86,24 @@ function createWindow(): BrowserWindow {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (isSafeExternalUrl(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  // Không cho cửa sổ app bị điều hướng sang trang lạ (link độc trong tin nhắn
+  // khách, chuyển hướng...). Trang ngoài luôn mở bằng trình duyệt hệ thống.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow.webContents.getURL()
+    let sameOrigin = false
+    try {
+      sameOrigin = new URL(url).origin === new URL(current).origin
+    } catch {
+      sameOrigin = false
+    }
+    if (!sameOrigin && !url.startsWith('data:') && !url.startsWith('file:')) {
+      event.preventDefault()
+      if (isSafeExternalUrl(url)) void shell.openExternal(url)
+    }
   })
 
   // Show a lightweight loading state immediately; swapped for the real
@@ -85,20 +138,23 @@ async function startBackendAndLoadWindow(mainWindow: BrowserWindow): Promise<voi
 }
 
 ipcMain.handle('open-external', async (_event, url: string) => {
-  if (typeof url === 'string' && /^https?:\/\//.test(url)) {
+  if (typeof url === 'string' && isSafeExternalUrl(url)) {
     await shell.openExternal(url)
   }
 })
 
 ipcMain.handle('auth:get-tokens', () => {
-  return { accessToken: store.get('accessToken'), refreshToken: store.get('refreshToken') }
+  return {
+    accessToken: openToken(store.get('accessToken')),
+    refreshToken: openToken(store.get('refreshToken'))
+  }
 })
 
 ipcMain.handle(
   'auth:set-tokens',
   (_event, accessToken: string | null, refreshToken: string | null) => {
-    store.set('accessToken', accessToken)
-    store.set('refreshToken', refreshToken)
+    store.set('accessToken', sealToken(typeof accessToken === 'string' ? accessToken : null))
+    store.set('refreshToken', sealToken(typeof refreshToken === 'string' ? refreshToken : null))
   }
 )
 

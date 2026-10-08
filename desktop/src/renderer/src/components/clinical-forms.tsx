@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import { fetchPromotions, type PromotionRow } from '../lib/api-lo4'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   addMedicalEntry,
   createConsent,
@@ -14,7 +15,9 @@ import {
 import { useAuth } from '../lib/auth-context'
 import { toISODate, vnd } from '../lib/format'
 import { PHOTO_STAGE_LABEL } from '../lib/ui'
+import { useClinic } from '../lib/clinic-context'
 import { Modal, useToast } from './ui'
+import { SignaturePad, type SignaturePadHandle } from './SignaturePad'
 import type { Service, StaffUser } from '../lib/types'
 
 /* Các biểu mẫu thao tác của khối chuyên môn và kinh doanh.
@@ -229,6 +232,7 @@ export function ConsentModal({
   const [bodyText, setBodyText] = useState(CONSENT_TEMPLATES.SURGERY.body)
   const [signNow, setSignNow] = useState(true)
   const [saving, setSaving] = useState(false)
+  const padRef = useRef<SignaturePadHandle>(null)
 
   const pickType = (next: string): void => {
     setType(next)
@@ -240,10 +244,16 @@ export function ConsentModal({
   }
 
   const submit = async (): Promise<void> => {
+    // B16: ghi nhận "đã ký" thì phải có chữ ký tay thật, lưu kèm cam kết.
+    const signature = signNow ? await padRef.current?.toBlob() : null
+    if (signNow && !signature) {
+      fail('Khách chưa ký vào khung chữ ký.')
+      return
+    }
     setSaving(true)
     try {
       const form = await createConsent({ customerId, type, title, bodyText })
-      if (signNow) await signConsent(form.id)
+      if (signNow && signature) await signConsent(form.id, signature)
       say(signNow ? 'Đã tạo và ghi nhận khách đã ký cam kết.' : 'Đã tạo cam kết, chờ khách ký.')
       onDone()
     } catch (err) {
@@ -291,6 +301,12 @@ export function ConsentModal({
         <input type="checkbox" checked={signNow} onChange={(e) => setSignNow(e.target.checked)} />
         Khách đã ký trước mặt nhân viên
       </label>
+      {signNow ? (
+        <div className="field" style={{ marginTop: 8 }}>
+          <label>Chữ ký của khách</label>
+          <SignaturePad ref={padRef} />
+        </div>
+      ) : null}
       <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
         Ca mổ không xác nhận được nếu chưa có cam kết phẫu thuật đã ký.
       </div>
@@ -310,7 +326,9 @@ export function PhotoUploadModal({
   onDone: () => void
 }): React.JSX.Element {
   const { say, fail } = useToast()
-  const [stage, setStage] = useState('PRE_OP')
+  const clinic = useClinic()
+  const stageOptions = clinic.photoStages.length ? clinic.photoStages : Object.keys(PHOTO_STAGE_LABEL)
+  const [stage, setStage] = useState(stageOptions[0] ?? 'PRE_OP')
   const [note, setNote] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const [saving, setSaving] = useState(false)
@@ -350,9 +368,9 @@ export function PhotoUploadModal({
       <div className="field">
         <label>Mốc chụp</label>
         <select className="input" value={stage} onChange={(e) => setStage(e.target.value)}>
-          {Object.entries(PHOTO_STAGE_LABEL).map(([k, v]) => (
+          {stageOptions.map((k) => (
             <option key={k} value={k}>
-              {v}
+              {PHOTO_STAGE_LABEL[k] ?? k}
             </option>
           ))}
         </select>
@@ -386,6 +404,9 @@ interface LineDraft {
   quantity: number
   unitPrice: number
   discount: number
+  /** F13: đợt ưu đãi, F21: lý do giảm ngoài ưu đãi. */
+  promotionId: string
+  discountReason: string
 }
 
 /**
@@ -413,11 +434,27 @@ export function DealModal({
   const [useSchedule, setUseSchedule] = useState(mode === 'contract')
   const [depositPct, setDepositPct] = useState(30)
   const [saving, setSaving] = useState(false)
+  const [promotions, setPromotions] = useState<PromotionRow[]>([])
 
   useEffect(() => {
     fetchServices().then(setServices).catch(() => undefined)
     fetchStaff().then(setStaff).catch(() => undefined)
+    fetchPromotions({ active: '1' }).then(setPromotions).catch(() => undefined)
   }, [])
+
+  const promosFor = (serviceId: string): PromotionRow[] =>
+    promotions.filter((p) => !p.services.length || p.services.some((x) => x.serviceId === serviceId))
+
+  const applyPromotion = (i: number, promotionId: string): void =>
+    setLines((ls) =>
+      ls.map((l, idx) => {
+        if (idx !== i) return l
+        const p = promotions.find((x) => x.id === promotionId)
+        const gross = l.quantity * l.unitPrice
+        const discount = !p ? 0 : p.kind === 'PERCENT' ? Math.round((gross * p.value) / 100) : Math.min(gross, p.value * l.quantity)
+        return { ...l, promotionId, discount }
+      })
+    )
 
   useEffect(() => {
     if (user) setConsultantId(user.id)
@@ -433,7 +470,7 @@ export function DealModal({
     if (!svc) return
     setLines((ls) => [
       ...ls,
-      { serviceId: svc.id, name: svc.name, quantity: 1, unitPrice: svc.price ?? 0, discount: 0 }
+      { serviceId: svc.id, name: svc.name, quantity: 1, unitPrice: svc.price ?? 0, discount: 0, promotionId: '', discountReason: '' }
     ])
   }
 
@@ -472,12 +509,21 @@ export function DealModal({
         name: l.name,
         quantity: l.quantity,
         unitPrice: l.unitPrice,
-        discount: l.discount
+        discount: l.discount,
+        promotionId: l.promotionId || undefined,
+        discountReason: l.discountReason.trim() || undefined
       }))
 
       if (mode === 'quotation') {
-        const q = await createQuotation({ customerId, items, note: note || undefined })
-        say(`Đã lập báo giá ${q.code} — ${vnd(total)}.`)
+        const q = (await createQuotation({ customerId, items, note: note || undefined })) as {
+          code: string
+          approval?: { status: string; maxExcessPercent: number; capPercent: number }
+        }
+        if (q.approval?.status === 'PENDING') {
+          say(`Đã lập báo giá ${q.code}: giảm ${q.approval.maxExcessPercent}% vượt trần ${q.approval.capPercent}%, đang chờ quản lý duyệt.`)
+        } else {
+          say(`Đã lập báo giá ${q.code}: ${vnd(total)}.`)
+        }
       } else {
         const c = await createContract({
           customerId,
@@ -572,6 +618,33 @@ export function DealModal({
                     value={l.discount}
                     onChange={(e) => patch(i, 'discount', Number(e.target.value))}
                   />
+                  {promosFor(l.serviceId).length ? (
+                    <select
+                      className="input"
+                      style={{ marginTop: 4 }}
+                      value={l.promotionId}
+                      onChange={(e) => applyPromotion(i, e.target.value)}
+                    >
+                      <option value="">Không dùng ưu đãi</option>
+                      {promosFor(l.serviceId).map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.kind === 'PERCENT' ? `${p.value}%` : vnd(p.value)}
+                          {p.slotsLeft != null ? `, còn ${p.slotsLeft} suất` : ''})
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                  {l.discount > 0 && !l.promotionId ? (
+                    <input
+                      className="input"
+                      style={{ marginTop: 4 }}
+                      placeholder="Lý do giảm (bắt buộc)"
+                      value={l.discountReason}
+                      onChange={(e) =>
+                        setLines((ls) => ls.map((x, idx) => (idx === i ? { ...x, discountReason: e.target.value } : x)))
+                      }
+                    />
+                  ) : null}
                 </td>
                 <td>
                   <b>{vnd(l.quantity * l.unitPrice - l.discount)}</b>
@@ -688,6 +761,10 @@ export function ScheduleProcedureModal({
   const [durationMin, setDurationMin] = useState(120)
   const [teamNote, setTeamNote] = useState('')
   const [materialNote, setMaterialNote] = useState('')
+  // F14: dịch vụ tiêm: vùng tiêm, lượng tiêm (bước 0,1cc), điều dưỡng phụ.
+  const [injectionArea, setInjectionArea] = useState('')
+  const [volumeCc, setVolumeCc] = useState('')
+  const [nurseId, setNurseId] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -698,7 +775,7 @@ export function ScheduleProcedureModal({
       // sẵn ở đây để nhân viên không chọn nhầm rồi mới bị báo lỗi.
       setCustomers(
         cs.items
-          .filter((c) => ['CHOT', 'PT', 'HAUPHAU', 'TAIMUA'].includes(c.stage))
+          .filter((c) => ['CHOT', 'PT', 'HAUPHAU', 'TAIMUA', 'LICH_COC', 'DEN_CO_SO', 'LAM_DICH_VU', 'QUAY_LAI'].includes(c.stage))
           .map((c) => ({ id: c.id, name: c.name, code: c.code, stage: c.stage }))
       )
       setRooms((await fetchRooms().catch(() => [])).filter((r) => r.type === 'OPERATING' || r.type === 'MINOR_OP'))
@@ -735,7 +812,10 @@ export function ScheduleProcedureModal({
         scheduledAt: new Date(`${date}T${time}`).toISOString(),
         durationMin,
         teamNote: teamNote || undefined,
-        materialNote: materialNote || undefined
+        materialNote: materialNote || undefined,
+        injectionArea: injectionArea || undefined,
+        volumeCc: volumeCc ? Number(volumeCc.replace(',', '.')) : undefined,
+        nurseId: nurseId || undefined
       })
       say('Đã xếp ca mổ. Ca chỉ xác nhận được khi checklist tiền phẫu đủ 7/7.')
       onDone()
@@ -853,6 +933,29 @@ export function ScheduleProcedureModal({
       <div className="field">
         <label>Vật tư dự trù</label>
         <input className="input" value={materialNote} onChange={(e) => setMaterialNote(e.target.value)} />
+      </div>
+      <div className="grid" style={{ gridTemplateColumns: '2fr 1fr 2fr', gap: 8 }}>
+        <div className="field">
+          <label>Vùng tiêm</label>
+          <input className="input" value={injectionArea} onChange={(e) => setInjectionArea(e.target.value)} placeholder="Môi, cằm, rãnh cười" />
+        </div>
+        <div className="field">
+          <label>Lượng tiêm (cc)</label>
+          <input className="input" type="number" step={0.1} min={0} value={volumeCc} onChange={(e) => setVolumeCc(e.target.value)} placeholder="1,5" />
+        </div>
+        <div className="field">
+          <label>Điều dưỡng</label>
+          <select className="input" value={nurseId} onChange={(e) => setNurseId(e.target.value)}>
+            <option value="">Không chọn</option>
+            {staff
+              .filter((s) => s.roles.some((r) => r.code === 'DIEU_DUONG'))
+              .map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+          </select>
+        </div>
       </div>
     </Modal>
   )

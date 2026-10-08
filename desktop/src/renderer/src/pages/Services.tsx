@@ -4,7 +4,8 @@ import {
   fetchServiceCategories,
   fetchServices,
   getApiErrorMessage,
-  setServicePrice
+  setServicePrice,
+  updateService
 } from '../lib/api'
 import { useAuth } from '../lib/auth-context'
 import { minutesLabel, vnd } from '../lib/format'
@@ -110,6 +111,7 @@ export default function Services(): React.JSX.Element {
                 <th>Loại</th>
                 <th>Thời lượng</th>
                 <th>Nghỉ dưỡng</th>
+                <th>Tái tiêm</th>
                 <th>Vô cảm</th>
                 <th>Giá niêm yết</th>
                 <th>Giá sàn</th>
@@ -134,6 +136,29 @@ export default function Services(): React.JSX.Element {
                   </td>
                   <td>{minutesLabel(s.durationMin)}</td>
                   <td>{s.recoveryDays != null ? `${s.recoveryDays} ngày` : '—'}</td>
+                  <td>
+                    {s.retreatDays != null ? `${s.retreatDays} ngày` : <span className="muted">Không nhắc</span>}
+                    {can('service.update') ? (
+                      <button
+                        className="btn sec sm"
+                        style={{ marginLeft: 4 }}
+                        title="Số ngày tái tiêm theo dịch vụ (F10)"
+                        onClick={async () => {
+                          const raw = window.prompt('Số ngày tái tiêm (để trống = không nhắc):', s.retreatDays != null ? String(s.retreatDays) : '')
+                          if (raw === null) return
+                          try {
+                            await updateService(s.id, { retreatDays: raw.trim() ? Number(raw) : null })
+                            say('Đã lưu số ngày tái tiêm.')
+                            void load()
+                          } catch (err) {
+                            fail(getApiErrorMessage(err))
+                          }
+                        }}
+                      >
+                        Sửa
+                      </button>
+                    ) : null}
+                  </td>
                   <td className="muted">{s.anesthesia ? (ANESTHESIA_LABEL[s.anesthesia] ?? s.anesthesia) : '—'}</td>
                   <td>
                     <b>{s.price != null ? vnd(s.price) : <span className="muted">chưa đặt giá</span>}</b>
@@ -154,7 +179,7 @@ export default function Services(): React.JSX.Element {
       </div>
 
       <div className="muted" style={{ fontSize: 12, marginTop: 9 }}>
-        Báo giá thấp hơn giá sàn sẽ bị hệ thống chặn khi lập báo giá — đây là hàng rào chống phá giá.
+        Giảm so với giá niêm yết chỉ đi qua đợt ưu đãi hoặc trần giảm theo vai (vượt trần chờ quản lý duyệt). Giá sàn (nếu đặt, thấp hơn giá niêm yết) là mốc tuyệt đối không ai bán thấp hơn.
       </div>
 
       {pricing ? (

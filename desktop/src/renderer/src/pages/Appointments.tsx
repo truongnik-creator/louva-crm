@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   checkIn,
   createAppointment,
   fetchAppointments,
+  fetchCustomer,
   fetchCustomers,
   fetchRooms,
   fetchServices,
@@ -12,7 +14,9 @@ import {
 } from '../lib/api'
 import { useAuth } from '../lib/auth-context'
 import { hhmm, toISODate, weekdayLongVi } from '../lib/format'
-import { APPOINTMENT_STATUS, tagStyleOf } from '../lib/ui'
+import { APPOINTMENT_STATUS, DEPOSIT_STATUS, tagStyleOf } from '../lib/ui'
+import { useClinic } from '../lib/clinic-context'
+import { DepositPanel } from '../components/deposit-parts'
 import { Drawer, Empty, Modal, Row, Tag, useToast } from '../components/ui'
 import type { Appointment, CustomerListItem, Room, Service, StaffUser } from '../lib/types'
 
@@ -43,9 +47,18 @@ interface Column {
   kind: 'doctor' | 'room'
 }
 
+/** Khách chọn sẵn khi mở trang từ nút Đặt lịch ở Hộp thư (B10: /lich-hen?customerId=). */
+interface PresetCustomer {
+  id: string
+  name: string
+  code: string
+  phone: string | null
+}
+
 export default function Appointments(): React.JSX.Element {
   const { can, user, branchId } = useAuth()
   const { say, fail } = useToast()
+  const clinic = useClinic()
 
   const [date, setDate] = useState(() => toISODate(new Date()))
   const [items, setItems] = useState<Appointment[]>([])
@@ -54,7 +67,11 @@ export default function Appointments(): React.JSX.Element {
   const [doctors, setDoctors] = useState<StaffUser[]>([])
   const [rooms, setRooms] = useState<Room[]>([])
   const [selected, setSelected] = useState<Appointment | null>(null)
-  const [creating, setCreating] = useState<{ startAt: string; column: Column } | null>(null)
+  const [creating, setCreating] = useState<{ startAt: string; column: Column; customer?: PresetCustomer } | null>(
+    null
+  )
+  const [searchParams, setSearchParams] = useSearchParams()
+  const presetCustomerId = searchParams.get('customerId')
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
@@ -101,6 +118,32 @@ export default function Appointments(): React.JSX.Element {
     const roomCols: Column[] = rooms.map((r) => ({ key: r.id, label: r.name, kind: 'room' }))
     return [...doctorCols.values(), ...roomCols]
   }, [doctors, rooms, items])
+
+  // B10: đến từ Hộp thư với ?customerId= thì mở sẵn form đặt lịch cho khách đó.
+  useEffect(() => {
+    if (!presetCustomerId || !can('appointment.create')) return
+    let cancelled = false
+    fetchCustomer(presetCustomerId)
+      .then((c) => {
+        if (cancelled) return
+        setCreating({
+          startAt: `${date}T09:00`,
+          column: { key: '', label: '', kind: 'doctor' },
+          customer: { id: c.id, name: c.name, code: c.code, phone: c.phone ?? null }
+        })
+      })
+      .catch((err) => !cancelled && fail(getApiErrorMessage(err)))
+    return () => {
+      cancelled = true
+    }
+    // Chỉ chạy khi mã khách trên URL đổi; ngày đang xem lấy tại thời điểm mở.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetCustomerId, can, fail])
+
+  const closeCreating = (): void => {
+    setCreating(null)
+    if (presetCustomerId) setSearchParams({}, { replace: true })
+  }
 
   const visible = useMemo(
     () => (filter === 'all' ? items : items.filter((a) => a.status === filter)),
@@ -285,7 +328,11 @@ export default function Appointments(): React.JSX.Element {
                             {hhmm(cell.appointment.startAt)} · {cell.appointment.customer.name}
                           </b>
                           {cell.appointment.title}
-                          <div style={{ opacity: 0.8, marginTop: 2 }}>{s.t}</div>
+                          <div style={{ opacity: 0.8, marginTop: 2 }}>
+                            {s.t}
+                            {cell.appointment.depositStatus ? ` · ${tagStyleOf(DEPOSIT_STATUS, cell.appointment.depositStatus).t}` : ''}
+                            {` · ${clinic.stageStyle(cell.appointment.customer.stage).t}`}
+                          </div>
                         </div>
                       </div>
                     )
@@ -309,9 +356,11 @@ export default function Appointments(): React.JSX.Element {
         </div>
       )}
 
-      <div className="muted" style={{ fontSize: 12, marginTop: 9 }}>
-        Ca phẫu thuật không đặt tại đây — phải qua Phòng mổ · Lịch mổ để kiểm tra checklist tiền phẫu.
-      </div>
+      {!clinic.isInjection ? (
+        <div className="muted" style={{ fontSize: 12, marginTop: 9 }}>
+          Ca phẫu thuật không đặt tại đây, phải qua Phòng mổ · Lịch mổ để kiểm tra checklist tiền phẫu.
+        </div>
+      ) : null}
 
       {selected ? (
         <Drawer title={`Lịch hẹn · ${hhmm(selected.startAt)}`} onClose={() => setSelected(null)}>
@@ -321,6 +370,7 @@ export default function Appointments(): React.JSX.Element {
           <table>
             <tbody>
               <Row label="Khách hàng" value={`${selected.customer.name} (${selected.customer.code})`} />
+              <Row label="Bước khách" value={<Tag style={clinic.stageStyle(selected.customer.stage)} />} />
               <Row label="Số điện thoại" value={selected.customer.phone ?? '—'} />
               <Row label="Nội dung" value={selected.title} />
               <Row label="Bác sĩ" value={selected.doctor?.name ?? '—'} />
@@ -329,6 +379,14 @@ export default function Appointments(): React.JSX.Element {
               <Row label="Ghi chú" value={selected.note ?? '—'} />
             </tbody>
           </table>
+
+          <DepositPanel
+            appointment={selected}
+            onChanged={() => {
+              setSelected(null)
+              void load()
+            }}
+          />
 
           <div style={{ display: 'grid', gap: 7, marginTop: 14 }}>
             {can('visit.create') && selected.status !== 'ARRIVED' && !selected.visit ? (
@@ -359,9 +417,11 @@ export default function Appointments(): React.JSX.Element {
         <NewAppointmentModal
           startAt={creating.startAt}
           column={creating.column}
-          onClose={() => setCreating(null)}
+          columns={columns}
+          presetCustomer={creating.customer}
+          onClose={closeCreating}
           onCreated={() => {
-            setCreating(null)
+            closeCreating()
             void load()
           }}
         />
@@ -372,24 +432,34 @@ export default function Appointments(): React.JSX.Element {
 
 function NewAppointmentModal({
   startAt,
-  column,
+  column: initialColumn,
+  columns,
+  presetCustomer,
   onClose,
   onCreated
 }: {
   startAt: string
   column: Column
+  columns: Column[]
+  presetCustomer?: PresetCustomer
   onClose: () => void
   onCreated: () => void
 }): React.JSX.Element {
   const { say, fail } = useToast()
   const [query, setQuery] = useState('')
-  const [customers, setCustomers] = useState<CustomerListItem[]>([])
-  const [customerId, setCustomerId] = useState('')
+  const [customers, setCustomers] = useState<Array<Pick<CustomerListItem, 'id' | 'name' | 'code' | 'phone'>>>(
+    presetCustomer ? [presetCustomer] : []
+  )
+  const [customerId, setCustomerId] = useState(presetCustomer?.id ?? '')
+  const [columnKey, setColumnKey] = useState(initialColumn.key)
+  const column = columns.find((c) => c.key === columnKey) ?? initialColumn
   const [services, setServices] = useState<Service[]>([])
   const [serviceId, setServiceId] = useState('')
   const [title, setTitle] = useState('Tư vấn lần đầu')
   const [when, setWhen] = useState(startAt)
   const [saving, setSaving] = useState(false)
+  const clinic = useClinic()
+  const [deposit, setDeposit] = useState(String(clinic.deposit.defaultAmount || 0))
 
   useEffect(() => {
     fetchServices().then(setServices).catch(() => undefined)
@@ -398,15 +468,23 @@ function NewAppointmentModal({
   useEffect(() => {
     const timer = window.setTimeout(() => {
       fetchCustomers({ q: query || undefined, limit: 20 })
-        .then((r) => setCustomers(r.items))
+        .then((r) =>
+          setCustomers(
+            presetCustomer && !r.items.some((c) => c.id === presetCustomer.id) ? [presetCustomer, ...r.items] : r.items
+          )
+        )
         .catch(() => undefined)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [query])
+  }, [query, presetCustomer])
 
   const submit = async (): Promise<void> => {
     if (!customerId) {
       fail('Chọn khách hàng trước khi đặt lịch.')
+      return
+    }
+    if (columns.length && !column.key) {
+      fail('Chọn bác sĩ hoặc phòng để lịch hiện trên lưới.')
       return
     }
     setSaving(true)
@@ -416,7 +494,8 @@ function NewAppointmentModal({
         title,
         serviceId: serviceId || undefined,
         startAt: new Date(when).toISOString(),
-        ...(column.kind === 'doctor' ? { doctorId: column.key } : { roomId: column.key })
+        depositAmount: Math.max(0, Number(deposit.replace(/\D/g, '')) || 0),
+        ...(column.key ? (column.kind === 'doctor' ? { doctorId: column.key } : { roomId: column.key }) : {})
       })
       say('Đã đặt lịch hẹn.')
       onCreated()
@@ -429,7 +508,7 @@ function NewAppointmentModal({
 
   return (
     <Modal
-      title={`Đặt lịch hẹn — ${column.label}`}
+      title={column.label ? `Đặt lịch hẹn · ${column.label}` : 'Đặt lịch hẹn'}
       onClose={onClose}
       footer={
         <>
@@ -457,6 +536,20 @@ function NewAppointmentModal({
           ))}
         </select>
       </div>
+      {columns.length ? (
+        <div className="field">
+          <label>Bác sĩ hoặc phòng</label>
+          <select className="input" value={columnKey} onChange={(e) => setColumnKey(e.target.value)}>
+            <option value="">Chưa chọn</option>
+            {columns.map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.kind === 'doctor' ? 'Bác sĩ: ' : 'Phòng: '}
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
       <div className="field">
         <label>Dịch vụ (quyết định thời lượng)</label>
         <select
@@ -483,6 +576,13 @@ function NewAppointmentModal({
       <div className="field">
         <label>Thời gian bắt đầu</label>
         <input className="input" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Tiền cọc yêu cầu (đồng, 0 là không cọc)</label>
+        <input className="input" inputMode="numeric" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
+        <div className="muted" style={{ fontSize: 11.5, marginTop: 3 }}>
+          Lịch có cọc sinh mã QR chuyển khoản, nội dung là mã lịch. Lễ tân bấm "Đã nhận cọc" khi tiền về.
+        </div>
       </div>
     </Modal>
   )

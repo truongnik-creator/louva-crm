@@ -28,13 +28,14 @@ let backendIsExternal = false
 
 interface SecretStoreSchema {
   jwtSecret: string
+  encryptionKey: string
 }
 
 // Persisted locally so the backend's JWT signing secret is stable across
 // restarts even though the backend itself ships with no .env file.
 const secretStore = new Store<SecretStoreSchema>({
   name: 'crm-backend-secret',
-  defaults: { jwtSecret: '' }
+  defaults: { jwtSecret: '', encryptionKey: '' }
 })
 
 function getOrCreateJwtSecret(): string {
@@ -44,6 +45,22 @@ function getOrCreateJwtSecret(): string {
     secretStore.set('jwtSecret', secret)
   }
   return secret
+}
+
+/**
+ * 32-byte key the backend uses to encrypt before/after photos and Zalo
+ * secrets at rest. Kept here (next to the JWT secret) rather than letting the
+ * backend generate `data/.enc-key` on its own, because in a packaged app that
+ * path lives inside the read-only .app bundle and would be lost on every
+ * update — taking every encrypted photo with it.
+ */
+function getOrCreateEncryptionKey(): string {
+  let key = secretStore.get('encryptionKey')
+  if (!key) {
+    key = randomBytes(32).toString('hex')
+    secretStore.set('encryptionKey', key)
+  }
+  return key
 }
 
 /** Directory that contains the backend's package.json / dist / prisma folder. */
@@ -143,6 +160,10 @@ export async function ensureBackendRunning(
     NODE_ENV: is.dev ? 'development' : 'production',
     DATABASE_URL: process.env.CRM_DATABASE_URL ?? `file:${dbPath}`,
     JWT_SECRET: process.env.CRM_JWT_SECRET ?? getOrCreateJwtSecret(),
+    ENCRYPTION_KEY: process.env.CRM_ENCRYPTION_KEY ?? getOrCreateEncryptionKey(),
+    // Photos/attachments go next to the SQLite file in userData for the same
+    // reason: the packaged app's resources dir is not a writable location.
+    STORAGE_DIR: process.env.CRM_STORAGE_DIR ?? join(app.getPath('userData'), 'storage'),
     CORS_ORIGIN: process.env.CRM_CORS_ORIGIN ?? '*',
     // Run the backend script under Electron's own bundled Node runtime
     // instead of requiring a system-wide `node` install or shipping a

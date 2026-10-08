@@ -1397,11 +1397,15 @@ function UseModal({
         <input
           className="input"
           type="number"
-          min={1}
+          min={0.1}
+          step={0.1}
           max={lot.quantity}
           value={quantity}
           onChange={(e) => setQuantity(Number(e.target.value))}
         />
+        <div className="muted" style={{ fontSize: 11.5 }}>
+          Nhập lẻ theo 0,1 đơn vị (0,5 ống). Kho trừ theo số ống đã mở; giá vốn tính theo lượng dùng thật.
+        </div>
       </div>
       <div className="field">
         <label>Ghi chú (ca mổ, vị trí…)</label>

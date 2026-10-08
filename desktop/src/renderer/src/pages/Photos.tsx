@@ -16,7 +16,7 @@ import type { CustomerListItem, PhotoSet } from '../lib/types'
  *
  * Ảnh không có URL tĩnh: mỗi tấm tải qua API có kiểm quyền rồi dựng blob. */
 
-const STAGE_ORDER = ['PRE_OP', 'INTRA_OP', 'D1', 'D7', 'M1', 'M3', 'M6', 'OTHER']
+const STAGE_ORDER = ['D0', 'CONSULT', 'CHAT', 'PRE_OP', 'INTRA_OP', 'D1', 'D7', 'D30', 'M1', 'M3', 'M6', 'OTHER']
 
 export default function Photos(): React.JSX.Element {
   const { can, branchId } = useAuth()

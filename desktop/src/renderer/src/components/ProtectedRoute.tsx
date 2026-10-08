@@ -1,5 +1,5 @@
 import React from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../lib/auth-context'
 import { Spinner } from './ui'
 
@@ -15,9 +15,16 @@ export default function ProtectedRoute({
   permission?: string
 }): React.JSX.Element {
   const { user, loading, can } = useAuth()
+  const location = useLocation()
 
   if (loading) return <Spinner />
   if (!user) return <Navigate to="/login" replace />
+
+  // S1: mật khẩu tạm (tài khoản seed, quản trị cấp lại) phải đổi trước khi làm
+  // việc. Backend cũng chặn mọi API nghiệp vụ, đây chỉ là lớp điều hướng.
+  if (user.mustChangePassword && location.pathname !== '/doi-mat-khau') {
+    return <Navigate to="/doi-mat-khau" replace />
+  }
 
   if (permission && !can(permission)) {
     return (

@@ -9,10 +9,12 @@ import Login from './pages/Login'
 import ChangePassword from './pages/ChangePassword'
 import Dashboard from './pages/Dashboard'
 import Inbox from './pages/Inbox'
+import QuickReplies from './pages/QuickReplies'
 import Appointments from './pages/Appointments'
 import Queue from './pages/Queue'
 import Customers from './pages/Customers'
 import CustomerDetail from './pages/CustomerDetail'
+import CustomerDuplicates from './pages/CustomerDuplicates'
 import Leads from './pages/Leads'
 import Contracts from './pages/Contracts'
 import Debts from './pages/Debts'
@@ -32,10 +34,37 @@ import ZaloConfigPage from './pages/ZaloConfigPage'
 import AuditLog from './pages/AuditLog'
 import Reports from './pages/Reports'
 import Soon from './pages/Soon'
+import CustomerBoard from './pages/CustomerBoard'
+import CustomerImport from './pages/CustomerImport'
+import ConsentTemplates from './pages/ConsentTemplates'
+import JobLog from './pages/JobLog'
+import MyTasks from './pages/MyTasks'
+import Outreach from './pages/Outreach'
+import Promotions from './pages/Promotions'
+import SalesScripts from './pages/SalesScripts'
+import Analytics from './pages/Analytics'
+import Payroll from './pages/Payroll'
+import Growth from './pages/Growth'
+import ConversationScores from './pages/ConversationScores'
+import Consultations from './pages/Consultations'
+import CaseLibrary from './pages/CaseLibrary'
+import Reengage from './pages/Reengage'
+import CounterClose from './pages/CounterClose'
+import UpsellRules from './pages/UpsellRules'
+import CrmReports from './pages/CrmReports'
+import StageChecklist from './pages/StageChecklist'
+import { useClinic } from './lib/clinic-context'
 
 /* Đường dẫn tiếng Việt không dấu, khớp với MENU trong components/AppShell.tsx.
    Mỗi route có `permission` tương ứng quyền backend — trùng khớp cố ý để giấu
    menu và chặn route dùng chung một nguồn sự thật. */
+
+/** F6: màn chỉ dành cho phòng khám phẫu thuật; chế độ tiêm thì về trang chủ. */
+function SurgeryOnly({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const clinic = useClinic()
+  if (clinic.loaded && clinic.isInjection) return <Navigate to="/" replace />
+  return <>{children}</>
+}
 
 export default function App(): React.JSX.Element {
   const { loading } = useAuth()
@@ -55,6 +84,79 @@ export default function App(): React.JSX.Element {
       >
         <Route index element={<Dashboard />} />
         <Route path="doi-mat-khau" element={<ChangePassword />} />
+        <Route path="viec-cua-toi" element={<MyTasks />} />
+
+        {/* Lô 4 · Đợt 2 */}
+        <Route
+          path="gui-tin-theo-nhom"
+          element={
+            <ProtectedRoute permission="inbox.broadcast">
+              <Outreach />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="uu-dai"
+          element={
+            <ProtectedRoute permission="sales_order.read">
+              <Promotions />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="duyet-giam-gia"
+          element={
+            <ProtectedRoute permission="sales_order.approve_discount">
+              <Promotions />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="kich-ban-ban-hang"
+          element={
+            <ProtectedRoute permission="inbox.manage_scripts">
+              <SalesScripts />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="nhat-ky-tac-vu"
+          element={
+            <ProtectedRoute permission="settings.read">
+              <JobLog />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Lô 5 · Đợt 3: đo lường, lương thưởng, tăng trưởng */}
+        <Route path="do-luong" element={<Analytics />} />
+        <Route
+          path="ky-luong"
+          element={
+            <ProtectedRoute permission="hr.read">
+              <Payroll />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="tang-truong" element={<Growth />} />
+        <Route
+          path="cham-hoi-thoai"
+          element={
+            <ProtectedRoute permission="inbox.manage_scripts">
+              <ConversationScores />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Lô 6: AI5 nháp tin chăm lại khách im lặng */}
+        <Route
+          path="cham-lai-khach"
+          element={
+            <ProtectedRoute permission="inbox.reengage">
+              <Reengage />
+            </ProtectedRoute>
+          }
+        />
 
         {/* Hành chính phòng khám */}
         <Route
@@ -85,7 +187,9 @@ export default function App(): React.JSX.Element {
           path="phong-mo"
           element={
             <ProtectedRoute permission="surgery_schedule.read">
-              <SurgerySchedule />
+              <SurgeryOnly>
+                <SurgerySchedule />
+              </SurgeryOnly>
             </ProtectedRoute>
           }
         />
@@ -107,12 +211,37 @@ export default function App(): React.JSX.Element {
         />
 
         {/* Chuyên môn thẩm mỹ */}
-        <Route path="tu-van" element={<Soon />} />
+        <Route
+          path="tu-van"
+          element={
+            <ProtectedRoute permission="consultation.read">
+              <Consultations />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="chot-tai-quay"
+          element={
+            <ProtectedRoute permission="visit.read">
+              <CounterClose />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="goi-y-ban-kem"
+          element={
+            <ProtectedRoute permission="customer.read">
+              <UpsellRules />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="ho-so-phau-thuat"
           element={
             <ProtectedRoute permission="surgery_schedule.read">
-              <ProcedureRecords />
+              <SurgeryOnly>
+                <ProcedureRecords />
+              </SurgeryOnly>
             </ProtectedRoute>
           }
         />
@@ -132,7 +261,14 @@ export default function App(): React.JSX.Element {
             </ProtectedRoute>
           }
         />
-        <Route path="thu-vien-case" element={<Soon />} />
+        <Route
+          path="thu-vien-case"
+          element={
+            <ProtectedRoute permission="case_study.read">
+              <CaseLibrary />
+            </ProtectedRoute>
+          }
+        />
 
         {/* Kinh doanh */}
         <Route
@@ -144,10 +280,58 @@ export default function App(): React.JSX.Element {
           }
         />
         <Route
+          path="mau-tin-nhanh"
+          element={
+            <ProtectedRoute permission="inbox.manage_templates">
+              <QuickReplies />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="khach-hang"
           element={
             <ProtectedRoute permission="customer.read">
               <Customers />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="bang-buoc-khach"
+          element={
+            <ProtectedRoute permission="customer.read">
+              <CustomerBoard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="viec-theo-buoc"
+          element={
+            <ProtectedRoute permission="customer.read">
+              <StageChecklist />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="bao-cao-crm-360"
+          element={
+            <ProtectedRoute permission="customer.read">
+              <CrmReports />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="nhap-khach"
+          element={
+            <ProtectedRoute permission="customer.import">
+              <CustomerImport />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="khach-hang/trung-lap"
+          element={
+            <ProtectedRoute permission="customer.merge">
+              <CustomerDuplicates />
             </ProtectedRoute>
           }
         />
@@ -336,7 +520,14 @@ export default function App(): React.JSX.Element {
             </ProtectedRoute>
           }
         />
-        <Route path="mau-bieu" element={<Soon />} />
+        <Route
+          path="mau-bieu"
+          element={
+            <ProtectedRoute permission="settings.read">
+              <ConsentTemplates />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="cai-dat-he-thong"
           element={

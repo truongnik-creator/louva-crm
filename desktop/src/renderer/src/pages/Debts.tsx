@@ -4,6 +4,7 @@ import { createPayment, fetchDebts, fetchPayments, getApiErrorMessage } from '..
 import { useAuth } from '../lib/auth-context'
 import { dateTimeVi, dateVi, vnd } from '../lib/format'
 import { INVOICE_STATUS, PAYMENT_METHOD_LABEL, tagStyleOf } from '../lib/ui'
+import { useOpenDeposit } from '../components/deposit-parts'
 import { Empty, Modal, Tag, useToast } from '../components/ui'
 import type { DebtReport, Invoice, Payment } from '../lib/types'
 
@@ -205,7 +206,9 @@ function CollectModal({
   const [amount, setAmount] = useState(invoice.remaining)
   const [method, setMethod] = useState('CASH')
   const [reference, setReference] = useState('')
+  const [misa, setMisa] = useState('')
   const [saving, setSaving] = useState(false)
+  const dep = useOpenDeposit(invoice.customer.id, invoice.remaining, setAmount)
 
   const submit = async (): Promise<void> => {
     setSaving(true)
@@ -215,9 +218,12 @@ function CollectModal({
         invoiceId: invoice.id,
         amount,
         method,
-        reference: reference || undefined
+        reference: reference || undefined,
+        misaInvoiceNo: misa.trim() || undefined
       })
-      say(`Đã lập phiếu thu ${payment.code} — ${vnd(amount)}.`)
+      say(
+        `Đã lập phiếu thu ${payment.code}: ${vnd(amount)}${payment.depositApplied ? `, trừ cọc ${vnd(payment.depositApplied)}` : ''}.`
+      )
       onDone()
     } catch (err) {
       fail(getApiErrorMessage(err))
@@ -235,7 +241,7 @@ function CollectModal({
           <button className="btn sec" onClick={onClose}>
             Huỷ
           </button>
-          <button className="btn" onClick={() => void submit()} disabled={saving || amount <= 0}>
+          <button className="btn" onClick={() => void submit()} disabled={saving || (amount <= 0 && dep.usable <= 0)}>
             {saving ? 'Đang lưu…' : 'Lập phiếu thu'}
           </button>
         </>
@@ -250,9 +256,10 @@ function CollectModal({
           className="input"
           type="number"
           value={amount}
-          max={invoice.remaining}
+          max={invoice.remaining - dep.usable}
           onChange={(e) => setAmount(Number(e.target.value))}
         />
+        {dep.note}
       </div>
       <div className="field">
         <label>Hình thức</label>
@@ -267,6 +274,10 @@ function CollectModal({
       <div className="field">
         <label>Mã giao dịch / ghi chú</label>
         <input className="input" value={reference} onChange={(e) => setReference(e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Số hoá đơn MISA (nếu đã xuất)</label>
+        <input className="input" value={misa} onChange={(e) => setMisa(e.target.value)} />
       </div>
     </Modal>
   )

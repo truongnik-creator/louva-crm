@@ -12,6 +12,8 @@ import {
   type SettingRow
 } from '../lib/api'
 import { useAuth } from '../lib/auth-context'
+import { useClinic } from '../lib/clinic-context'
+import { fetchBranchInfos, updateBranchInfo, type BranchInfo } from '../lib/api-nova'
 import { Empty, Modal, useToast } from '../components/ui'
 
 /* ⚙️ CÀI ĐẶT HỆ THỐNG — chỉ Quản trị hệ thống.
@@ -25,7 +27,7 @@ import { Empty, Modal, useToast } from '../components/ui'
 
 export default function SystemSettings(): React.JSX.Element {
   const { user } = useAuth()
-  const [tab, setTab] = useState<'params' | 'data'>('params')
+  const [tab, setTab] = useState<'params' | 'branches' | 'data'>('params')
 
   const isAdmin = user?.roles.some((r) => r.code === 'QUAN_LY_HE_THONG')
   if (!isAdmin) {
@@ -49,11 +51,14 @@ export default function SystemSettings(): React.JSX.Element {
         <button className={tab === 'params' ? 'on' : ''} onClick={() => setTab('params')}>
           Tham số vận hành
         </button>
+        <button className={tab === 'branches' ? 'on' : ''} onClick={() => setTab('branches')}>
+          Thông tin cơ sở
+        </button>
         <button className={tab === 'data' ? 'on' : ''} onClick={() => setTab('data')}>
           Quản trị dữ liệu
         </button>
       </div>
-      {tab === 'params' ? <ParamsPanel /> : <DataPanel />}
+      {tab === 'params' ? <ParamsPanel /> : tab === 'branches' ? <BranchInfoPanel /> : <DataPanel />}
     </>
   )
 }
@@ -62,6 +67,7 @@ export default function SystemSettings(): React.JSX.Element {
 
 function ParamsPanel(): React.JSX.Element {
   const { say, fail } = useToast()
+  const clinic = useClinic()
   const [rows, setRows] = useState<SettingRow[]>([])
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
@@ -96,6 +102,8 @@ function ParamsPanel(): React.JSX.Element {
     setSaving(true)
     try {
       const r = await saveSettings(draft)
+      // Đổi chế độ phòng khám thì menu, bộ bước đổi ngay không cần tải lại trang.
+      void clinic.reload()
       say(
         r.changed
           ? `Đã lưu ${r.changed} tham số. Có hiệu lực ngay, không cần khởi động lại.`
@@ -153,7 +161,19 @@ function ParamsPanel(): React.JSX.Element {
                     </div>
                   </td>
                   <td>
-                    {s.type === 'boolean' ? (
+                    {s.type === 'select' ? (
+                      <select
+                        className="input"
+                        value={draft[s.key] ?? s.defaultValue}
+                        onChange={(e) => setDraft((d) => ({ ...d, [s.key]: e.target.value }))}
+                      >
+                        {s.options?.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : s.type === 'boolean' ? (
                       <select
                         className="input"
                         value={draft[s.key] ?? 'false'}
@@ -191,6 +211,129 @@ function ParamsPanel(): React.JSX.Element {
           </table>
         </div>
       ))}
+    </>
+  )
+}
+
+/* ----------------------------------------------- THÔNG TIN CƠ SỞ (F24, F25) */
+
+const BRANCH_FIELDS: Array<{ key: keyof BranchInfo; label: string; hint?: string; long?: boolean }> = [
+  { key: 'name', label: 'Tên cơ sở' },
+  { key: 'address', label: 'Địa chỉ', long: true },
+  { key: 'phone', label: 'Hotline' },
+  { key: 'mapUrl', label: 'Link bản đồ', hint: 'Dán link Google Maps của đúng cửa vào.' },
+  { key: 'buildingGuide', label: 'Chỉ dẫn toà nhà (sảnh, tầng)', long: true },
+  { key: 'parkingGuide', label: 'Chỉ dẫn gửi xe', long: true },
+  { key: 'facadePhotoUrl', label: 'Link ảnh mặt tiền', hint: 'Đường dẫn https tới ảnh mặt tiền để khách nhận ra cơ sở.' },
+  { key: 'bankBin', label: 'Mã BIN ngân hàng nhận cọc', hint: '6 số theo napas. Để trống thì dùng tài khoản chung ở Tham số vận hành.' },
+  { key: 'bankAccountNo', label: 'Số tài khoản nhận cọc' },
+  { key: 'bankAccountName', label: 'Tên chủ tài khoản' }
+]
+
+function BranchInfoPanel(): React.JSX.Element {
+  const { say, fail } = useToast()
+  const [rows, setRows] = useState<BranchInfo[] | null>(null)
+  const [editing, setEditing] = useState<BranchInfo | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      setRows(await fetchBranchInfos())
+    } catch (err) {
+      fail(getApiErrorMessage(err))
+    }
+  }, [fail])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const save = async (): Promise<void> => {
+    if (!editing) return
+    setSaving(true)
+    try {
+      const { id, code: _code, ...rest } = editing
+      const payload: Record<string, string | null> = {}
+      for (const f of BRANCH_FIELDS) payload[f.key] = (rest as Record<string, string | null>)[f.key] ?? ''
+      await updateBranchInfo(id, payload as Partial<BranchInfo>)
+      say('Đã lưu thông tin cơ sở. Nút Gửi vị trí trong hộp thư dùng ngay thông tin mới.')
+      setEditing(null)
+      void load()
+    } catch (err) {
+      fail(getApiErrorMessage(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!rows) return <div className="card"><Empty>Đang tải…</Empty></div>
+
+  return (
+    <>
+      <div className="alert wr">
+        Địa chỉ, link bản đồ và chỉ dẫn ở đây là nội dung của nút <b>Gửi vị trí</b> trong hộp thư. Đổi địa chỉ thì sửa ở đây,
+        sale không phải gõ tay.
+      </div>
+      {rows.map((b) => (
+        <div className="card" key={b.id} style={{ marginBottom: 12 }}>
+          <div className="row">
+            <div className="sec-title" style={{ margin: 0 }}>
+              {b.name} <span className="muted" style={{ fontWeight: 400 }}>({b.code})</span>
+            </div>
+            <button className="btn sec sm" style={{ marginLeft: 'auto' }} onClick={() => setEditing({ ...b })}>
+              Sửa
+            </button>
+          </div>
+          <table>
+            <tbody>
+              {BRANCH_FIELDS.filter((f) => f.key !== 'name').map((f) => (
+                <tr key={f.key}>
+                  <td style={{ width: 240 }} className="muted">{f.label}</td>
+                  <td>{(b[f.key] as string | null) || <span className="muted">Chưa khai</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+      {editing ? (
+        <Modal
+          title={`Sửa cơ sở ${editing.name}`}
+          onClose={() => setEditing(null)}
+          width={560}
+          footer={
+            <>
+              <button className="btn sec" onClick={() => setEditing(null)}>
+                Huỷ
+              </button>
+              <button className="btn" disabled={saving} onClick={() => void save()}>
+                {saving ? 'Đang lưu…' : 'Lưu'}
+              </button>
+            </>
+          }
+        >
+          {BRANCH_FIELDS.map((f) => (
+            <div className="field" key={f.key}>
+              <label>{f.label}</label>
+              {f.long ? (
+                <textarea
+                  className="input"
+                  rows={2}
+                  value={(editing[f.key] as string | null) ?? ''}
+                  onChange={(e) => setEditing({ ...editing, [f.key]: e.target.value })}
+                />
+              ) : (
+                <input
+                  className="input"
+                  value={(editing[f.key] as string | null) ?? ''}
+                  onChange={(e) => setEditing({ ...editing, [f.key]: e.target.value })}
+                />
+              )}
+              {f.hint ? <div className="muted" style={{ fontSize: 11.5 }}>{f.hint}</div> : null}
+            </div>
+          ))}
+        </Modal>
+      ) : null}
     </>
   )
 }

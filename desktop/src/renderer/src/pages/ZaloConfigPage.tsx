@@ -85,9 +85,12 @@ function PancakePanel(): React.JSX.Element {
     setBusy(id)
     try {
       const r = await syncPancake(id)
-      say(`Đã đồng bộ ${r.conversations} hội thoại, ${r.messages} tin mới.`)
-      if (r.errors.length) fail(`Một số trang lỗi: ${r.errors[0]}`)
-      void load()
+      say(
+        r.started
+          ? 'Đã bắt đầu đồng bộ chạy nền. Kết quả hiện ở cột ghi chú sau ít phút (bấm tải lại).'
+          : 'Đang có một lượt đồng bộ chạy nền, chờ lượt đó xong.'
+      )
+      window.setTimeout(() => void load(), 5000)
     } catch (err) {
       fail(getApiErrorMessage(err))
     } finally {
@@ -101,6 +104,13 @@ function PancakePanel(): React.JSX.Element {
         <b>Vì sao đi qua Pancake:</b> TikTok không có API nhắn tin công khai — nối thẳng là bất khả thi.
         Facebook và Instagram nối thẳng được nhưng phải chờ Meta duyệt 2–6 tuần. Pancake gom sẵn cả bốn
         kênh, và phòng khám đã dùng sẵn cho các trang Facebook hiện có.
+      </div>
+
+      <div className="alert ok">
+        <b>Nhận tin thời gian thực (webhook):</b> khai báo trong Pancake địa chỉ{' '}
+        <code>https://&lt;tên-miền&gt;/api/pancake/webhook</code> kèm bí mật webhook (ô Bí mật webhook của kết nối, hoặc
+        biến PANCAKE_WEBHOOK_SECRET trên máy chủ). Nút Đồng bộ chỉ là dự phòng khi webhook rớt, chạy nền. Trả lời hội thoại
+        nguồn Pancake luôn gửi qua Pancake.
       </div>
 
       <div className="row" style={{ marginBottom: 12 }}>
@@ -248,6 +258,7 @@ function PancakeModal({
   const { say, fail } = useToast()
   const [label, setLabel] = useState(config?.label ?? 'Pancake Louva')
   const [accessToken, setAccessToken] = useState('')
+  const [pcWebhookSecret, setPcWebhookSecret] = useState('')
   const [saving, setSaving] = useState(false)
 
   const submit = async (): Promise<void> => {
@@ -257,7 +268,12 @@ function PancakeModal({
     }
     setSaving(true)
     try {
-      await savePancakeConfig({ id: config?.id, label, accessToken: accessToken || undefined })
+      await savePancakeConfig({
+        id: config?.id,
+        label,
+        accessToken: accessToken || undefined,
+        webhookSecret: pcWebhookSecret || undefined
+      })
       say('Đã lưu kết nối Pancake. Bấm “Dò trang” để nạp danh sách trang.')
       onSaved()
     } catch (err) {
@@ -294,6 +310,16 @@ function PancakeModal({
           value={accessToken}
           onChange={(e) => setAccessToken(e.target.value)}
           placeholder={config ? '••••••••' : ''}
+        />
+      </div>
+      <div className="field">
+        <label>Bí mật webhook (để trống nếu không đổi)</label>
+        <input
+          className="input"
+          type="password"
+          value={pcWebhookSecret}
+          onChange={(e) => setPcWebhookSecret(e.target.value)}
+          placeholder="Chuỗi bí mật khai cùng ở Pancake"
         />
       </div>
       <div className="muted" style={{ fontSize: 11.5 }}>

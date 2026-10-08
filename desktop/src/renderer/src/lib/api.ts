@@ -25,6 +25,7 @@ import type {
   PhotoSet,
   Procedure,
   QuickReply,
+  TemplateVariable,
   Room,
   Service,
   ShiftAssignment,
@@ -119,6 +120,13 @@ export function getApiErrorMessage(error: unknown, fallback = 'Đã xảy ra l�
   }
   if (error instanceof Error) return error.message
   return fallback
+}
+
+/** Lỗi 409 trùng SĐT khi tạo khách trả kèm hồ sơ đã có; lấy ra để gợi ý gắn vào hồ sơ đó. */
+export function getDuplicateFromError(error: unknown): { id: string; code: string; name: string } | null {
+  if (!axios.isAxiosError(error) || error.response?.status !== 409) return null
+  const dup = (error.response.data as { duplicate?: { id: string; code: string; name: string } } | undefined)?.duplicate
+  return dup?.id ? dup : null
 }
 
 /* ------------------------------------------------------------------- AUTH */
@@ -243,8 +251,50 @@ export async function fetchCustomers(
     limit?: number
     offset?: number
   } = {}
-): Promise<{ total: number; items: CustomerListItem[] }> {
+): Promise<{ total: number; items: CustomerListItem[]; nextOffset?: number | null }> {
   const { data } = await api.get('/customers', { params })
+  return data
+}
+
+export interface DuplicateRef {
+  id: string
+  code: string
+  name: string
+  phone: string | null
+}
+
+/** B17: cảnh báo trùng SĐT (chuẩn hoá) và tên gần giống khi nhập khách. */
+export async function checkCustomerDuplicates(params: {
+  name?: string
+  phone?: string
+  excludeId?: string
+}): Promise<{ phoneMatches: DuplicateRef[]; similarNames: DuplicateRef[] }> {
+  const { data } = await api.get('/customers/duplicates/check', { params })
+  return data
+}
+
+export interface DuplicateGroupCustomer extends DuplicateRef {
+  stage: string
+  status: string
+  hidden: boolean
+  createdAt: string
+  assignedTo: { id: string; name: string } | null
+  _count: { appointments: number; contracts: number; conversations: number; payments: number }
+}
+
+export async function fetchDuplicateGroups(
+  params: { limit?: number; offset?: number } = {}
+): Promise<{ groups: Array<{ key: string | null; customers: DuplicateGroupCustomer[] }>; nextOffset: number | null }> {
+  const { data } = await api.get('/customers/duplicates', { params })
+  return data
+}
+
+export async function mergeCustomers(body: {
+  primaryId: string
+  duplicateIds: string[]
+  reason: string
+}): Promise<{ ok: boolean; primaryId: string }> {
+  const { data } = await api.post('/customers/merge', body)
   return data
 }
 
@@ -292,7 +342,18 @@ export async function addCustomerNote(id: string, content: string): Promise<void
 /* ------------------------------------------------------------------ INBOX */
 
 export async function fetchConversations(
-  params: { kind?: string; q?: string; unread?: string; assignedToId?: string } = {}
+  params: {
+    kind?: string
+    q?: string
+    unread?: string
+    assignedToId?: string
+    /** F26: của tôi, chưa phân công, theo nhóm kênh FB | ZALO | TIKTOK. */
+    mine?: string
+    unassigned?: string
+    channel?: string
+    limit?: number
+    offset?: number
+  } = {}
 ): Promise<Conversation[]> {
   const { data } = await api.get('/conversations', { params })
   return data
@@ -311,8 +372,11 @@ export async function fetchMessages(
   return data
 }
 
-export async function sendMessage(conversationId: string, content: string): Promise<ChatMessage> {
-  const { data } = await api.post(`/conversations/${conversationId}/messages`, { content })
+export async function sendMessage(conversationId: string, content: string, suggestionId?: string): Promise<ChatMessage> {
+  const { data } = await api.post(`/conversations/${conversationId}/messages`, {
+    content,
+    ...(suggestionId ? { suggestionId } : {})
+  })
   return data
 }
 
@@ -336,8 +400,65 @@ export async function linkConversationCustomer(
   return data
 }
 
-export async function fetchQuickReplies(): Promise<QuickReply[]> {
-  const { data } = await api.get('/conversations/quick-replies/all')
+export async function fetchQuickReplies(params: { includeInactive?: boolean } = {}): Promise<QuickReply[]> {
+  const { data } = await api.get('/conversations/quick-replies/all', {
+    params: params.includeInactive ? { includeInactive: '1' } : {}
+  })
+  return data
+}
+
+export async function fetchTemplateVariables(): Promise<TemplateVariable[]> {
+  const { data } = await api.get('/conversations/quick-replies/variables')
+  return data
+}
+
+export async function createQuickReply(payload: {
+  title: string
+  content: string
+  category?: string | null
+}): Promise<QuickReply> {
+  const { data } = await api.post('/conversations/quick-replies', payload)
+  return data
+}
+
+export async function updateQuickReply(
+  id: string,
+  payload: { title?: string; content?: string; category?: string | null; active?: boolean }
+): Promise<QuickReply> {
+  const { data } = await api.patch(`/conversations/quick-replies/${id}`, payload)
+  return data
+}
+
+export async function deleteQuickReply(id: string): Promise<void> {
+  await api.delete(`/conversations/quick-replies/${id}`)
+}
+
+/** Điền biến {{...}} của mẫu theo hồ sơ khách của hội thoại (B12). Không gửi gì. */
+export async function renderTemplate(
+  conversationId: string,
+  content: string
+): Promise<{ content: string; unresolved: string[] }> {
+  const { data } = await api.post(`/conversations/${conversationId}/render-template`, { content })
+  return data
+}
+
+/** Ảnh, tệp đính kèm trong chat: tải qua API có kiểm quyền rồi tạo object URL (B13). */
+export async function fetchAttachmentBlob(conversationId: string, attachmentId: string): Promise<string> {
+  const { data } = await api.get(`/conversations/${conversationId}/attachments/${attachmentId}/content`, {
+    responseType: 'blob'
+  })
+  return URL.createObjectURL(data as Blob)
+}
+
+export async function saveAttachmentToProfile(
+  conversationId: string,
+  attachmentId: string,
+  payload: { stage?: string; note?: string } = {}
+): Promise<{ photoSetId: string }> {
+  const { data } = await api.post(
+    `/conversations/${conversationId}/attachments/${attachmentId}/save-to-profile`,
+    payload
+  )
   return data
 }
 
@@ -399,6 +520,11 @@ export async function fetchServiceCategories(): Promise<
 
 export async function createService(payload: Record<string, unknown>): Promise<Service> {
   const { data } = await api.post('/catalog/services', payload)
+  return data
+}
+
+export async function updateService(id: string, payload: Record<string, unknown>): Promise<Service> {
+  const { data } = await api.patch(`/catalog/services/${id}`, payload)
   return data
 }
 
@@ -479,7 +605,11 @@ export async function createPayment(payload: {
   method?: string
   reference?: string
   note?: string
-}): Promise<Payment> {
+  /** F25: tự trừ cọc đã nhận (mặc định bật ở máy chủ). */
+  applyDeposit?: boolean
+  appointmentId?: string
+  misaInvoiceNo?: string
+}): Promise<Payment & { depositApplied?: number }> {
   const { data } = await api.post('/sales/payments', payload)
   return data
 }
@@ -515,8 +645,15 @@ export async function createConsent(payload: Record<string, unknown>): Promise<C
   return data
 }
 
-export async function signConsent(id: string): Promise<ConsentForm> {
-  const { data } = await api.post(`/medical/consents/${id}/sign`)
+/** Ký cam kết; `signature` là ảnh PNG chữ ký tay vẽ trên canvas (B16). */
+export async function signConsent(id: string, signature?: Blob): Promise<ConsentForm> {
+  if (!signature) {
+    const { data } = await api.post(`/medical/consents/${id}/sign`)
+    return data
+  }
+  const form = new FormData()
+  form.append('signature', signature, 'chu-ky.png')
+  const { data } = await api.post(`/medical/consents/${id}/sign`, form)
   return data
 }
 
@@ -623,6 +760,71 @@ export async function fetchChannels(): Promise<Array<{ id: string; key: string; 
 
 /* ---------------------------------------------------------------- REPORTS */
 
+/* ---- TRANG CHỦ THEO VAI (B15) ---- */
+
+export interface HomeCustomerRef {
+  id: string
+  name: string
+  code: string
+  phone: string | null
+}
+
+export interface HomeData {
+  date: string
+  sections: {
+    appointments?: {
+      total: number
+      arrived: number
+      pending: number
+      items: Array<{
+        id: string
+        startAt: string
+        title: string
+        status: string
+        customer: HomeCustomerRef
+        doctor: { id: string; name: string } | null
+      }>
+    }
+    queue?: {
+      waiting: number
+      inProgress: number
+      items: Array<{ id: string; queueNumber: number; status: string; checkedInAt: string; customer: HomeCustomerRef }>
+    }
+    procedures?: {
+      total: number
+      mine: number
+      items: Array<{
+        id: string
+        code: string
+        title: string
+        status: string
+        scheduledAt: string
+        surgeon: { id: string; name: string } | null
+        customer: HomeCustomerRef
+      }>
+    }
+    leads?: { total: number; unassigned: number; byChannel: Array<{ channel: string; count: number }> }
+    conversations?: {
+      unread: number
+      items: Array<{
+        id: string
+        title: string
+        channel: string
+        unreadCount: number
+        lastMessageAt: string | null
+        lastMessagePreview: string | null
+      }>
+    }
+  } & import('./api-lo5-home').HomeLo5Sections
+  roles?: string[]
+  financeView?: boolean
+}
+
+export async function fetchHome(): Promise<HomeData> {
+  const { data } = await api.get('/home')
+  return data
+}
+
 export async function fetchDashboard(params: { period?: string; branchId?: string } = {}): Promise<DashboardData> {
   const { data } = await api.get('/reports/dashboard', { params })
   return data
@@ -697,9 +899,19 @@ export async function fetchDepartmentScores(
 }
 
 export async function fetchClinicOperations(params: { period?: string } = {}): Promise<{
-  appointments: { total: number; noShow: number; noShowRate: number }
+  appointments: { total: number; noShow: number; noShowBase: number; noShowRate: number }
   queue: { visits: number; avgWaitMinutes: number; stillWaiting: number }
+  capacityHoursPerDay: number
   surgeryCapacity: Array<{ date: string; minutes: number; utilization: number }>
+  capacityByDoctor: Array<{
+    doctorId: string | null
+    name: string
+    cases: number
+    minutes: number
+    workDays: number
+    utilization: number
+  }>
+  capacityByBranch: Array<{ branchId: string; name: string; rooms: number; minutes: number; utilization: number }>
 }> {
   const { data } = await api.get('/reports/clinic-operations', { params })
   return data
@@ -1141,10 +1353,13 @@ export async function discoverPancakePages(configId: string): Promise<{ found: n
   return data
 }
 
+/** F5: đồng bộ tay chạy nền, máy chủ trả 202 ngay; kết quả ghi ở lastSyncNote của kết nối. */
 export async function syncPancake(configId: string): Promise<{
-  conversations: number
-  messages: number
-  errors: string[]
+  started?: boolean
+  running?: boolean
+  conversations?: number
+  messages?: number
+  errors?: string[]
 }> {
   const { data } = await api.post(`/pancake/${configId}/sync`)
   return data
@@ -1204,7 +1419,8 @@ export interface SettingRow {
   key: string
   group: string
   label: string
-  type: 'number' | 'percent' | 'text' | 'boolean'
+  type: 'number' | 'percent' | 'text' | 'boolean' | 'select'
+  options?: Array<{ value: string; label: string }>
   defaultValue: string
   description: string
   usedIn: string

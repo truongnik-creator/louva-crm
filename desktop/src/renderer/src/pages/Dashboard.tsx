@@ -13,6 +13,7 @@ import {
 import { useAuth } from '../lib/auth-context'
 import { ddmm, percent, vnd, vndShort } from '../lib/format'
 import { Empty, useToast } from '../components/ui'
+import RoleHome from '../components/RoleHome'
 import type { DashboardData } from '../lib/types'
 
 /* TỔNG QUAN — một màn, hai tầng.
@@ -84,8 +85,15 @@ export default function Dashboard(): React.JSX.Element {
   const [loading, setLoading] = useState(true)
 
   const canSeeStaff = can('hr.read') || can('accounting.read')
+  const canSeeBusiness = can('accounting.read') || can('finance.read')
+  // F29: mọi vai mở app là trang chủ theo vai trước (lễ tân không còn rơi vào màn
+  // tài chính); ai có quyền thì Số liệu kinh doanh là thẻ thứ hai.
+  const [top, setTop] = useState<'HOME' | 'BUSINESS'>('HOME')
+  const showBusiness = canSeeBusiness && top === 'BUSINESS'
 
   useEffect(() => {
+    // B15: chỉ gọi API tổng hợp khi đang mở thẻ Số liệu kinh doanh.
+    if (!showBusiness) return
     let cancelled = false
     setLoading(true)
     Promise.all([
@@ -104,32 +112,46 @@ export default function Dashboard(): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [period, branchId, can, canSeeStaff, fail])
+  }, [period, branchId, can, canSeeStaff, showBusiness, fail])
 
-  if (!can('accounting.read') && !can('finance.read')) {
+  const topTabs = canSeeBusiness ? (
+    <div className="tabs" style={{ marginBottom: 12 }}>
+      <button className={top === 'HOME' ? 'on' : ''} onClick={() => setTop('HOME')}>
+        Việc hôm nay
+      </button>
+      <button className={top === 'BUSINESS' ? 'on' : ''} onClick={() => setTop('BUSINESS')}>
+        Số liệu kinh doanh
+      </button>
+    </div>
+  ) : null
+
+  if (!showBusiness) {
     return (
-      <div className="card">
-        <Empty>
-          Vai trò của bạn không xem được số liệu kinh doanh tổng hợp.
-          <br />
-          Hãy dùng menu bên trái để vào phần việc của mình.
-        </Empty>
-      </div>
+      <>
+        {topTabs}
+        <RoleHome />
+      </>
     )
   }
 
   if (loading && !data) {
     return (
-      <div className="card">
-        <Empty>Đang tải số liệu…</Empty>
-      </div>
+      <>
+        {topTabs}
+        <div className="card">
+          <Empty>Đang tải số liệu...</Empty>
+        </div>
+      </>
     )
   }
   if (!data) {
     return (
-      <div className="card">
-        <Empty>Không tải được số liệu.</Empty>
-      </div>
+      <>
+        {topTabs}
+        <div className="card">
+          <Empty>Không tải được số liệu.</Empty>
+        </div>
+      </>
     )
   }
 
@@ -137,6 +159,7 @@ export default function Dashboard(): React.JSX.Element {
 
   return (
     <>
+      {topTabs}
       <div className="row" style={{ flexWrap: 'wrap', marginBottom: 12 }}>
         {PERIODS.map((p) => (
           <button

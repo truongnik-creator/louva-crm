@@ -1,15 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react'
+import CustomerGrowthTab from '../components/CustomerGrowthTab'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   addCustomerNote,
   assignCustomer,
   breakGlass,
-  changeCustomerStage,
   createPayment,
   fetchConsents,
   fetchContracts,
   fetchCustomer,
-  fetchCustomerTimeline,
   fetchInvoices,
   fetchMedicalRecord,
   fetchPhotoBlob,
@@ -23,12 +22,20 @@ import {
   CONTRACT_STATUS,
   INVOICE_STATUS,
   PHOTO_STAGE_LABEL,
-  STAGES,
   initialOf,
   stageStyle,
   tagStyleOf
 } from '../lib/ui'
+import { useOpenDeposit } from '../components/deposit-parts'
+import { Customer360Header, JourneyStrip, QuoteOptionsPanel, UpsellPanel } from '../components/crm360-parts'
+import { NeedsCard, OpportunitiesCard, PackagesCard, QuotesCard, TimelineCard } from '../components/crm360b-parts'
+import { fetchCustomer360, fetchCustomerAftercare, type Customer360 } from '../lib/api-lo7'
+import type { AftercareTask } from '../lib/api-lo4'
 import { Empty, Modal, Row, Tag, useToast } from '../components/ui'
+import { StageSelect } from '../components/stage-parts'
+import { useClinic } from '../lib/clinic-context'
+import { fetchStageHistory, setAiConsent, setPhotoMarketingConsent, type StageHistoryRow } from '../lib/api-nova'
+import { setCustomerOptOut } from '../lib/api-lo4'
 import {
   AddEntryModal,
   ConsentModal,
@@ -43,35 +50,33 @@ import type {
   Invoice,
   MedicalRecord,
   PhotoSet,
-  StaffUser,
-  TimelineEntry
+  StaffUser
 } from '../lib/types'
 
-/* HỒ SƠ KHÁCH HÀNG THẨM MỸ — 8 tab đúng prototype:
-   Tổng quan · Dòng thời gian · Nhu cầu & Phác đồ · Báo giá & Đơn hàng ·
-   Hồ sơ y khoa · Ảnh trước-sau · Hậu phẫu · Tài chính.
+/* HỒ SƠ KHÁCH HÀNG (Lô 7 · C1, C2, J1): thanh 360 ghim đầu hồ sơ (bước + số
+   ngày, chi trọn đời, số lần, báo giá mở, hạn tái tiêm, voucher, công nợ, cờ y
+   khoa, dải hành trình), rồi 5 tab:
+   Tổng quan 360 · Hành trình · Tư vấn và báo giá · Y khoa và ảnh · Tài chính và quyền lợi.
 
-   Ba tab y khoa đi qua cổng phân quyền riêng: không có quyền thì không gọi API,
-   và nếu bệnh án ở cơ sở khác thì backend trả 404 — lúc đó mới mời break-glass. */
+   Phần y khoa đi qua cổng phân quyền riêng: không có quyền thì không gọi API,
+   và nếu bệnh án ở cơ sở khác thì backend trả 404, lúc đó mới mời break-glass. */
 
-const TABS: Array<{ key: string; label: string; perm?: string }> = [
-  { key: 'tq', label: 'Tổng quan' },
-  { key: 'tl', label: 'Dòng thời gian' },
-  { key: 'pd', label: 'Nhu cầu & Phác đồ' },
-  { key: 'bg', label: 'Báo giá & Đơn hàng', perm: 'finance.read' },
-  { key: 'yk', label: 'Hồ sơ y khoa', perm: 'medical.read' },
-  { key: 'anh', label: 'Ảnh trước-sau', perm: 'photo.read' },
-  { key: 'hp', label: 'Hậu phẫu', perm: 'followup.read' },
-  { key: 'tc', label: 'Tài chính', perm: 'finance.read' }
+const TABS: Array<{ key: string; label: string; anyPerm?: string[] }> = [
+  { key: 'tq', label: 'Tổng quan 360' },
+  { key: 'ht', label: 'Hành trình' },
+  { key: 'tv', label: 'Tư vấn và báo giá' },
+  { key: 'yk', label: 'Y khoa và ảnh', anyPerm: ['medical.read', 'photo.read', 'followup.read'] },
+  { key: 'tc', label: 'Tài chính và quyền lợi', anyPerm: ['finance.read', 'customer.read'] }
 ]
 
 export default function CustomerDetail(): React.JSX.Element {
   const { id = '' } = useParams()
   const { can } = useAuth()
-  const { say, fail } = useToast()
+  const { fail } = useToast()
   const navigate = useNavigate()
 
   const [customer, setCustomer] = useState<CustomerDetailType | null>(null)
+  const [c360, setC360] = useState<Customer360 | null>(null)
   const [tab, setTab] = useState('tq')
   const [loading, setLoading] = useState(true)
   const [payFor, setPayFor] = useState<Invoice | null>(null)
@@ -80,6 +85,7 @@ export default function CustomerDetail(): React.JSX.Element {
   const load = useCallback(async () => {
     try {
       setCustomer(await fetchCustomer(id))
+      fetchCustomer360(id).then(setC360).catch(() => setC360(null))
     } catch (err) {
       fail(getApiErrorMessage(err))
     } finally {
@@ -104,116 +110,55 @@ export default function CustomerDetail(): React.JSX.Element {
     void loadInvoices()
   }, [loadInvoices])
 
-  const changeStage = useCallback(
-    async (next: string) => {
-      if (!customer) return
-      const order = Object.keys(STAGES)
-      const isBack = order.indexOf(next) < order.indexOf(customer.stage)
-      let reason: string | undefined
-      if (isBack) {
-        reason = window.prompt('Lùi giai đoạn bắt buộc ghi lý do:') ?? undefined
-        if (!reason) return
-      }
-      try {
-        await changeCustomerStage(customer.id, next, reason)
-        say('Đã chuyển giai đoạn.')
-        void load()
-      } catch (err) {
-        fail(getApiErrorMessage(err))
-      }
-    },
-    [customer, say, fail, load]
-  )
-
   if (loading) return <div className="card"><Empty>Đang tải hồ sơ khách…</Empty></div>
   if (!customer) return <div className="card"><Empty>Không tìm thấy hồ sơ khách này.</Empty></div>
 
-  const visibleTabs = TABS.filter((t) => !t.perm || can(t.perm))
-  const age = customer.dob
-    ? Math.floor((Date.now() - new Date(customer.dob).getTime()) / (365.25 * 86400000))
-    : null
+  const visibleTabs = TABS.filter((t) => !t.anyPerm || t.anyPerm.some((p) => can(p)))
   const unpaid = invoices.filter((i) => i.remaining > 0)
+
+  const actions = (
+    <>
+      {can('inbox.read') ? (
+        <button className="btn sec sm" onClick={() => navigate('/hop-thu')}>
+          Nhắn tin
+        </button>
+      ) : null}
+      {can('appointment.create') ? (
+        <button className="btn sec sm" onClick={() => navigate(`/lich-hen?customerId=${customer.id}`)}>
+          Đặt lịch
+        </button>
+      ) : null}
+      {can('customer.update') ? (
+        <StageSelect customerId={customer.id} customerName={customer.name} stage={customer.stage} onChanged={() => void load()} />
+      ) : null}
+      {can('finance.create') && unpaid.length ? (
+        <button className="btn sm" onClick={() => setPayFor(unpaid[0])}>
+          Thu tiền
+        </button>
+      ) : null}
+    </>
+  )
 
   return (
     <>
-      {/* Đầu trang */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="row" style={{ flexWrap: 'wrap' }}>
-          <div className="pava" style={{ width: 46, height: 46, flex: '0 0 46px', fontSize: 18 }}>
-            {initialOf(customer.name)}
-          </div>
-          <div>
-            <div style={{ fontSize: 17, fontWeight: 700 }}>
-              {customer.name}{' '}
-              <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}>
-                {age ? `· ${age} tuổi ` : ''}
-                {customer.gender === 'FEMALE' ? '· Nữ' : customer.gender === 'MALE' ? '· Nam' : ''}
-              </span>
+      {c360 ? (
+        <Customer360Header data={c360} actions={actions} phone={customer.phone} />
+      ) : (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="row" style={{ flexWrap: 'wrap' }}>
+            <div className="pava" style={{ width: 46, height: 46, flex: '0 0 46px', fontSize: 18 }}>
+              {initialOf(customer.name)}
             </div>
-            <div className="muted" style={{ fontSize: 12.5 }}>
-              {customer.phone ?? '—'} · {customer.city ?? '—'} · Mã KH: {customer.code}
+            <div>
+              <div style={{ fontSize: 17, fontWeight: 700 }}>{customer.name}</div>
+              <div className="muted" style={{ fontSize: 12.5 }}>
+                {customer.phone ?? '—'} · Mã KH: {customer.code}
+              </div>
             </div>
-            <div style={{ marginTop: 6 }}>
-              <Tag style={stageStyle(customer.stage)} />{' '}
-              <span className="tag out">Nguồn: {customer.channel?.name ?? 'Không rõ'}</span>{' '}
-              {customer.tags.map((t) => (
-                <span key={t.id} className="tag" style={{ background: `${t.color}22`, color: t.color }}>
-                  {t.name}
-                </span>
-              ))}
-              {customer.branches.length > 1 ? (
-                <span className="tag" style={{ background: '#E0F2FE', color: '#0369A1', marginLeft: 4 }}>
-                  Khách liên cơ sở
-                </span>
-              ) : null}
-            </div>
-          </div>
-
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {can('inbox.read') ? (
-              <button className="btn sec sm" onClick={() => navigate('/hop-thu')}>
-                Nhắn Zalo
-              </button>
-            ) : null}
-            {can('appointment.create') ? (
-              <button className="btn sec sm" onClick={() => navigate(`/lich-hen?customerId=${customer.id}`)}>
-                Đặt lịch
-              </button>
-            ) : null}
-            {can('customer.update') ? (
-              <select
-                className="input"
-                style={{ width: 'auto' }}
-                value={customer.stage}
-                onChange={(e) => void changeStage(e.target.value)}
-              >
-                {Object.entries(STAGES).map(([key, s]) => (
-                  <option key={key} value={key}>
-                    {s.t}
-                  </option>
-                ))}
-              </select>
-            ) : null}
-            {can('finance.create') && unpaid.length ? (
-              <button className="btn sm" onClick={() => setPayFor(unpaid[0])}>
-                Thu tiền
-              </button>
-            ) : null}
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>{actions}</div>
           </div>
         </div>
-
-        <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginTop: 12 }}>
-          <Mini label="Tổng đã chi tiêu" value={vnd(customer.totalPaid)} />
-          <Mini
-            label="Công nợ"
-            value={
-              customer.debt > 0 ? <span style={{ color: 'var(--danger)' }}>{vnd(customer.debt)}</span> : '0đ'
-            }
-          />
-          <Mini label="Tư vấn viên" value={customer.assignedTo?.name ?? '— chưa gán —'} />
-          <Mini label="Lần chạm gần nhất" value={relativeVi(customer.lastContactAt)} />
-        </div>
-      </div>
+      )}
 
       <div className="tabs">
         {visibleTabs.map((t) => (
@@ -224,21 +169,55 @@ export default function CustomerDetail(): React.JSX.Element {
       </div>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 420 }}>
-          {tab === 'tq' ? <OverviewTab customer={customer} onReload={load} /> : null}
-          {tab === 'tl' ? <TimelineTab customerId={customer.id} /> : null}
-          {tab === 'pd' ? <NeedsTab customer={customer} /> : null}
-          {tab === 'bg' ? <ContractsTab customerId={customer.id} /> : null}
-          {tab === 'yk' ? <MedicalTab customer={customer} /> : null}
-          {tab === 'anh' ? <PhotosTab customerId={customer.id} /> : null}
-          {tab === 'hp' ? <PostOpTab customer={customer} /> : null}
+        <div style={{ flex: 1, minWidth: 0, flexBasis: 420, display: 'grid', gap: 12 }}>
+          {tab === 'tq' ? (
+            <>
+              <OverviewTab customer={customer} onReload={load} />
+              <OpportunitiesCard customerId={customer.id} customerName={customer.name} onChanged={() => void load()} />
+              <div className="card">
+                <div className="sec-title">Gợi ý bán kèm</div>
+                <UpsellPanel customerId={customer.id} context="CONSULT" />
+              </div>
+            </>
+          ) : null}
+          {tab === 'ht' ? (
+            <>
+              <JourneyCard data={c360} />
+              <TimelineCard customerId={customer.id} />
+            </>
+          ) : null}
+          {tab === 'tv' ? (
+            <>
+              <NeedsCard customerId={customer.id} />
+              <NeedsTab customer={customer} />
+              {can('sales_order.read') ? <QuotesCard customerId={customer.id} onChanged={() => void load()} /> : null}
+              {can('sales_order.read') ? (
+                <div className="card">
+                  <div className="sec-title">Báo giá 3 phương án</div>
+                  <QuoteOptionsPanel customerId={customer.id} customerName={customer.name} onChosen={() => void load()} />
+                </div>
+              ) : null}
+              {can('finance.read') ? <ContractsTab customerId={customer.id} /> : null}
+            </>
+          ) : null}
+          {tab === 'yk' ? (
+            <>
+              {can('medical.read') ? <MedicalTab customer={customer} /> : null}
+              {can('photo.read') ? <PhotosTab customerId={customer.id} /> : null}
+              {can('followup.read') ? <PostOpTab customer={customer} /> : null}
+            </>
+          ) : null}
           {tab === 'tc' ? (
-            <FinanceTab invoices={invoices} onCollect={(inv) => setPayFor(inv)} />
+            <>
+              {can('finance.read') ? <FinanceTab invoices={invoices} onCollect={(inv) => setPayFor(inv)} /> : null}
+              <PackagesCard customerId={customer.id} />
+              {can('customer.read') ? <CustomerGrowthTab customerId={customer.id} /> : null}
+            </>
           ) : null}
         </div>
 
-        <div style={{ width: 290, flex: '0 0 290px', display: 'grid', gap: 12 }}>
-          <TodoCard customer={customer} invoices={invoices} />
+        <div className="d-side" style={{ width: 290, flex: '0 0 290px', display: 'grid', gap: 12 }}>
+          <TodoCard customer={customer} invoices={invoices} tasks={c360?.openTasks ?? null} />
           <NoteCard customerId={customer.id} onSaved={load} />
         </div>
       </div>
@@ -259,13 +238,32 @@ export default function CustomerDetail(): React.JSX.Element {
   )
 }
 
-function Mini({ label, value }: { label: string; value: React.ReactNode }): React.JSX.Element {
+/** Tab Hành trình: dải mốc kèm bảng chi tiết (ngày, khoảng cách với mốc trước). */
+function JourneyCard({ data }: { data: Customer360 | null }): React.JSX.Element {
+  if (!data) return <div className="card"><Empty>Đang tải hành trình…</Empty></div>
   return (
-    <div>
-      <div className="lab" style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>
-        {label}
-      </div>
-      <div style={{ fontWeight: 700, marginTop: 3 }}>{value}</div>
+    <div className="card">
+      <div className="sec-title">Hành trình khách</div>
+      <JourneyStrip items={data.journey} />
+      <table style={{ marginTop: 8 }}>
+        <tbody>
+          {data.journey.map((m, i) => (
+            <tr key={i}>
+              <td style={{ width: 110 }} className={m.future ? 't-warn' : 'muted'}>
+                {dateVi(m.at)}
+              </td>
+              <td>
+                <b>{m.label}</b>
+                {m.detail ? <span className="muted"> · {m.detail}</span> : null}
+                {m.future ? <span className="muted"> (sắp tới)</span> : null}
+              </td>
+              <td className="muted" style={{ width: 120, fontSize: 12 }}>
+                {m.gapDays != null ? `+${m.gapDays} ngày sau mốc trước` : 'Mốc đầu'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -287,6 +285,29 @@ function OverviewTab({
   useEffect(() => {
     if (can('hr.read')) fetchStaff().then(setStaff).catch(() => undefined)
   }, [can])
+
+  const clinic = useClinic()
+  const [savingConsent, setSavingConsent] = useState(false)
+  const [history, setHistory] = useState<StageHistoryRow[]>([])
+
+  useEffect(() => {
+    fetchStageHistory(customer.id).then(setHistory).catch(() => setHistory([]))
+  }, [customer.id, customer.stage])
+
+  const toggleConsent = async (): Promise<void> => {
+    const next = !customer.aiDataConsent
+    if (next && !window.confirm('Xác nhận khách đã ký hoặc đồng ý điều khoản xử lý dữ liệu (có chuyển dữ liệu ra nước ngoài khi dùng AI)?')) return
+    setSavingConsent(true)
+    try {
+      await setAiConsent(customer.id, next)
+      say(next ? 'Đã ghi nhận khách đồng ý.' : 'Đã ghi nhận khách rút lại đồng ý.')
+      onReload()
+    } catch (err) {
+      fail(getApiErrorMessage(err))
+    } finally {
+      setSavingConsent(false)
+    }
+  }
 
   const reassign = async (assignedToId: string): Promise<void> => {
     const reason = window.prompt('Lý do đổi người phụ trách (bắt buộc):')
@@ -328,7 +349,57 @@ function OverviewTab({
                 : '—'
             }
           />
-          <Row label="Giai đoạn phễu" value={<Tag style={stageStyle(customer.stage)} />} />
+          <Row label="Bước bán hàng" value={<Tag style={clinic.stageStyle(customer.stage)} />} />
+          <Row
+            label="Đồng ý xử lý dữ liệu bằng AI"
+            value={
+              <span>
+                {customer.aiDataConsent ? (
+                  <span className="tag" style={{ background: '#DCFCE7', color: '#15803D' }}>Đã đồng ý</span>
+                ) : (
+                  <span className="tag" style={{ background: '#F1F5F9', color: '#475569' }}>Chưa đồng ý</span>
+                )}
+                {can('customer.update') ? (
+                  <button className="btn sec sm" style={{ marginLeft: 8 }} disabled={savingConsent} onClick={() => void toggleConsent()}>
+                    {customer.aiDataConsent ? 'Rút lại đồng ý' : 'Ghi nhận khách đã đồng ý'}
+                  </button>
+                ) : null}
+                <div className="muted" style={{ fontSize: 11.5, marginTop: 3 }}>
+                  Theo Nghị định 13/2023: chưa đồng ý thì tin nhắn của khách không được gửi lên AI. Mẫu điều khoản ở Cài đặt, Mẫu biểu.
+                </div>
+              </span>
+            }
+          />
+          <Row
+            label="Nhận tin gửi theo nhóm"
+            value={
+              <span>
+                {customer.optOut ? (
+                  <span className="tag" style={{ background: '#FEE2E2', color: '#B91C1C' }}>Khách từ chối nhận</span>
+                ) : (
+                  <span className="tag" style={{ background: '#DCFCE7', color: '#15803D' }}>Nhận tin</span>
+                )}
+                {can('customer.update') ? (
+                  <button
+                    className="btn sec sm"
+                    style={{ marginLeft: 8 }}
+                    onClick={async () => {
+                      const reason = customer.optOut ? undefined : (window.prompt('Lý do khách từ chối nhận tin (không bắt buộc):') ?? undefined)
+                      try {
+                        await setCustomerOptOut(customer.id, !customer.optOut, reason || undefined)
+                        say(customer.optOut ? 'Khách nhận tin lại.' : 'Đã ghi nhận khách từ chối nhận tin.')
+                        onReload()
+                      } catch (err) {
+                        fail(getApiErrorMessage(err))
+                      }
+                    }}
+                  >
+                    {customer.optOut ? 'Cho nhận tin lại' : 'Khách từ chối nhận tin'}
+                  </button>
+                ) : null}
+              </span>
+            }
+          />
           <Row
             label="Nguồn khách"
             value={`${customer.channel?.name ?? 'Không rõ'}${customer.campaign ? ` — chiến dịch "${customer.campaign.name}"` : ''}`}
@@ -363,61 +434,53 @@ function OverviewTab({
       <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
         Không xoá được khách. Chỉ quản lý cơ sở hoặc chủ đầu tư được ẩn hồ sơ, và bắt buộc ghi lý do.
       </div>
-    </div>
-  )
-}
 
-/* ------------------------------------------------------------------ TAB 2 */
-
-function TimelineTab({ customerId }: { customerId: string }): React.JSX.Element {
-  const { fail } = useToast()
-  const [entries, setEntries] = useState<TimelineEntry[] | null>(null)
-
-  useEffect(() => {
-    fetchCustomerTimeline(customerId)
-      .then(setEntries)
-      .catch((err) => fail(getApiErrorMessage(err)))
-  }, [customerId, fail])
-
-  if (!entries) return <div className="card"><Empty>Đang tải dòng thời gian…</Empty></div>
-
-  return (
-    <div className="card">
-      <div className="sec-title">Dòng thời gian</div>
-      {entries.length === 0 ? (
-        <Empty>Chưa có hoạt động nào được ghi nhận.</Empty>
+      <div className="sec-title" style={{ marginTop: 14 }}>Lịch sử đổi bước</div>
+      {history.length === 0 ? (
+        <div className="muted" style={{ fontSize: 12.5 }}>Chưa có lần đổi bước nào được ghi.</div>
       ) : (
-        entries.map((e, i) => (
-          <div
-            key={i}
-            style={{ padding: '8px 0', borderBottom: '1px dashed var(--border)', fontSize: 12.8 }}
-          >
-            <span className="muted">{dateTimeVi(e.at)}</span> · {e.text}
-            {e.by ? <span className="muted"> — {e.by}</span> : null}
-          </div>
-        ))
+        <table>
+          <tbody>
+            {history.slice(0, 20).map((h) => (
+              <tr key={h.id}>
+                <td style={{ width: 130 }} className="muted">{dateTimeVi(h.createdAt)}</td>
+                <td>
+                  {h.fromStage ? <Tag style={clinic.stageStyle(h.fromStage)} /> : null} →{' '}
+                  <Tag style={clinic.stageStyle(h.toStage)} />
+                  {h.lostReason ? <span className="muted"> · {clinic.lostReasonLabel(h.lostReason)}</span> : null}
+                </td>
+                <td className="muted" style={{ fontSize: 12 }}>
+                  {h.source === 'AUTO' ? 'Tự động' : h.source === 'IMPORT' ? 'Nhập file' : h.source === 'MIGRATION' ? 'Chuyển bộ bước' : (h.userName ?? 'Nhân viên')}
+                  {h.note ? ` · ${h.note}` : ''}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   )
 }
 
 /* ------------------------------------------------------------------ TAB 3 */
+/* Tab 2 (dòng thời gian) chuyển sang TimelineCard đa kênh, Lô 8 · C4. */
 
 function NeedsTab({ customer }: { customer: CustomerDetailType }): React.JSX.Element {
+  const clinic = useClinic()
   return (
     <div className="card">
-      <div className="sec-title">Nhu cầu &amp; Phác đồ</div>
+      <div className="sec-title">Ghi chú nhu cầu &amp; Phác đồ</div>
       <table>
         <tbody>
           <Row label="Dịch vụ quan tâm" value={customer.interest.join(' · ') || '—'} />
           <Row label="Ngân sách dự kiến" value={customer.budgetNote ?? '—'} />
           <Row label="Mong muốn của khách" value={customer.note ?? '—'} />
-          <Row label="Giai đoạn phễu" value={<Tag style={stageStyle(customer.stage)} />} />
+          <Row label="Bước (cơ hội hiện tại)" value={<Tag style={clinic.stageStyle(customer.stage)} />} />
         </tbody>
       </table>
       <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-        Phác đồ chi tiết (phương pháp chỉ định, thời gian nghỉ dưỡng, chống chỉ định) nằm trong tab
-        Hồ sơ y khoa và chỉ bác sĩ, điều dưỡng mới ghi được.
+        Phiếu tư vấn và phác đồ lập ở màn Tư vấn; báo giá 3 phương án bên dưới tự lấy phác đồ gần nhất.
+        Dị ứng, chống chỉ định nằm trong tab Y khoa và ảnh, chỉ bác sĩ, điều dưỡng mới ghi được.
       </div>
     </div>
   )
@@ -608,7 +671,7 @@ function MedicalTab({ customer }: { customer: CustomerDetailType }): React.JSX.E
         {record.restricted ? (
           <div className="alert wr">
             Vai trò của bạn chỉ xem được phần liên quan tư vấn bán hàng: dị ứng và chống chỉ định.
-            Chẩn đoán, phiếu mổ và phiếu gây mê không hiển thị.
+            Chẩn đoán, bệnh nền, thuốc đang dùng, thai kỳ, phiếu mổ và phiếu gây mê không hiển thị.
           </div>
         ) : null}
         {record.contraindications.some((c) => c.blocking) ? (
@@ -636,11 +699,15 @@ function MedicalTab({ customer }: { customer: CustomerDetailType }): React.JSX.E
                   : 'Không'
               }
             />
-            <Row label="Bệnh nền" value={record.chronicDisease ?? '—'} />
-            <Row label="Thuốc đang dùng" value={record.currentMedication ?? '—'} />
+            {!record.restricted ? <Row label="Bệnh nền" value={record.chronicDisease ?? '—'} /> : null}
+            {!record.restricted ? (
+              <Row label="Thuốc đang dùng" value={record.currentMedication ?? '—'} />
+            ) : null}
             <Row label="Tiền sử PTTM" value={record.pastAesthetic ?? '—'} />
             <Row label="Hút thuốc" value={record.smoking ? 'Có' : 'Không'} />
-            <Row label="Mang thai / cho con bú" value={record.pregnancyNote ?? '—'} />
+            {!record.restricted ? (
+              <Row label="Mang thai / cho con bú" value={record.pregnancyNote ?? '—'} />
+            ) : null}
             <Row label="Bác sĩ phụ trách" value={record.doctor?.name ?? '—'} />
           </tbody>
         </table>
@@ -746,6 +813,19 @@ function MedicalTab({ customer }: { customer: CustomerDetailType }): React.JSX.E
 
 function PhotosTab({ customerId }: { customerId: string }): React.JSX.Element {
   const { can } = useAuth()
+  const clinic = useClinic()
+  const { say, fail } = useToast()
+  const toggleMarketing = async (set: PhotoSet): Promise<void> => {
+    const next = !set.consentForMarketing
+    if (next && !window.confirm('Chỉ bật khi khách đã đồng ý bằng văn bản cho dùng ảnh làm truyền thông. Tiếp tục?')) return
+    try {
+      await setPhotoMarketingConsent(set.id, next)
+      say(next ? 'Đã cho phép dùng bộ ảnh làm marketing.' : 'Đã tắt cho phép dùng ảnh làm marketing.')
+      load()
+    } catch (err) {
+      fail(getApiErrorMessage(err))
+    }
+  }
   const [sets, setSets] = useState<PhotoSet[] | null>(null)
   const [blocked, setBlocked] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -796,9 +876,13 @@ function PhotosTab({ customerId }: { customerId: string }): React.JSX.Element {
     return (
       <div className="card">
         <Empty>
-          Chưa có ảnh. Chụp ảnh hiện trạng trước khi phẫu thuật để so sánh về sau.
+          {clinic.isInjection
+            ? 'Chưa có ảnh. Chụp ảnh D0 trước khi tiêm để so sánh về sau.'
+            : 'Chưa có ảnh. Chụp ảnh hiện trạng trước khi phẫu thuật để so sánh về sau.'}
           <br />
-          <span className="muted">Mốc chuẩn: trước mổ · N1 · N7 · T1 · T3 · T6</span>
+          <span className="muted">
+            {clinic.isInjection ? 'Mốc chuẩn: D0 · D7 · D30. Ảnh khách gửi qua chat tự lưu vào mục "Khách gửi qua chat".' : 'Mốc chuẩn: trước mổ · N1 · N7 · T1 · T3 · T6'}
+          </span>
           <div className="row" style={{ justifyContent: 'center', marginTop: 14 }}>{uploadButton}</div>
         </Empty>
         {uploadModal}
@@ -819,6 +903,14 @@ function PhotosTab({ customerId }: { customerId: string }): React.JSX.Element {
               {dateTimeVi(set.takenAt)}
               {set.takenBy ? ` · ${set.takenBy.name}` : ''}
             </span>
+            {set.consentForMarketing ? (
+              <span className="tag" style={{ background: '#DCFCE7', color: '#15803D', marginLeft: 6 }}>Được dùng marketing</span>
+            ) : null}
+            {can('photo.marketing_consent') ? (
+              <button className="btn sec sm" style={{ marginLeft: 6 }} onClick={() => void toggleMarketing(set)}>
+                {set.consentForMarketing ? 'Tắt marketing' : 'Cho dùng marketing'}
+              </button>
+            ) : null}
           </div>
           {set.note ? <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>{set.note}</div> : null}
           <div className="row" style={{ flexWrap: 'wrap' }}>
@@ -881,8 +973,72 @@ function SecurePhoto({ photoId, fileName }: { photoId: string; fileName: string 
 
 /* ------------------------------------------------------------------ TAB 7 */
 
+/** C2: chế độ tiêm hiện chăm sóc sau tiêm D0..D30 (việc F10 thật), chế độ phẫu thuật giữ hậu phẫu. */
 function PostOpTab({ customer }: { customer: CustomerDetailType }): React.JSX.Element {
-  const isPostOp = ['PT', 'HAUPHAU'].includes(customer.stage)
+  const clinic = useClinic()
+  const [tasks, setTasks] = useState<AftercareTask[] | null>(null)
+  useEffect(() => {
+    if (!clinic.isInjection) return
+    fetchCustomerAftercare(customer.id)
+      .then((r) => setTasks(r.items))
+      .catch(() => setTasks([]))
+  }, [customer.id, clinic.isInjection])
+
+  if (clinic.isInjection) {
+    const care = (tasks ?? []).filter((t) => t.kind === 'AFTERCARE' || t.kind === 'RETREAT')
+    return (
+      <div className="card">
+        <div className="sec-title">Chăm sóc sau tiêm</div>
+        {tasks === null ? (
+          <div className="muted">Đang tải…</div>
+        ) : care.length === 0 ? (
+          <Empty>Khách chưa có mốc chăm sóc. Mốc D0 đến D30 tự sinh khi hoàn tất một lần thực hiện dịch vụ.</Empty>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Mốc</th>
+                  <th>Dịch vụ</th>
+                  <th>Hạn gọi</th>
+                  <th>Trạng thái</th>
+                  <th>Kết quả</th>
+                </tr>
+              </thead>
+              <tbody>
+                {care.map((t) => (
+                  <tr key={t.id}>
+                    <td>
+                      <b>{t.kind === 'RETREAT' ? 'Tái tiêm' : (t.milestone ?? '—')}</b>
+                    </td>
+                    <td>{t.procedure?.service?.name ?? t.procedure?.title ?? t.title}</td>
+                    <td className={t.overdue ? 't-over' : ''}>{dateVi(t.dueAt)}</td>
+                    <td>
+                      {t.status === 'DONE' ? (
+                        <span className="hchip PAID">Đã liên hệ</span>
+                      ) : t.overdue ? (
+                        <span className="hchip HOT">Quá hạn</span>
+                      ) : (
+                        <span className="hchip NEUTRAL">Chờ liên hệ</span>
+                      )}
+                    </td>
+                    <td className="muted" style={{ fontSize: 12 }}>
+                      {t.resultNote ?? (t.contactedAt ? dateTimeVi(t.contactedAt) : '—')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          Bấm “Đã liên hệ” và ghi kết quả ở màn Chăm sóc sau tiêm.
+        </div>
+      </div>
+    )
+  }
+
+  const isPostOp = ['PT', 'HAUPHAU', 'LAM_DICH_VU', 'QUAY_LAI'].includes(customer.stage)
   return (
     <div className="card">
       <div className="sec-title">Hậu phẫu</div>
@@ -900,8 +1056,6 @@ function PostOpTab({ customer }: { customer: CustomerDetailType }): React.JSX.El
     </div>
   )
 }
-
-/* ------------------------------------------------------------------ TAB 8 */
 
 function FinanceTab({
   invoices,
@@ -966,12 +1120,23 @@ function FinanceTab({
 
 function TodoCard({
   customer,
-  invoices
+  invoices,
+  tasks
 }: {
   customer: CustomerDetailType
   invoices: Invoice[]
+  /** Việc mở của khách (mọi người được giao), cùng nguồn với "việc kế tiếp" trên thanh 360. */
+  tasks: Customer360['openTasks'] | null
 }): React.JSX.Element {
-  const todos: Array<{ level: 'dg' | 'wr'; text: string }> = []
+  const todos: Array<{ level: 'dg' | 'wr' | 'info'; text: string }> = []
+
+  for (const t of tasks ?? []) {
+    const who = t.assignee ? ` · ${t.assignee.name}` : ' · chưa giao ai'
+    todos.push({
+      level: t.overdue ? 'dg' : 'info',
+      text: `${t.overdue ? 'Quá hạn: ' : ''}${t.title}${t.dueAt ? `, hạn ${dateVi(t.dueAt)}` : ''}${who}`
+    })
+  }
 
   const overdue = invoices.filter((i) => i.remaining > 0 && i.overdueDays > 0)
   const upcoming = invoices.filter((i) => i.remaining > 0 && i.overdueDays <= 0)
@@ -1067,7 +1232,9 @@ function CollectModal({
   const [amount, setAmount] = useState(invoice.remaining)
   const [method, setMethod] = useState('CASH')
   const [reference, setReference] = useState('')
+  const [misa, setMisa] = useState('')
   const [saving, setSaving] = useState(false)
+  const dep = useOpenDeposit(customerId, invoice.remaining, setAmount)
 
   const submit = async (): Promise<void> => {
     setSaving(true)
@@ -1077,9 +1244,12 @@ function CollectModal({
         invoiceId: invoice.id,
         amount,
         method,
-        reference: reference || undefined
+        reference: reference || undefined,
+        misaInvoiceNo: misa.trim() || undefined
       })
-      say(`Đã lập phiếu thu ${payment.code} — ${vnd(amount)}.`)
+      say(
+        `Đã lập phiếu thu ${payment.code}: ${vnd(amount)}${payment.depositApplied ? `, trừ cọc ${vnd(payment.depositApplied)}` : ''}.`
+      )
       onDone()
     } catch (err) {
       fail(getApiErrorMessage(err))
@@ -1097,7 +1267,7 @@ function CollectModal({
           <button className="btn sec" onClick={onClose}>
             Huỷ
           </button>
-          <button className="btn" onClick={() => void submit()} disabled={saving || amount <= 0}>
+          <button className="btn" onClick={() => void submit()} disabled={saving || (amount <= 0 && dep.usable <= 0)}>
             {saving ? 'Đang lưu…' : 'Lập phiếu thu'}
           </button>
         </>
@@ -1112,9 +1282,10 @@ function CollectModal({
           className="input"
           type="number"
           value={amount}
-          max={invoice.remaining}
+          max={invoice.remaining - dep.usable}
           onChange={(e) => setAmount(Number(e.target.value))}
         />
+        {dep.note}
       </div>
       <div className="field">
         <label>Hình thức</label>
@@ -1128,6 +1299,10 @@ function CollectModal({
       <div className="field">
         <label>Mã giao dịch / ghi chú</label>
         <input className="input" value={reference} onChange={(e) => setReference(e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Số hoá đơn MISA (nếu đã xuất)</label>
+        <input className="input" value={misa} onChange={(e) => setMisa(e.target.value)} />
       </div>
     </Modal>
   )

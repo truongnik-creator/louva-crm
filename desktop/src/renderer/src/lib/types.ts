@@ -48,7 +48,8 @@ export interface StaffUser extends UserRef {
   branches: Branch[]
 }
 
-export type FunnelStage =
+/** Bộ bước phẫu thuật (clinic.mode = SURGERY). */
+export type SurgeryStage =
   | 'MOI'
   | 'LIENHE'
   | 'HEN'
@@ -60,6 +61,19 @@ export type FunnelStage =
   | 'TAIMUA'
   | 'MAT'
 
+/** F1: bộ 7 bước phòng khám tiêm (clinic.mode = INJECTION, mặc định). */
+export type InjectionStage =
+  | 'TIEP_CAN'
+  | 'NHAN_TIN'
+  | 'CO_ANH'
+  | 'LICH_COC'
+  | 'DEN_CO_SO'
+  | 'LAM_DICH_VU'
+  | 'QUAY_LAI'
+  | 'MAT_KHACH'
+
+export type FunnelStage = SurgeryStage | InjectionStage
+
 export interface CustomerListItem {
   id: string
   code: string
@@ -67,6 +81,7 @@ export interface CustomerListItem {
   phone: string | null
   status: string
   stage: FunnelStage
+  lostReason?: string | null
   interest: string[]
   lastContactAt: string | null
   createdAt: string
@@ -88,6 +103,10 @@ export interface CustomerDetail extends CustomerListItem {
   tags: Array<{ id: string; name: string; color: string }>
   totalPaid: number
   debt: number
+  aiDataConsent?: boolean
+  aiDataConsentAt?: string | null
+  /** F11: khách từ chối nhận tin gửi theo nhóm. */
+  optOut?: boolean
 }
 
 export interface TimelineEntry {
@@ -119,6 +138,16 @@ export interface Conversation {
   } | null
   assignedTo: UserRef | null
   branch?: Branch | null
+  pancakeConversationId?: string | null
+  adId?: string | null
+  adPostId?: string | null
+  adCampaign?: string | null
+  /** F26: nhóm kênh cho huy hiệu, số phút khách chờ, nhãn, cờ y khoa. */
+  channelGroup?: 'FB' | 'ZALO' | 'TIKTOK' | 'OTHER'
+  waitingSince?: string | null
+  waitingMinutes?: number | null
+  tags?: Array<{ id: string; name: string; color: string }>
+  medicalFlag?: boolean
 }
 
 export interface ConversationDetail extends Conversation {
@@ -126,12 +155,17 @@ export interface ConversationDetail extends Conversation {
     | (CustomerListItem & {
         assignedTo: UserRef | null
         telesale: UserRef | null
+        aiDataConsent?: boolean
+        city?: string | null
       })
     | null
   nextAppointment?: {
     id: string
     title: string
     startAt: string
+    code?: string | null
+    depositAmount?: number
+    depositStatus?: string | null
     doctor?: { name: string } | null
     room?: { name: string } | null
   } | null
@@ -150,6 +184,17 @@ export interface ChatMessage {
   status: string
   errorMessage: string | null
   createdAt: string
+  attachments?: MessageAttachment[]
+}
+
+/** Ảnh, tệp khách gửi kèm tin nhắn (B13). */
+export interface MessageAttachment {
+  id: string
+  kind: 'IMAGE' | 'FILE' | string
+  fileName: string
+  mimeType: string | null
+  size: number | null
+  savedPhotoSetId: string | null
 }
 
 export interface QuickReply {
@@ -157,6 +202,13 @@ export interface QuickReply {
   title: string
   content: string
   category: string | null
+  active?: boolean
+}
+
+export interface TemplateVariable {
+  key: string
+  label: string
+  example: string
 }
 
 export type AppointmentStatus =
@@ -176,6 +228,9 @@ export interface Appointment {
   startAt: string
   endAt: string
   note: string | null
+  code?: string | null
+  depositAmount?: number
+  depositStatus?: 'CHO_COC' | 'DA_COC' | 'HOAN_COC' | null
   customer: { id: string; name: string; phone: string | null; code: string; stage: FunnelStage }
   doctor: UserRef | null
   room: { id: string; name: string; code: string; type: string } | null
@@ -221,6 +276,8 @@ export interface Service {
   category: { id: string; name: string } | null
   price: number | null
   minPrice: number | null
+  /** F10: số ngày tái tiêm. */
+  retreatDays?: number | null
 }
 
 export interface Lead {
@@ -334,10 +391,11 @@ export interface MedicalRecord {
   branchId: string
   customerId: string
   bloodType: string | null
-  chronicDisease: string | null
-  currentMedication: string | null
+  /** Không có khi restricted (S5). */
+  chronicDisease?: string | null
+  currentMedication?: string | null
   smoking: boolean
-  pregnancyNote: string | null
+  pregnancyNote?: string | null
   pastAesthetic: string | null
   doctor: UserRef | null
   branch: Branch
@@ -368,6 +426,7 @@ export interface ConsentForm {
 export interface PhotoSet {
   id: string
   stage: string
+  consentForMarketing?: boolean
   takenAt: string
   note: string | null
   takenBy: UserRef | null

@@ -126,7 +126,7 @@ export default function Queue(): React.JSX.Element {
           </Empty>
         </div>
       ) : (
-        <div className="grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+        <div className="grid queue-grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
           {visits.map((v) => {
             const isLate = v.status === 'WAITING' && v.waitingMinutes >= LATE_MINUTES
             const step = NEXT_STATUS[v.status]

@@ -19,7 +19,9 @@ const ACTION_LABEL: Record<string, string> = {
   LOGIN: 'Đăng nhập',
   LOGIN_FAILED: 'Đăng nhập thất bại',
   LOGOUT: 'Đăng xuất',
-  BREAK_GLASS: 'Truy cập khẩn cấp'
+  BREAK_GLASS: 'Truy cập khẩn cấp',
+  ACCOUNT_LOCKED: 'Khoá tạm tài khoản',
+  MERGE: 'Gộp hồ sơ'
 }
 
 const RESOURCE_LABEL: Record<string, string> = {
@@ -125,7 +127,9 @@ export default function AuditLog(): React.JSX.Element {
                         <span
                           className="tag out"
                           style={
-                            a.action === 'BREAK_GLASS' || a.action === 'LOGIN_FAILED'
+                            a.action === 'BREAK_GLASS' ||
+                            a.action === 'LOGIN_FAILED' ||
+                            a.action === 'ACCOUNT_LOCKED'
                               ? { borderColor: 'var(--danger)', color: 'var(--danger)' }
                               : undefined
                           }

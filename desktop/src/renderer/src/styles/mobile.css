@@ -1,0 +1,263 @@
+/* =========================================================================
+   F28: DÙNG ĐƯỢC TRÊN ĐIỆN THOẠI.
+   Hai mốc: 768px (máy tính bảng dọc, điện thoại ngang) và 480px (điện thoại).
+   - Thanh bên thành ngăn kéo, mở bằng nút ☰ trên thanh trên.
+   - Hộp thư một cột: danh sách, hội thoại, hồ sơ khách (lớp m-list, m-chat, m-panel).
+   - Lưới nhiều cột viết inline (style="grid-template-columns: ...") gập còn 2 rồi 1 cột.
+   - Bảng rộng cuộn ngang trong khung, không đẩy vỡ trang.
+   Trên máy tính (> 768px) không đổi gì: mọi quy tắc nằm trong @media.
+   ========================================================================= */
+
+.m-only {
+  display: none !important;
+}
+.side-ovl {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .m-only {
+    display: inline-flex !important;
+  }
+  .d-only {
+    display: none !important;
+  }
+
+  #app,
+  .app-root,
+  .main {
+    height: 100dvh;
+  }
+
+  /* ---------------------------------------------------- NGĂN KÉO MENU */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    height: 100dvh;
+    width: 284px;
+    max-width: 86vw;
+    z-index: 80;
+    transform: translateX(-102%);
+    transition: transform 0.2s ease;
+    box-shadow: 6px 0 24px rgba(0, 0, 0, 0.25);
+  }
+  .app-root.nav-open .sidebar {
+    transform: none;
+  }
+  .app-root.nav-open .side-ovl {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 79;
+  }
+  .nav-item {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  /* ---------------------------------------------------------- THANH TRÊN */
+  .topbar {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+  .topbar h1 {
+    font-size: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar > div:first-of-type {
+    min-width: 0;
+  }
+  .topbar .sub,
+  .topbar .clock {
+    display: none;
+  }
+  .hamburger {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: 8px;
+    width: 38px;
+    height: 36px;
+    font-size: 18px;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 38px;
+    cursor: pointer;
+  }
+
+  .content {
+    padding: 10px;
+  }
+
+  /* ------------------------------------------------------ PHẦN TỬ CHUNG */
+  .row {
+    flex-wrap: wrap;
+  }
+  .grid[style*='repeat(4'],
+  .grid[style*='repeat(5'],
+  .grid[style*='repeat(6'] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .grid[style*='repeat(3'],
+  .grid[style*='2fr 1fr'],
+  .grid[style*='1fr 2fr'],
+  .grid[style*='1.2fr 1fr'] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .content table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+  }
+  .card {
+    max-width: 100%;
+    min-width: 0;
+  }
+  .input,
+  select,
+  textarea {
+    font-size: 16px; /* iOS không tự phóng to khi chạm vào ô nhập */
+  }
+  .btn {
+    min-height: 36px;
+  }
+  .modal-ovl {
+    padding: 8px;
+    align-items: flex-end;
+  }
+  .modal {
+    max-height: 92dvh;
+    padding: 14px;
+  }
+  .drawer {
+    width: 100vw;
+    max-width: 100vw;
+  }
+  .toast {
+    max-width: 92vw;
+  }
+  .tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+  .tabs button {
+    white-space: nowrap;
+  }
+
+  /* ------------------------------------------------ HỘP THƯ MỘT CỘT */
+  .zalo {
+    position: relative;
+  }
+  .zalo .zcol1,
+  .zalo .zcol2,
+  .zalo .zcol3 {
+    display: none;
+    width: 100%;
+    flex: 1 1 auto;
+    border: 0;
+  }
+  .zalo.m-list .zcol1 {
+    display: flex;
+  }
+  .zalo.m-chat .zcol2 {
+    display: flex;
+  }
+  .zalo.m-panel .zcol3 {
+    display: block;
+  }
+  .zchead {
+    flex-wrap: wrap;
+    padding: 8px 10px;
+  }
+  .zmsgs {
+    padding: 10px;
+  }
+  .zbub {
+    max-width: 86%;
+  }
+  .zinput {
+    padding: 8px;
+  }
+
+  /* ------------------------------------------------ LỊCH HẸN, HÀNG ĐỢI */
+  .calwrap {
+    max-width: 100%;
+  }
+  .queue-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Ô số (kpi) vẫn 2 cột cho gọn; lưới biểu mẫu hai cột thì thành một cột. */
+  .grid[style*='1fr 1fr'] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .kpi .val {
+    font-size: 18px;
+  }
+  .topbar .right .btn {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .content {
+    padding: 8px;
+  }
+  thead th,
+  tbody td {
+    padding: 8px;
+  }
+}
+
+/* F30: phiếu tư vấn trên máy tính bảng, ô chạm to. */
+.face-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.face-chip {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 12px 10px;
+  font-size: 14px;
+  text-align: center;
+  cursor: pointer;
+  min-height: 46px;
+}
+.face-chip.on {
+  background: var(--green-700);
+  border-color: var(--green-700);
+  color: #fff;
+  font-weight: 600;
+}
+.case-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.case-photos {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin: 8px 0;
+}
+.case-photos img {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.briefing {
+  white-space: pre-wrap;
+  font-size: 13.5px;
+  line-height: 1.55;
+}

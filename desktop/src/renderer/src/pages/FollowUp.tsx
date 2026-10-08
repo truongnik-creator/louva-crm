@@ -1,91 +1,96 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { fetchAppointments, getApiErrorMessage, setAppointmentStatus } from '../lib/api'
 import {
-  fetchAppointments,
-  fetchCustomers,
-  getApiErrorMessage,
-  setAppointmentStatus
-} from '../lib/api'
+  contactAftercare,
+  fetchAftercare,
+  setRetreatDays,
+  type AftercareResult,
+  type AftercareTask,
+  type AftercareView
+} from '../lib/api-lo4'
 import { useAuth } from '../lib/auth-context'
-import { dateVi, hhmm, relativeVi, toISODate } from '../lib/format'
-import { APPOINTMENT_STATUS, stageStyle, tagStyleOf } from '../lib/ui'
-import { Empty, Tag, useToast } from '../components/ui'
-import type { Appointment, CustomerListItem } from '../lib/types'
+import { useClinic } from '../lib/clinic-context'
+import { dateTimeVi, dateVi, hhmm } from '../lib/format'
+import { APPOINTMENT_STATUS, tagStyleOf } from '../lib/ui'
+import { Empty, Modal, Tag, useToast } from '../components/ui'
+import type { Appointment } from '../lib/types'
 
-/* HẬU PHẪU & TÁI KHÁM.
+/* F10: CHĂM SÓC SAU ĐIỀU TRỊ.
  *
- * Hai câu hỏi mà điều dưỡng cần trả lời mỗi sáng:
- *   1. Hôm nay ai đến tái khám?
- *   2. Khách nào đang hậu phẫu mà QUÁ HẠN chưa được liên hệ?
- *
- * Câu 2 là chỗ dễ rơi nhất — lịch tái khám N1/N7/T1/T3 sinh tự động khi kết
- * thúc mổ, nhưng nếu không ai theo dõi thì khách trôi qua mốc mà không ai gọi. */
+ * Danh sách việc chăm sóc (D0, D1, D3, D7, D14, D30) và việc tái tiêm, LỌC Ở MÁY
+ * CHỦ theo phạm vi quyền. Quá hạn tính theo Cài đặt followup.overdueDays. Nút
+ * "Đã liên hệ" ghi kết quả: liên hệ được thì xong việc, không nghe máy hoặc hẹn
+ * gọi lại thì dời hạn, khách có vấn đề thì báo bác sĩ. */
 
-const OVERDUE_DAYS = 3
+const TABS: Array<{ key: AftercareView; t: string }> = [
+  { key: 'due', t: 'Cần gọi hôm nay' },
+  { key: 'overdue', t: 'Quá hạn' },
+  { key: 'upcoming', t: 'Sắp tới' },
+  { key: 'done', t: 'Đã liên hệ' }
+]
+
+const RESULT_LABEL: Record<string, string> = {
+  REACHED_OK: 'Liên hệ được, khách ổn',
+  REACHED_ISSUE: 'Liên hệ được, khách có vấn đề (báo bác sĩ)',
+  NO_ANSWER: 'Không nghe máy, không trả lời',
+  CALL_BACK_LATER: 'Khách hẹn gọi lại'
+}
 
 export default function FollowUp(): React.JSX.Element {
-  const { branchId } = useAuth()
+  const { branchId, can } = useAuth()
+  const clinic = useClinic()
   const { say, fail } = useToast()
   const navigate = useNavigate()
 
-  const [upcoming, setUpcoming] = useState<Appointment[]>([])
-  const [postOp, setPostOp] = useState<CustomerListItem[]>([])
+  const [view, setView] = useState<AftercareView>('due')
+  const [kind, setKind] = useState('')
+  const [mine, setMine] = useState(false)
+  const [items, setItems] = useState<AftercareTask[]>([])
+  const [counts, setCounts] = useState({ due: 0, overdue: 0, upcoming: 0 })
+  const [overdueDays, setOverdueDays] = useState(3)
+  const [followAppts, setFollowAppts] = useState<Appointment[]>([])
   const [loading, setLoading] = useState(true)
+  const [contactFor, setContactFor] = useState<AftercareTask | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const from = new Date()
-      from.setHours(0, 0, 0, 0)
-      const to = new Date(from)
-      to.setDate(to.getDate() + 14)
-
-      const [appts, customers] = await Promise.all([
-        fetchAppointments({ from: from.toISOString(), to: to.toISOString() }),
-        fetchCustomers({ limit: 300 })
-      ])
-
-      // Chỉ giữ lịch tái khám / hậu phẫu, bỏ lịch tư vấn và tiền phẫu.
-      setUpcoming(
-        appts.items.filter(
-          (a) => a.type === 'FOLLOW_UP' && !['CANCELLED', 'DONE'].includes(a.status)
-        )
-      )
-      setPostOp(customers.items.filter((c) => ['PT', 'HAUPHAU'].includes(c.stage)))
+      const res = await fetchAftercare({ view, kind: kind || undefined, mine: mine ? '1' : undefined, limit: 200 })
+      setItems(res.items)
+      setCounts(res.counts)
+      setOverdueDays(res.overdueDays)
+      if (!clinic.isInjection && can('appointment.read')) {
+        const from = new Date()
+        from.setHours(0, 0, 0, 0)
+        const to = new Date(from.getTime() + 14 * 86_400_000)
+        const appts = await fetchAppointments({ from: from.toISOString(), to: to.toISOString() })
+        setFollowAppts(appts.items.filter((a) => a.type === 'FOLLOW_UP' && !['CANCELLED', 'DONE'].includes(a.status)))
+      }
     } catch (err) {
       fail(getApiErrorMessage(err))
     } finally {
       setLoading(false)
     }
-  }, [fail])
+  }, [view, kind, mine, clinic.isInjection, can, fail])
 
   useEffect(() => {
     void load()
   }, [load, branchId])
 
-  const today = toISODate(new Date())
-
-  const { todayList, laterList } = useMemo(() => {
-    const t: Appointment[] = []
-    const l: Appointment[] = []
-    for (const a of upcoming) {
-      if (toISODate(new Date(a.startAt)) === today) t.push(a)
-      else l.push(a)
+  const editRetreat = async (t: AftercareTask): Promise<void> => {
+    if (!t.procedure) return
+    const current = t.procedure.retreatDays ?? t.procedure.service?.retreatDays ?? ''
+    const raw = window.prompt('Số ngày tái tiêm cho lần làm này (để trống = theo dịch vụ):', String(current))
+    if (raw === null) return
+    const days = raw.trim() ? Number(raw) : null
+    if (days !== null && (!Number.isInteger(days) || days < 1)) {
+      fail('Số ngày phải là số nguyên dương.')
+      return
     }
-    return { todayList: t, laterList: l }
-  }, [upcoming, today])
-
-  // "Quá hạn liên hệ": khách đang hậu phẫu mà đã hơn 3 ngày không có lần chạm nào.
-  const stale = postOp.filter((c) => {
-    if (!c.lastContactAt) return true
-    const days = (Date.now() - new Date(c.lastContactAt).getTime()) / 86400000
-    return days > OVERDUE_DAYS
-  })
-
-  const markDone = async (a: Appointment): Promise<void> => {
     try {
-      await setAppointmentStatus(a.id, 'DONE')
-      say('Đã đánh dấu hoàn tất tái khám.')
+      const r = await setRetreatDays(t.procedure.id, days)
+      say(r.retreatDueAt ? `Mốc tái tiêm mới: ${dateVi(r.retreatDueAt)}` : 'Đã bỏ mốc tái tiêm.')
       void load()
     } catch (err) {
       fail(getApiErrorMessage(err))
@@ -94,176 +99,199 @@ export default function FollowUp(): React.JSX.Element {
 
   return (
     <>
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginBottom: 12 }}>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)', marginBottom: 12 }}>
         <div className="kpi">
-          <div className="lab">Đang hậu phẫu</div>
-          <div className="val">{postOp.length}</div>
+          <div className="lab">Cần gọi hôm nay</div>
+          <div className="val">{counts.due}</div>
         </div>
         <div className="kpi">
-          <div className="lab">Tái khám hôm nay</div>
-          <div className="val">{todayList.length}</div>
+          <div className="lab">Quá hạn trên {overdueDays} ngày</div>
+          <div className="val" style={{ color: counts.overdue ? 'var(--danger)' : undefined }}>{counts.overdue}</div>
         </div>
         <div className="kpi">
-          <div className="lab">Tái khám 14 ngày tới</div>
-          <div className="val">{laterList.length}</div>
-        </div>
-        <div className="kpi">
-          <div className="lab">Quá hạn liên hệ</div>
-          <div className="val" style={{ color: stale.length ? 'var(--danger)' : undefined }}>
-            {stale.length}
-          </div>
-          {stale.length ? <div className="dt down">Quá {OVERDUE_DAYS} ngày chưa chạm</div> : null}
+          <div className="lab">Sắp tới</div>
+          <div className="val">{counts.upcoming}</div>
         </div>
       </div>
 
-      {loading ? (
-        <div className="card">
+      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="row" style={{ padding: '10px 14px', gap: 8, flexWrap: 'wrap' }}>
+          {TABS.map((t) => (
+            <button key={t.key} className={`btn sm${view === t.key ? '' : ' sec'}`} onClick={() => setView(t.key)}>
+              {t.t}
+            </button>
+          ))}
+          <select className="input" style={{ maxWidth: 180, marginLeft: 'auto' }} value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="">Chăm sóc và tái tiêm</option>
+            <option value="AFTERCARE">Chỉ chăm sóc theo mốc</option>
+            <option value="RETREAT">Chỉ tái tiêm</option>
+          </select>
+          <label className="row" style={{ gap: 6, fontSize: 13 }}>
+            <input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} /> Của tôi
+          </label>
+        </div>
+        {loading ? (
           <Empty>Đang tải…</Empty>
+        ) : items.length === 0 ? (
+          <Empty>Không có việc nào trong mục này.</Empty>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: 70 }}>Mốc</th>
+                <th>Khách hàng</th>
+                <th>Dịch vụ</th>
+                <th style={{ width: 140 }}>Hạn gọi</th>
+                <th style={{ width: 130 }}>Phụ trách</th>
+                <th>Kết quả</th>
+                <th style={{ width: 150 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((t) => (
+                <tr key={t.id}>
+                  <td>
+                    <b>{t.kind === 'RETREAT' ? 'Tái tiêm' : t.milestone}</b>
+                  </td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => t.customer && navigate(`/khach-hang/${t.customer.id}`)}>
+                    <b>{t.customer?.name ?? ''}</b>
+                    <div className="muted" style={{ fontSize: 11.5 }}>{t.customer?.phone ?? ''}</div>
+                  </td>
+                  <td>
+                    {t.procedure?.service?.name ?? t.procedure?.title ?? t.title}
+                    {t.procedure?.retreatDueAt ? (
+                      <div className="muted" style={{ fontSize: 11.5 }}>Tái tiêm: {dateVi(t.procedure.retreatDueAt)}</div>
+                    ) : null}
+                  </td>
+                  <td style={{ color: t.overdue ? 'var(--danger)' : undefined }}>
+                    {t.dueAt ? dateTimeVi(t.dueAt) : ''}
+                    {t.overdue ? <div style={{ fontSize: 11.5 }}>Quá hạn</div> : null}
+                  </td>
+                  <td>{t.assignee?.name ?? 'Chưa giao'}</td>
+                  <td style={{ fontSize: 12, whiteSpace: 'pre-line' }}>{t.resultNote ?? ''}</td>
+                  <td>
+                    {t.status !== 'DONE' ? (
+                      <button className="btn sm" onClick={() => setContactFor(t)}>
+                        Đã liên hệ
+                      </button>
+                    ) : null}
+                    {t.procedure && can('followup.update') ? (
+                      <button className="btn sec sm" style={{ marginLeft: 4 }} onClick={() => void editRetreat(t)} title="Bác sĩ chỉnh số ngày tái tiêm">
+                        Ngày tái tiêm
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {followAppts.length ? (
+        <div className="card" style={{ padding: 0, overflow: 'hidden', marginTop: 12 }}>
+          <div className="sec-title" style={{ padding: '12px 14px 0' }}>Lịch tái khám 14 ngày tới</div>
+          <table>
+            <tbody>
+              {followAppts.map((a) => (
+                <tr key={a.id}>
+                  <td>{dateVi(a.startAt)} {hhmm(a.startAt)}</td>
+                  <td>{a.customer.name}</td>
+                  <td>{a.title}</td>
+                  <td>
+                    <Tag style={tagStyleOf(APPOINTMENT_STATUS, a.status)} />
+                  </td>
+                  <td>
+                    <button
+                      className="btn sec sm"
+                      onClick={async () => {
+                        await setAppointmentStatus(a.id, 'DONE')
+                        void load()
+                      }}
+                    >
+                      Hoàn tất
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      ) : (
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 460 }}>
-            <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: 12 }}>
-              <div className="sec-title" style={{ padding: '12px 14px 0' }}>
-                Tái khám hôm nay
-              </div>
-              {todayList.length === 0 ? (
-                <Empty>Hôm nay không có lịch tái khám nào.</Empty>
-              ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Giờ</th>
-                      <th>Khách hàng</th>
-                      <th>Nội dung</th>
-                      <th>Bác sĩ</th>
-                      <th>Trạng thái</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {todayList.map((a) => (
-                      <tr key={a.id}>
-                        <td>
-                          <b>{hhmm(a.startAt)}</b>
-                        </td>
-                        <td
-                          style={{ cursor: 'pointer' }}
-                          onClick={() => navigate(`/khach-hang/${a.customer.id}`)}
-                        >
-                          <b>{a.customer.name}</b>
-                          <div className="muted" style={{ fontSize: 11.5 }}>
-                            {a.customer.phone ?? '—'}
-                          </div>
-                        </td>
-                        <td>{a.title}</td>
-                        <td>{a.doctor?.name ?? '—'}</td>
-                        <td>
-                          <Tag style={tagStyleOf(APPOINTMENT_STATUS, a.status)} />
-                        </td>
-                        <td>
-                          <button className="btn sec sm" onClick={() => void markDone(a)}>
-                            Hoàn tất
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-              <div className="sec-title" style={{ padding: '12px 14px 0' }}>
-                Tái khám sắp tới (14 ngày)
-              </div>
-              {laterList.length === 0 ? (
-                <Empty>Không có lịch tái khám nào trong 14 ngày tới.</Empty>
-              ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Ngày</th>
-                      <th>Giờ</th>
-                      <th>Khách hàng</th>
-                      <th>Nội dung</th>
-                      <th>Bác sĩ</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {laterList.map((a) => (
-                      <tr key={a.id}>
-                        <td>{dateVi(a.startAt)}</td>
-                        <td>{hhmm(a.startAt)}</td>
-                        <td
-                          style={{ cursor: 'pointer' }}
-                          onClick={() => navigate(`/khach-hang/${a.customer.id}`)}
-                        >
-                          {a.customer.name}
-                        </td>
-                        <td>{a.title}</td>
-                        <td className="muted">{a.doctor?.name ?? '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-
-          <div style={{ width: 340, flex: '0 0 340px' }}>
-            <div className="card">
-              <div className="sec-title">Khách hậu phẫu cần liên hệ</div>
-              {stale.length === 0 ? (
-                <div className="alert ok">Mọi khách hậu phẫu đều đã được chạm trong {OVERDUE_DAYS} ngày qua.</div>
-              ) : (
-                stale.map((c) => (
-                  <div
-                    key={c.id}
-                    className="alert wr"
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => navigate(`/khach-hang/${c.id}`)}
-                  >
-                    <b>{c.name}</b> — chạm gần nhất: {relativeVi(c.lastContactAt)}
-                    <div style={{ marginTop: 4 }}>
-                      <Tag style={stageStyle(c.stage)} />
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="card" style={{ marginTop: 12 }}>
-              <div className="sec-title">Đang hậu phẫu ({postOp.length})</div>
-              {postOp.length === 0 ? (
-                <Empty>Chưa có khách nào trong giai đoạn hậu phẫu.</Empty>
-              ) : (
-                postOp.map((c) => (
-                  <div
-                    key={c.id}
-                    style={{
-                      padding: '8px 0',
-                      borderBottom: '1px dashed var(--border)',
-                      fontSize: 12.8,
-                      cursor: 'pointer'
-                    }}
-                    onClick={() => navigate(`/khach-hang/${c.id}`)}
-                  >
-                    <b>{c.name}</b>
-                    <div className="muted">
-                      {c.interest.join(' · ') || '—'} · chạm: {relativeVi(c.lastContactAt)}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      ) : null}
 
       <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-        Lịch tái khám N1 · N7 · T1 · T3 được sinh tự động khi bấm “Kết thúc mổ” ở màn Phòng mổ · Lịch mổ.
+        Việc chăm sóc được sinh tự động khi hoàn tất một lần thực hiện (quy tắc 7). Việc tái tiêm được tạo trước mốc tái tiêm (quy tắc 8).
       </div>
+
+      {contactFor ? (
+        <ContactModal
+          task={contactFor}
+          onClose={() => setContactFor(null)}
+          onDone={() => {
+            setContactFor(null)
+            void load()
+          }}
+        />
+      ) : null}
     </>
+  )
+}
+
+function ContactModal({ task, onClose, onDone }: { task: AftercareTask; onClose: () => void; onDone: () => void }): React.JSX.Element {
+  const { say, fail } = useToast()
+  const [result, setResult] = useState<AftercareResult>('REACHED_OK')
+  const [note, setNote] = useState('')
+  const [next, setNext] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const submit = async (): Promise<void> => {
+    setSaving(true)
+    try {
+      await contactAftercare(task.id, {
+        result,
+        note: note || undefined,
+        nextDueAt: next ? new Date(next).toISOString() : undefined
+      })
+      say('Đã ghi kết quả liên hệ.')
+      onDone()
+    } catch (err) {
+      fail(getApiErrorMessage(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={`Đã liên hệ: ${task.customer?.name ?? ''} (${task.kind === 'RETREAT' ? 'tái tiêm' : task.milestone})`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn sec" onClick={onClose}>Huỷ</button>
+          <button className="btn" disabled={saving} onClick={() => void submit()}>
+            {saving ? 'Đang lưu…' : 'Lưu kết quả'}
+          </button>
+        </>
+      }
+    >
+      <div className="field">
+        <label>Kết quả</label>
+        <select className="input" value={result} onChange={(e) => setResult(e.target.value as AftercareResult)}>
+          {Object.entries(RESULT_LABEL).map(([k, v]) => (
+            <option key={k} value={k}>{v}</option>
+          ))}
+        </select>
+      </div>
+      {result === 'CALL_BACK_LATER' || result === 'NO_ANSWER' ? (
+        <div className="field">
+          <label>Gọi lại lúc {result === 'NO_ANSWER' ? '(để trống = ngày mai)' : '*'}</label>
+          <input className="input" type="datetime-local" value={next} onChange={(e) => setNext(e.target.value)} />
+        </div>
+      ) : null}
+      <div className="field">
+        <label>Ghi chú</label>
+        <textarea className="input" rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Khách nói gì, cần làm gì tiếp" />
+      </div>
+    </Modal>
   )
 }

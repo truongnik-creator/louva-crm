@@ -9,6 +9,7 @@ import {
   getApiErrorMessage
 } from '../lib/api'
 import { useAuth } from '../lib/auth-context'
+import { fetchDepositReport, type DepositReport } from '../lib/api-nova'
 import { ddmm, percent, vnd } from '../lib/format'
 import { Empty, useToast } from '../components/ui'
 import type { MarketingFunnelRow, StaffPerformanceRow } from '../lib/types'
@@ -176,19 +177,24 @@ function RevenueReport({ period }: { period: string }): React.JSX.Element {
   const [byConsultant, setByConsultant] = useState<
     Array<{ key: string; revenue: number; collected?: number; count: number }>
   >([])
+  const [byChannel, setByChannel] = useState<
+    Array<{ key: string; revenue: number; collected?: number; count: number }>
+  >([])
   const [staff, setStaff] = useState<StaffPerformanceRow[]>([])
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [svc, cons, perf] = await Promise.all([
+      const [svc, cons, chan, perf] = await Promise.all([
         fetchRevenueReport({ period, groupBy: 'service' }),
         fetchRevenueReport({ period, groupBy: 'consultant' }),
+        fetchRevenueReport({ period, groupBy: 'channel' }),
         fetchStaffPerformance({ period }).catch(() => [])
       ])
       setByService(svc)
       setByConsultant(cons)
+      setByChannel(chan)
       setStaff(perf)
     } catch (err) {
       fail(getApiErrorMessage(err))
@@ -239,8 +245,8 @@ function RevenueReport({ period }: { period: string }): React.JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {byService.map((r) => (
-                <tr key={r.key}>
+              {byService.map((r, i) => (
+                <tr key={`${r.key}-${i}`}>
                   <td>{r.key}</td>
                   <td>{r.count}</td>
                   <td>
@@ -250,6 +256,38 @@ function RevenueReport({ period }: { period: string }): React.JSX.Element {
                     <div className="bar">
                       <i style={{ width: `${totalRevenue ? (r.revenue / totalRevenue) * 100 : 0}%` }} />
                     </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: 12 }}>
+        <div className="sec-title" style={{ padding: '12px 14px 0' }}>
+          Doanh thu theo kênh nguồn khách
+        </div>
+        {byChannel.length === 0 ? (
+          <Empty>Chưa có doanh thu theo kênh trong kỳ.</Empty>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Kênh</th>
+                <th>Hợp đồng</th>
+                <th>Doanh số ký</th>
+                <th>Thực thu trong kỳ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byChannel.map((r) => (
+                <tr key={r.key}>
+                  <td>{r.key}</td>
+                  <td>{r.count}</td>
+                  <td>{vnd(r.revenue)}</td>
+                  <td>
+                    <b>{vnd(r.collected ?? 0)}</b>
                   </td>
                 </tr>
               ))}
@@ -325,7 +363,9 @@ function OperationsReport({ period }: { period: string }): React.JSX.Element {
           <div className="val" style={{ color: data.appointments.noShow ? 'var(--danger)' : undefined }}>
             {data.appointments.noShow}
           </div>
-          <div className="dt muted">{percent(data.appointments.noShowRate)} tổng lịch</div>
+          <div className="dt muted">
+            {percent(data.appointments.noShowRate)} trên {data.appointments.noShowBase} lịch đã tới giờ
+          </div>
         </div>
         <div className="kpi">
           <div className="lab">Lượt check-in</div>
@@ -355,10 +395,117 @@ function OperationsReport({ period }: { period: string }): React.JSX.Element {
           ))
         )}
         <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
-          Mốc 100% = 8 giờ mổ mỗi ngày cho mỗi phòng.
+          Mốc 100% = {data.capacityHoursPerDay} giờ mỗi ngày cho mỗi phòng mổ, phòng thủ thuật. Tính theo giờ bắt
+          đầu và kết thúc thật khi đã ghi nhận.
         </div>
       </div>
+
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12, marginTop: 12 }}>
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div className="sec-title" style={{ padding: '12px 14px 0' }}>
+            Công suất theo bác sĩ
+          </div>
+          {data.capacityByDoctor.length === 0 ? (
+            <Empty>Chưa có ca nào trong kỳ.</Empty>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Bác sĩ</th>
+                  <th>Số ca</th>
+                  <th>Giờ làm</th>
+                  <th>Công suất</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.capacityByDoctor.map((d) => (
+                  <tr key={d.doctorId ?? 'none'}>
+                    <td>{d.name}</td>
+                    <td>{d.cases}</td>
+                    <td>{Math.round((d.minutes / 60) * 10) / 10}h</td>
+                    <td>
+                      <b>{d.utilization}%</b>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div className="sec-title" style={{ padding: '12px 14px 0' }}>
+            Công suất theo cơ sở
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Cơ sở</th>
+                <th>Số phòng</th>
+                <th>Giờ làm</th>
+                <th>Công suất</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.capacityByBranch.map((b) => (
+                <tr key={b.branchId}>
+                  <td>{b.name}</td>
+                  <td>{b.rooms}</td>
+                  <td>{Math.round((b.minutes / 60) * 10) / 10}h</td>
+                  <td>
+                    <b>{b.utilization}%</b>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <DepositReportCard period={period} />
     </>
+  )
+}
+
+/** F25 + F12: tỉ lệ lịch có cọc, tỉ lệ không đến tách theo có cọc và không cọc. */
+function DepositReportCard({ period }: { period: string }): React.JSX.Element | null {
+  const [data, setData] = useState<DepositReport | null>(null)
+  useEffect(() => {
+    fetchDepositReport({ period })
+      .then(setData)
+      .catch(() => setData(null))
+  }, [period])
+  if (!data) return null
+  const pct = (v: number | null) => (v == null ? 'chưa có' : `${v}%`)
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <div className="sec-title">Đặt cọc và tỉ lệ không đến</div>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+        <div className="kpi">
+          <div className="lab">Tỉ lệ lịch có cọc</div>
+          <div className="val">{pct(data.depositRate)}</div>
+          <div className="dt muted">
+            {data.withDeposit} / {data.appointments} lịch không huỷ
+          </div>
+        </div>
+        <div className="kpi">
+          <div className="lab">Tiền cọc nhận trong kỳ</div>
+          <div className="val">{vnd(data.depositCollected)}</div>
+        </div>
+        <div className="kpi">
+          <div className="lab">Không đến khi CÓ cọc</div>
+          <div className="val">{pct(data.noShow.withDeposit.rate)}</div>
+          <div className="dt muted">
+            {data.noShow.withDeposit.noShow} / {data.noShow.withDeposit.due} lịch đã tới giờ
+          </div>
+        </div>
+        <div className="kpi">
+          <div className="lab">Không đến khi KHÔNG cọc</div>
+          <div className="val" style={{ color: 'var(--danger)' }}>{pct(data.noShow.withoutDeposit.rate)}</div>
+          <div className="dt muted">
+            {data.noShow.withoutDeposit.noShow} / {data.noShow.withoutDeposit.due} lịch đã tới giờ
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
 
