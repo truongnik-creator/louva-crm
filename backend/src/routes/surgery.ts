@@ -1,23 +1,29 @@
 import { Router } from "express";
+import { grantReferralReward, logGrowthError } from "../lib/growth";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { formatVnd, formatTimeVN, startOfVnDay } from "../lib/datetime";
+import { pageQuery } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
-import { requirePermission, notFound } from "../middleware/rbac";
+import { requirePermission, notFound, maskCustomerPhonesInResponse, maskCustomerPhonesForBroadcast } from "../middleware/rbac";
 import { writeAudit } from "../lib/audit";
 import { withCode, CodePrefix } from "../lib/codes";
 import { emitTo, roomFor } from "../socket";
-import { getSettingNumber } from "../lib/settings-catalog";
+import { getSettingBool, getSettingNumber } from "../lib/settings-catalog";
+import { applyStageEventSafe, getClinicMode } from "../lib/stages";
+import { generateAftercare, setProcedureRetreatDays } from "../lib/aftercare";
 import { consumeServiceMaterials } from "../lib/material-consumption";
 import {
   AuditAction,
   ActivityType,
   AnesthesiaType,
+  ClinicMode,
   AppointmentType,
   ConsentStatus,
   ContractStatus,
   CustomerStatus,
-  FunnelStage,
+  StageEvent,
   PhotoStage,
   PRE_OP_CHECKLIST,
   ProcedureStatus,
@@ -32,6 +38,8 @@ import {
 
 const router = Router();
 router.use(requireAuth);
+// Che SĐT khách lồng trong mọi phản hồi của router này cho vai không có customer.view_phone.
+router.use(maskCustomerPhonesInResponse);
 
 /**
  * Tỉ lệ cọc tối thiểu để được xác nhận ca. Đọc từ Cài đặt hệ thống thay vì
@@ -102,7 +110,7 @@ export async function evaluateChecklist(procedureId: string): Promise<ChecklistR
       label: PRE_OP_CHECKLIST[0],
       ok: depositOk,
       detail: proc.contract
-        ? `Đã thu ${proc.contract.paidAmount.toLocaleString("vi-VN")}đ / cần tối thiểu ${Math.ceil(proc.contract.total * ratio).toLocaleString("vi-VN")}đ`
+        ? `Đã thu ${formatVnd(proc.contract.paidAmount)}đ / cần tối thiểu ${formatVnd(Math.ceil(proc.contract.total * ratio))}đ`
         : "Ca mổ chưa gắn hợp đồng",
     },
     { label: PRE_OP_CHECKLIST[1], ok: Boolean(consent), detail: consent ? undefined : "Chưa có cam kết đã ký" },
@@ -127,13 +135,18 @@ router.get(
   requirePermission("surgery_schedule.read"),
   asyncHandler(async (req, res) => {
     const me = currentUser(req);
-    const from = req.query.from ? new Date(String(req.query.from)) : new Date();
-    const start = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+    const fromRaw = req.query.from ? String(req.query.from) : null;
+    const from = fromRaw
+      ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(fromRaw) ? `${fromRaw}T12:00:00Z` : fromRaw)
+      : new Date();
+    // Ngày theo giờ Việt Nam, không theo múi giờ máy chủ.
+    const start = startOfVnDay(from);
     const end = req.query.to
       ? new Date(String(req.query.to))
       : new Date(start.getTime() + 24 * 3600 * 1000);
 
     const procedures = await prisma.procedureRecord.findMany({
+      ...pageQuery(req.query, { defaultLimit: 200, maxLimit: 500 }),
       where: {
         branchId: { in: me.branchIds },
         scheduledAt: { gte: start, lt: end },
@@ -189,7 +202,27 @@ const procedureSchema = z.object({
   anesthesia: z.nativeEnum(AnesthesiaType).optional(),
   scheduledAt: z.coerce.date(),
   durationMin: z.number().int().positive().optional(),
+  /** F14: vùng tiêm, lượng tiêm (cc, bước 0,1), điều dưỡng phụ, số ngày tái tiêm riêng. */
+  injectionArea: z.string().trim().max(200).optional().nullable(),
+  volumeCc: z.number().min(0).max(1000).optional().nullable(),
+  nurseId: z.string().uuid().optional().nullable(),
+  retreatDays: z.number().int().min(1).max(1095).optional().nullable(),
 });
+
+/** F14: cc (số thực từ giao diện) sang số nguyên theo 0,1cc; lẻ hơn 0,1cc thì từ chối. */
+export function ccToTenths(cc: number | null | undefined): number | null | undefined {
+  if (cc === undefined) return undefined;
+  if (cc === null) return null;
+  const tenths = Math.round(cc * 10);
+  if (Math.abs(tenths - cc * 10) > 1e-6) throw new HttpError(400, "Lượng tiêm chỉ nhận bước 0,1cc (ví dụ 1,5cc)");
+  return tenths;
+}
+
+function withVolume<T extends { volumeCc?: number | null }>(body: T) {
+  const { volumeCc, ...rest } = body;
+  const volumeTenthCc = ccToTenths(volumeCc);
+  return { ...rest, ...(volumeTenthCc !== undefined ? { volumeTenthCc } : {}) };
+}
 
 /**
  * POST /api/procedures — xếp ca mổ.
@@ -247,7 +280,7 @@ router.post(
       if (clash) {
         throw new HttpError(
           409,
-          `Phòng đã có ca lúc ${clash.scheduledAt.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })} (đã tính ${cleanup} phút dọn phòng)`
+          `Phòng đã có ca lúc ${formatTimeVN(clash.scheduledAt)} (đã tính ${cleanup} phút dọn phòng)`
         );
       }
     }
@@ -255,7 +288,7 @@ router.post(
     const procedure = await withCode(CodePrefix.PROCEDURE, (code) =>
       prisma.procedureRecord.create({
         data: {
-          ...body,
+          ...withVolume(body),
           code,
           branchId,
           contractId: contract.id,
@@ -276,7 +309,7 @@ router.post(
       summary: `Xếp ca mổ ${procedure.code}: ${procedure.title} cho ${procedure.customer.name}`,
     });
 
-    emitTo(roomFor.branch(branchId), "appointment:created", procedure);
+    emitTo(roomFor.branch(branchId), "appointment:created", maskCustomerPhonesForBroadcast(procedure));
     res.status(201).json(procedure);
   })
 );
@@ -295,13 +328,17 @@ router.patch(
     const before = await prisma.procedureRecord.findUnique({ where: { id: req.params.id } });
     if (!before || !me.branchIds.includes(before.branchId)) throw notFound();
 
-    const { checklist, ...rest } = body;
+    const { checklist, retreatDays, ...rest } = body;
     const procedure = await prisma.procedureRecord.update({
       where: { id: req.params.id },
-      data: { ...rest, ...(checklist ? { checklist: JSON.stringify(checklist) } : {}) },
+      data: { ...withVolume(rest), ...(checklist ? { checklist: JSON.stringify(checklist) } : {}) },
       include: procedureInclude,
     });
-    res.json(procedure);
+    // Bác sĩ chỉnh số ngày tái tiêm: tính lại mốc tái tiêm, dời việc tái tiêm chưa làm (F10).
+    if (retreatDays !== undefined && retreatDays !== before.retreatDays) {
+      await setProcedureRetreatDays(procedure.id, retreatDays);
+    }
+    res.json(await prisma.procedureRecord.findUniqueOrThrow({ where: { id: procedure.id }, include: procedureInclude }));
   })
 );
 
@@ -368,12 +405,11 @@ router.post(
       await prisma.customer.update({
         where: { id: procedure.customerId },
         data: {
-          stage: FunnelStage.PT,
           status: CustomerStatus.POST_OP,
           activities: {
             create: {
               type: ActivityType.PROCEDURE,
-              content: `Kết thúc ca mổ ${procedure.code} — ${procedure.title}. Giai đoạn: Đã chốt → Đã phẫu thuật`,
+              content: `Kết thúc ca thực hiện ${procedure.code}: ${procedure.title}`,
               userId: me.id,
               userName: me.name,
             },
@@ -381,8 +417,19 @@ router.post(
         },
       });
 
-      // Sinh lịch tái khám N1 / N7 / T1 / T3 ngay khi mổ xong.
-      const followUps: Array<{ label: string; days: number }> = [
+      // F1: hoàn tất lần thực hiện thì tự chuyển bước (tiêm: Làm dịch vụ / Quay lại).
+      await applyStageEventSafe(procedure.customerId, StageEvent.PROCEDURE_DONE, { actor: { id: me.id, name: me.name } });
+      // F19: khách được giới thiệu làm xong dịch vụ: thưởng người giới thiệu (một lần).
+      await grantReferralReward(procedure.customerId, procedure.id).catch((err) => logGrowthError("thưởng giới thiệu", err));
+
+      // F10 + F9 quy tắc 7: việc chăm sóc D0...D30 và mốc tái tiêm.
+      if (await getSettingBool("automation.aftercare.enabled")) {
+        await generateAftercare(procedure.id, { actor: { id: me.id, name: me.name } });
+      }
+
+      // Phòng khám phẫu thuật: sinh lịch tái khám N1 / N7 / T1 / T3 ngay khi mổ xong.
+      // Phòng khám tiêm không cần tái khám cắt chỉ: đã có việc chăm sóc theo mốc.
+      const followUps: Array<{ label: string; days: number }> = (await getClinicMode()) === ClinicMode.INJECTION ? [] : [
         { label: "Tái khám N1", days: 1 },
         { label: "Tái khám N7 (cắt chỉ)", days: 7 },
         { label: "Tái khám T1", days: 30 },
@@ -415,7 +462,7 @@ router.post(
       summary: `Ca mổ ${procedure.code}: ${before.status} → ${body.status}${body.reason ? ` (${body.reason})` : ""}`,
     });
 
-    emitTo(roomFor.branch(procedure.branchId), "appointment:updated", procedure);
+    emitTo(roomFor.branch(procedure.branchId), "appointment:updated", maskCustomerPhonesForBroadcast(procedure));
     res.json(procedure);
   })
 );

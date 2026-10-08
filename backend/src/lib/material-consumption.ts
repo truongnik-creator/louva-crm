@@ -86,6 +86,8 @@ export async function consumeServiceMaterials(input: {
             procedureId: input.procedureId,
             branchId: input.branchId,
             quantity: take,
+            quantityTenths: take * 10,
+            costAtUse: lot.unitCost * take,
             recordedById: input.actorId,
             note: "Trừ tự động theo định mức dịch vụ",
           },

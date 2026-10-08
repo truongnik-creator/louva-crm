@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { formatVnd, vnDayKey } from "../lib/datetime";
 import { env } from "../lib/env";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
@@ -9,18 +10,36 @@ import {
   requireAnyPermission,
   requireCrossPersonPermission,
   scopedWhere,
+  phoneFor,
 } from "../middleware/rbac";
 import { writeAccessLog } from "../lib/audit";
 import { getSettingNumber } from "../lib/settings-catalog";
 import { buildDepartments } from "../lib/department-scorecard";
+import { getClinicMode, stagesFor } from "../lib/stages";
+import {
+  resolvePeriod,
+  reportBranchScope,
+  nullableBranchWhere,
+  customerBranchWhere,
+  countedContractWhere,
+  collectedByConsultant,
+  collectedByChannel,
+  signedByChannel,
+  topServices,
+  debtBalanceAt,
+  REAL_MONEY,
+  procedureMinutes,
+  occupiesRoom,
+  daysInPeriod,
+} from "../lib/report-scope";
 import {
   AccessResourceType,
   AccessSeverity,
   AppointmentStatus,
-  ContractStatus,
-  FunnelStage,
+  DepositStatus,
   InvoiceStatus,
   ProcedureStatus,
+  RoomType,
   VisitStatus,
 } from "../types/enums";
 
@@ -31,53 +50,6 @@ import {
 
 const router = Router();
 router.use(requireAuth);
-
-interface Period {
-  from: Date;
-  to: Date;
-  prevFrom: Date;
-  prevTo: Date;
-}
-
-/** Quy kỳ báo cáo về khoảng thời gian + khoảng kỳ trước để so sánh. */
-function resolvePeriod(query: Record<string, unknown>): Period {
-  const now = new Date();
-  const preset = String(query.period ?? "month");
-
-  let from: Date;
-  let to = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-
-  if (query.from) {
-    from = new Date(String(query.from));
-    if (query.to) to = new Date(String(query.to));
-  } else {
-    switch (preset) {
-      case "today":
-        from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        break;
-      case "7d":
-        from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
-        break;
-      case "quarter": {
-        const q = Math.floor(now.getMonth() / 3);
-        from = new Date(now.getFullYear(), q * 3, 1);
-        break;
-      }
-      default:
-        from = new Date(now.getFullYear(), now.getMonth(), 1);
-    }
-  }
-
-  const span = to.getTime() - from.getTime();
-  return { from, to, prevFrom: new Date(from.getTime() - span), prevTo: from };
-}
-
-function branchFilter(req: Parameters<typeof requireAuth>[0]): { in: string[] } | string {
-  const me = currentUser(req);
-  const requested = req.query.branchId as string | undefined;
-  if (requested && me.branchIds.includes(requested)) return requested;
-  return { in: me.branchIds };
-}
 
 function delta(current: number, previous: number): { value: number; pct: number | null; up: boolean } {
   const diff = current - previous;
@@ -98,7 +70,11 @@ router.get(
   requireAnyPermission("accounting.read", "finance.read"),
   asyncHandler(async (req, res) => {
     const period = resolvePeriod(req.query as Record<string, unknown>);
-    const branch = branchFilter(req);
+    const scope = reportBranchScope(req);
+    const branch = { in: scope.ids };
+    const now = new Date();
+    const cur = { gte: period.from, lt: period.to };
+    const prev = { gte: period.prevFrom, lt: period.prevTo };
 
     const [
       signedNow,
@@ -109,64 +85,29 @@ router.get(
       newCustomersPrev,
       surgeriesNow,
       surgeriesPrev,
-      debtAgg,
-      debtPrevAgg,
+      debt,
+      debtPrev,
     ] = await Promise.all([
-      prisma.contract.aggregate({
-        where: { branchId: branch, signedAt: { gte: period.from, lt: period.to } },
-        _sum: { total: true },
-        _count: true,
-      }),
-      prisma.contract.aggregate({
-        where: { branchId: branch, signedAt: { gte: period.prevFrom, lt: period.prevTo } },
-        _sum: { total: true },
-        _count: true,
-      }),
-      prisma.payment.aggregate({
-        where: { branchId: branch, paidAt: { gte: period.from, lt: period.to } },
-        _sum: { amount: true },
-      }),
-      prisma.payment.aggregate({
-        where: { branchId: branch, paidAt: { gte: period.prevFrom, lt: period.prevTo } },
-        _sum: { amount: true },
-      }),
-      prisma.customer.count({ where: { createdAt: { gte: period.from, lt: period.to } } }),
-      prisma.customer.count({ where: { createdAt: { gte: period.prevFrom, lt: period.prevTo } } }),
+      prisma.contract.aggregate({ where: countedContractWhere(cur, scope.ids), _sum: { total: true }, _count: true }),
+      prisma.contract.aggregate({ where: countedContractWhere(prev, scope.ids), _sum: { total: true }, _count: true }),
+      prisma.payment.aggregate({ where: { branchId: branch, paidAt: cur, ...REAL_MONEY }, _sum: { amount: true } }),
+      prisma.payment.aggregate({ where: { branchId: branch, paidAt: prev, ...REAL_MONEY }, _sum: { amount: true } }),
+      // B5: khách mới của CƠ SỞ đang xem, qua liên kết khách và cơ sở.
+      prisma.customer.count({ where: { createdAt: cur, mergedIntoId: null, ...customerBranchWhere(scope) } }),
+      prisma.customer.count({ where: { createdAt: prev, mergedIntoId: null, ...customerBranchWhere(scope) } }),
       prisma.procedureRecord.count({
-        where: {
-          branchId: branch,
-          status: ProcedureStatus.COMPLETED,
-          finishedAt: { gte: period.from, lt: period.to },
-        },
+        where: { branchId: branch, status: ProcedureStatus.COMPLETED, finishedAt: cur },
       }),
       prisma.procedureRecord.count({
-        where: {
-          branchId: branch,
-          status: ProcedureStatus.COMPLETED,
-          finishedAt: { gte: period.prevFrom, lt: period.prevTo },
-        },
+        where: { branchId: branch, status: ProcedureStatus.COMPLETED, finishedAt: prev },
       }),
-      prisma.invoice.aggregate({
-        where: {
-          branchId: branch,
-          status: { in: [InvoiceStatus.ISSUED, InvoiceStatus.PARTIAL, InvoiceStatus.OVERDUE] },
-        },
-        _sum: { amount: true, paidAmount: true },
-      }),
-      prisma.invoice.aggregate({
-        where: {
-          branchId: branch,
-          status: { in: [InvoiceStatus.ISSUED, InvoiceStatus.PARTIAL, InvoiceStatus.OVERDUE] },
-          createdAt: { lt: period.from },
-        },
-        _sum: { amount: true, paidAmount: true },
-      }),
+      // B7: công nợ cuối kỳ (hoặc hiện tại nếu kỳ chưa hết) so với số dư ĐẦU KỲ.
+      debtBalanceAt(period.to < now ? period.to : now, scope.ids),
+      debtBalanceAt(period.from, scope.ids),
     ]);
 
     const signed = signedNow._sum.total ?? 0;
     const collected = collectedNow._sum.amount ?? 0;
-    const debt = (debtAgg._sum.amount ?? 0) - (debtAgg._sum.paidAmount ?? 0);
-    const debtPrev = (debtPrevAgg._sum.amount ?? 0) - (debtPrevAgg._sum.paidAmount ?? 0);
     const avgOrder = signedNow._count > 0 ? Math.round(signed / signedNow._count) : 0;
     const avgOrderPrev = signedPrev._count > 0 ? Math.round((signedPrev._sum.total ?? 0) / signedPrev._count) : 0;
 
@@ -174,17 +115,13 @@ router.get(
     const stageCounts = await prisma.customer.groupBy({
       by: ["stage"],
       _count: true,
-      where: { createdAt: { gte: period.from, lt: period.to }, hidden: false },
+      where: { createdAt: cur, hidden: false, mergedIntoId: null, ...customerBranchWhere(scope) },
     });
     const stageMap = new Map(stageCounts.map((s) => [s.stage, s._count]));
-    const FUNNEL_VIEW: Array<{ key: FunnelStage; label: string }> = [
-      { key: FunnelStage.MOI, label: "Mới" },
-      { key: FunnelStage.LIENHE, label: "Đã liên hệ" },
-      { key: FunnelStage.HEN, label: "Đã hẹn" },
-      { key: FunnelStage.DEN, label: "Đã đến" },
-      { key: FunnelStage.CHOT, label: "Đã chốt" },
-      { key: FunnelStage.PT, label: "Đã phẫu thuật" },
-    ];
+    // F1/F6: phễu theo bộ bước của chế độ phòng khám (bỏ bước mất khách).
+    const FUNNEL_VIEW = stagesFor(await getClinicMode())
+      .filter((st) => !st.lost)
+      .map((st) => ({ key: st.key, label: st.label }));
     // Khách đang ở giai đoạn sau thì chắc chắn đã đi qua giai đoạn trước.
     const funnel = FUNNEL_VIEW.map((step, idx) => ({
       stage: step.key,
@@ -192,62 +129,66 @@ router.get(
       count: FUNNEL_VIEW.slice(idx).reduce((s, later) => s + (stageMap.get(later.key) ?? 0), 0),
     }));
 
-    // Doanh thu theo ngày: ký (contract) và thực thu (payment).
+    // Doanh thu theo ngày GIỜ VIỆT NAM (B4): ký (contract) và thực thu (payment).
     const [contracts, payments] = await Promise.all([
       prisma.contract.findMany({
-        where: { branchId: branch, signedAt: { gte: period.from, lt: period.to } },
+        where: countedContractWhere(cur, scope.ids),
         select: { signedAt: true, total: true },
       }),
       prisma.payment.findMany({
-        where: { branchId: branch, paidAt: { gte: period.from, lt: period.to } },
+        where: { branchId: branch, paidAt: cur, ...REAL_MONEY },
         select: { paidAt: true, amount: true },
       }),
     ]);
     const byDay = new Map<string, { signed: number; collected: number }>();
-    const dayKey = (d: Date) => d.toISOString().slice(0, 10);
     for (const c of contracts) {
       if (!c.signedAt) continue;
-      const k = dayKey(c.signedAt);
+      const k = vnDayKey(c.signedAt);
       const row = byDay.get(k) ?? { signed: 0, collected: 0 };
       row.signed += c.total;
       byDay.set(k, row);
     }
     for (const p of payments) {
-      const k = dayKey(p.paidAt);
+      const k = vnDayKey(p.paidAt);
       const row = byDay.get(k) ?? { signed: 0, collected: 0 };
       row.collected += p.amount;
       byDay.set(k, row);
     }
     const daily = [...byDay.entries()].sort().map(([date, v]) => ({ date, ...v }));
 
-    // Top dịch vụ theo doanh thu.
-    const topServices = await prisma.contractItem.groupBy({
-      by: ["name"],
-      _sum: { amount: true },
-      _count: true,
-      where: { contract: { branchId: branch, signedAt: { gte: period.from, lt: period.to } } },
-      orderBy: { _sum: { amount: "desc" } },
-      take: 5,
-    });
+    const services = await topServices(cur, scope.ids, 5);
 
-    // Top tư vấn viên theo TIỀN THỰC THU (không phải tiền ký) — tiền vào tài
-    // khoản mới là hiệu suất thật.
-    const consultantRows = await prisma.contract.groupBy({
-      by: ["consultantId"],
-      _sum: { paidAmount: true, total: true },
-      _count: true,
-      where: { branchId: branch, signedAt: { gte: period.from, lt: period.to } },
-      orderBy: { _sum: { paidAmount: "desc" } },
-      take: 5,
-    });
+    // Top tư vấn viên theo TIỀN THỰC THU TRONG KỲ (B6), kèm doanh số ký trong kỳ.
+    const [collectedBy, signedBy] = await Promise.all([
+      collectedByConsultant(cur, scope.ids),
+      prisma.contract.groupBy({
+        by: ["consultantId"],
+        _sum: { total: true },
+        _count: true,
+        where: countedContractWhere(cur, scope.ids),
+      }),
+    ]);
+    const consultantIds = new Set<string | null>([...collectedBy.keys(), ...signedBy.map((r) => r.consultantId)]);
     const consultantNames = await prisma.user.findMany({
-      where: { id: { in: consultantRows.map((r) => r.consultantId).filter(Boolean) as string[] } },
+      where: { id: { in: [...consultantIds].filter(Boolean) as string[] } },
       select: { id: true, name: true },
     });
     const nameById = new Map(consultantNames.map((u) => [u.id, u.name]));
+    const topConsultants = [...consultantIds]
+      .map((id) => {
+        const s = signedBy.find((r) => r.consultantId === id);
+        return {
+          userId: id,
+          name: id ? (nameById.get(id) ?? "Không rõ") : "Chưa gán",
+          collected: collectedBy.get(id) ?? 0,
+          signed: s?._sum.total ?? 0,
+          contracts: s?._count ?? 0,
+        };
+      })
+      .sort((a, b) => b.collected - a.collected || b.signed - a.signed)
+      .slice(0, 5);
 
     // Cảnh báo cần xử lý ngay.
-    const now = new Date();
     const [overdueInvoices, staleConversations, notReadyProcedures] = await Promise.all([
       prisma.invoice.findMany({
         where: {
@@ -278,7 +219,7 @@ router.get(
       const amount = overdueInvoices.reduce((s, i) => s + (i.amount - i.paidAmount), 0);
       alerts.push({
         level: "dg",
-        text: `${overdueInvoices.length} đơn công nợ quá hạn trên 7 ngày — tổng ${amount.toLocaleString("vi-VN")}đ`,
+        text: `${overdueInvoices.length} đơn công nợ quá hạn trên 7 ngày, tổng ${formatVnd(amount)}đ`,
       });
     }
     if (staleConversations) {
@@ -303,18 +244,8 @@ router.get(
       ],
       funnel,
       daily,
-      topServices: topServices.map((s) => ({
-        name: s.name,
-        count: s._count,
-        revenue: s._sum.amount ?? 0,
-      })),
-      topConsultants: consultantRows.map((r) => ({
-        userId: r.consultantId,
-        name: r.consultantId ? (nameById.get(r.consultantId) ?? "—") : "— chưa gán —",
-        collected: r._sum.paidAmount ?? 0,
-        signed: r._sum.total ?? 0,
-        contracts: r._count,
-      })),
+      topServices: services.map((s) => ({ serviceId: s.serviceId, name: s.name, count: s.count, revenue: s.revenue })),
+      topConsultants,
       alerts,
     });
   })
@@ -326,59 +257,95 @@ router.get(
   requirePermission("accounting.read"),
   asyncHandler(async (req, res) => {
     const period = resolvePeriod(req.query as Record<string, unknown>);
-    const branch = branchFilter(req);
-    const groupBy = String(req.query.groupBy ?? "service");
+    const scope = reportBranchScope(req);
+    const cur = { gte: period.from, lt: period.to };
+    const groupBy = z.enum(["service", "consultant", "branch", "channel"]).catch("service").parse(req.query.groupBy);
 
     if (groupBy === "service") {
-      const rows = await prisma.contractItem.groupBy({
-        by: ["name"],
-        _sum: { amount: true },
-        _count: true,
-        where: { contract: { branchId: branch, signedAt: { gte: period.from, lt: period.to } } },
-        orderBy: { _sum: { amount: "desc" } },
-      });
-      return res.json(rows.map((r) => ({ key: r.name, revenue: r._sum.amount ?? 0, count: r._count })));
+      const rows = await topServices(cur, scope.ids);
+      return res.json(rows.map((r) => ({ key: r.name, serviceId: r.serviceId, revenue: r.revenue, count: r.count })));
     }
 
     if (groupBy === "branch") {
-      const rows = await prisma.contract.groupBy({
-        by: ["branchId"],
-        _sum: { total: true, paidAmount: true },
-        _count: true,
-        where: { branchId: branch, signedAt: { gte: period.from, lt: period.to } },
-      });
+      const [rows, paid] = await Promise.all([
+        prisma.contract.groupBy({
+          by: ["branchId"],
+          _sum: { total: true },
+          _count: true,
+          where: countedContractWhere(cur, scope.ids),
+        }),
+        prisma.payment.groupBy({
+          by: ["branchId"],
+          _sum: { amount: true },
+          where: { branchId: { in: scope.ids }, paidAt: cur, ...REAL_MONEY },
+        }),
+      ]);
       const branches = await prisma.branch.findMany({ select: { id: true, name: true } });
       const byId = new Map(branches.map((b) => [b.id, b.name]));
+      const ids = new Set([...rows.map((r) => r.branchId), ...paid.map((p) => p.branchId)]);
       return res.json(
-        rows.map((r) => ({
-          key: byId.get(r.branchId) ?? r.branchId,
-          revenue: r._sum.total ?? 0,
-          collected: r._sum.paidAmount ?? 0,
-          count: r._count,
-        }))
+        [...ids].map((id) => {
+          const r = rows.find((x) => x.branchId === id);
+          return {
+            key: byId.get(id) ?? id,
+            revenue: r?._sum.total ?? 0,
+            collected: paid.find((p) => p.branchId === id)?._sum.amount ?? 0,
+            count: r?._count ?? 0,
+          };
+        })
+      );
+    }
+
+    if (groupBy === "channel") {
+      // B2: gom theo KÊNH nguồn của khách, không rơi sang nhánh tư vấn viên.
+      const [signed, collected, channels] = await Promise.all([
+        signedByChannel(cur, scope.ids),
+        collectedByChannel(cur, scope.ids),
+        prisma.channel.findMany({ select: { id: true, name: true } }),
+      ]);
+      const nameOf = new Map(channels.map((c) => [c.id, c.name]));
+      const keys = new Set<string | null>([...signed.keys(), ...collected.keys()]);
+      return res.json(
+        [...keys]
+          .map((k) => ({
+            key: k ? (nameOf.get(k) ?? "Kênh đã xoá") : "Không rõ nguồn",
+            channelId: k,
+            revenue: signed.get(k)?.total ?? 0,
+            collected: collected.get(k) ?? 0,
+            count: signed.get(k)?.count ?? 0,
+          }))
+          .sort((a, b) => b.revenue - a.revenue)
       );
     }
 
     // consultant
-    const rows = await prisma.contract.groupBy({
-      by: ["consultantId"],
-      _sum: { total: true, paidAmount: true },
-      _count: true,
-      where: { branchId: branch, signedAt: { gte: period.from, lt: period.to } },
-      orderBy: { _sum: { paidAmount: "desc" } },
-    });
+    const [rows, collectedBy] = await Promise.all([
+      prisma.contract.groupBy({
+        by: ["consultantId"],
+        _sum: { total: true },
+        _count: true,
+        where: countedContractWhere(cur, scope.ids),
+      }),
+      collectedByConsultant(cur, scope.ids),
+    ]);
+    const ids = new Set<string | null>([...rows.map((r) => r.consultantId), ...collectedBy.keys()]);
     const users = await prisma.user.findMany({
-      where: { id: { in: rows.map((r) => r.consultantId).filter(Boolean) as string[] } },
+      where: { id: { in: [...ids].filter(Boolean) as string[] } },
       select: { id: true, name: true },
     });
     const nameById = new Map(users.map((u) => [u.id, u.name]));
     res.json(
-      rows.map((r) => ({
-        key: r.consultantId ? (nameById.get(r.consultantId) ?? "—") : "— chưa gán —",
-        revenue: r._sum.total ?? 0,
-        collected: r._sum.paidAmount ?? 0,
-        count: r._count,
-      }))
+      [...ids]
+        .map((id) => {
+          const r = rows.find((x) => x.consultantId === id);
+          return {
+            key: id ? (nameById.get(id) ?? "Không rõ") : "Chưa gán",
+            revenue: r?._sum.total ?? 0,
+            collected: collectedBy.get(id) ?? 0,
+            count: r?._count ?? 0,
+          };
+        })
+        .sort((a, b) => b.collected - a.collected || b.revenue - a.revenue)
     );
   })
 );
@@ -389,22 +356,24 @@ router.get(
   requirePermission("lead.read"),
   asyncHandler(async (req, res) => {
     const period = resolvePeriod(req.query as Record<string, unknown>);
+    const scope = reportBranchScope(req);
+    const cur = { gte: period.from, lt: period.to };
 
-    const [leadsByCampaign, costsByCampaign, contractsByCampaign] = await Promise.all([
+    const [leadsByCampaign, costsByCampaign, contractsByCustomer] = await Promise.all([
       prisma.lead.groupBy({
         by: ["campaignId", "stage"],
         _count: true,
-        where: { createdAt: { gte: period.from, lt: period.to } },
+        where: { createdAt: cur, ...nullableBranchWhere("branchId", scope) },
       }),
       prisma.campaignCost.groupBy({
         by: ["campaignId"],
         _sum: { amount: true },
-        where: { date: { gte: period.from, lt: period.to } },
+        where: { date: cur, campaign: nullableBranchWhere("branchId", scope) },
       }),
       prisma.contract.groupBy({
         by: ["customerId"],
         _sum: { total: true },
-        where: { signedAt: { gte: period.from, lt: period.to } },
+        where: countedContractWhere(cur, scope.ids),
       }),
     ]);
 
@@ -413,14 +382,14 @@ router.get(
     });
 
     // Doanh thu quy về chiến dịch qua khách -> hợp đồng.
-    const customerIds = contractsByCampaign.map((c) => c.customerId);
+    const customerIds = contractsByCustomer.map((c) => c.customerId);
     const customers = await prisma.customer.findMany({
       where: { id: { in: customerIds } },
       select: { id: true, campaignId: true },
     });
     const campaignByCustomer = new Map(customers.map((c) => [c.id, c.campaignId]));
     const revenueByCampaign = new Map<string, number>();
-    for (const row of contractsByCampaign) {
+    for (const row of contractsByCustomer) {
       const campaignId = campaignByCustomer.get(row.customerId);
       if (!campaignId) continue;
       revenueByCampaign.set(campaignId, (revenueByCampaign.get(campaignId) ?? 0) + (row._sum.total ?? 0));
@@ -439,7 +408,7 @@ router.get(
           campaignId: campaign.id,
           name: campaign.name,
           code: campaign.code,
-          channel: campaign.channel?.name ?? "—",
+          channel: campaign.channel?.name ?? "Không rõ",
           leads,
           won,
           conversionRate: leads ? Math.round((won / leads) * 1000) / 10 : 0,
@@ -455,6 +424,7 @@ router.get(
     res.json(result);
   })
 );
+
 
 /**
  * GET /api/reports/response-time — CHẤM ĐIỂM TELESALE theo tốc độ phản hồi.
@@ -486,9 +456,13 @@ router.get(
     });
 
     // Ghép từng tin khách gửi với tin trả lời kế tiếp trong cùng hội thoại.
+    // F31: push thay vì trải mảng mỗi lần (O(n²) cũ), và tìm tin trả lời bằng
+    // một lượt quét ngược tính sẵn "tin OUT kế tiếp" thay vì slice().find() lồng.
     const byConv = new Map<string, typeof messages>();
     for (const m of messages) {
-      byConv.set(m.conversationId, [...(byConv.get(m.conversationId) ?? []), m]);
+      const list = byConv.get(m.conversationId);
+      if (list) list.push(m);
+      else byConv.set(m.conversationId, [m]);
     }
 
     interface Agg { total: number; count: number; slow: number; unanswered: number }
@@ -508,12 +482,18 @@ router.get(
     };
 
     for (const [, list] of byConv) {
+      const nextOut: Array<(typeof list)[number] | undefined> = new Array(list.length);
+      let upcoming: (typeof list)[number] | undefined;
+      for (let i = list.length - 1; i >= 0; i--) {
+        nextOut[i] = upcoming;
+        if (list[i].direction === "OUT") upcoming = list[i];
+      }
       for (let i = 0; i < list.length; i++) {
         if (list[i].direction !== "IN") continue;
-        // Bỏ qua nếu khách nhắn liên tiếp — chỉ tính lần đầu của cụm.
+        // Bỏ qua nếu khách nhắn liên tiếp: chỉ tính lần đầu của cụm.
         if (i > 0 && list[i - 1].direction === "IN") continue;
 
-        const reply = list.slice(i + 1).find((m) => m.direction === "OUT");
+        const reply = nextOut[i];
         const channel = list[i].conversation.channel;
 
         if (!reply) {
@@ -567,26 +547,25 @@ router.get(
   requirePermission("lead.read"),
   asyncHandler(async (req, res) => {
     const period = resolvePeriod(req.query as Record<string, unknown>);
+    const scope = reportBranchScope(req);
+    const cur = { gte: period.from, lt: period.to };
 
-    const [channels, costs, customers] = await Promise.all([
+    const [channels, costs, signed, collected, leadCounts] = await Promise.all([
       prisma.channel.findMany(),
       prisma.campaignCost.findMany({
-        where: { date: { gte: period.from, lt: period.to } },
+        where: { date: cur, campaign: nullableBranchWhere("branchId", scope) },
         include: { campaign: { select: { channelId: true } } },
       }),
-      prisma.customer.findMany({
-        where: { channelId: { not: null } },
-        select: { id: true, channelId: true },
+      signedByChannel(cur, scope.ids),
+      // B6: thực thu = tiền thu TRONG KỲ, không phải paidAmount cộng dồn của HĐ ký trong kỳ.
+      collectedByChannel(cur, scope.ids),
+      prisma.lead.groupBy({
+        by: ["channelId"],
+        _count: true,
+        where: { createdAt: cur, ...nullableBranchWhere("branchId", scope) },
       }),
     ]);
 
-    const contracts = await prisma.contract.groupBy({
-      by: ["customerId"],
-      _sum: { total: true, paidAmount: true },
-      where: { signedAt: { gte: period.from, lt: period.to } },
-    });
-
-    const channelByCustomer = new Map(customers.map((c) => [c.id, c.channelId]));
     const spentByChannel = new Map<string, number>();
     for (const c of costs) {
       const ch = c.campaign?.channelId;
@@ -594,27 +573,12 @@ router.get(
       spentByChannel.set(ch, (spentByChannel.get(ch) ?? 0) + c.amount);
     }
 
-    const revenueByChannel = new Map<string, number>();
-    const collectedByChannel = new Map<string, number>();
-    for (const row of contracts) {
-      const ch = channelByCustomer.get(row.customerId);
-      if (!ch) continue;
-      revenueByChannel.set(ch, (revenueByChannel.get(ch) ?? 0) + (row._sum.total ?? 0));
-      collectedByChannel.set(ch, (collectedByChannel.get(ch) ?? 0) + (row._sum.paidAmount ?? 0));
-    }
-
-    const leadCounts = await prisma.lead.groupBy({
-      by: ["channelId"],
-      _count: true,
-      where: { createdAt: { gte: period.from, lt: period.to } },
-    });
-
     res.json(
       channels
         .map((ch) => {
           const spent = spentByChannel.get(ch.id) ?? 0;
-          const revenue = revenueByChannel.get(ch.id) ?? 0;
-          const collected = collectedByChannel.get(ch.id) ?? 0;
+          const revenue = signed.get(ch.id)?.total ?? 0;
+          const coll = collected.get(ch.id) ?? 0;
           const leads = leadCounts.find((l) => l.channelId === ch.id)?._count ?? 0;
           return {
             channelId: ch.id,
@@ -623,14 +587,14 @@ router.get(
             leads,
             spent,
             revenue,
-            collected,
+            collected: coll,
             cpl: leads ? Math.round(spent / leads) : 0,
             // ROAS tính trên TIỀN THỰC THU — doanh số ký chưa thu được thì
             // chưa phải hiệu quả thật của đồng quảng cáo.
-            roas: spent ? Math.round((collected / spent) * 10) / 10 : null,
+            roas: spent ? Math.round((coll / spent) * 10) / 10 : null,
           };
         })
-        .filter((r) => r.leads > 0 || r.spent > 0 || r.revenue > 0)
+        .filter((r) => r.leads > 0 || r.spent > 0 || r.revenue > 0 || r.collected > 0)
         .sort((a, b) => (b.roas ?? 0) - (a.roas ?? 0))
     );
   })
@@ -642,29 +606,32 @@ router.get(
   requireCrossPersonPermission("hr.read", "accounting.read"),
   asyncHandler(async (req, res) => {
     const period = resolvePeriod(req.query as Record<string, unknown>);
-    const branch = branchFilter(req);
+    const scope = reportBranchScope(req);
+    const cur = { gte: period.from, lt: period.to };
 
-    const [contracts, customersAssigned, messagesSent] = await Promise.all([
+    const [contracts, collectedBy, customersAssigned, messagesSent] = await Promise.all([
       prisma.contract.groupBy({
         by: ["consultantId"],
-        _sum: { total: true, paidAmount: true },
+        _sum: { total: true },
         _count: true,
-        where: { branchId: branch, signedAt: { gte: period.from, lt: period.to } },
+        where: countedContractWhere(cur, scope.ids),
       }),
+      collectedByConsultant(cur, scope.ids),
       prisma.customer.groupBy({
         by: ["assignedToId"],
         _count: true,
-        where: { createdAt: { gte: period.from, lt: period.to }, hidden: false },
+        where: { createdAt: cur, hidden: false, mergedIntoId: null, ...customerBranchWhere(scope) },
       }),
       prisma.chatMessage.groupBy({
         by: ["senderUserId"],
         _count: true,
-        where: { direction: "OUT", createdAt: { gte: period.from, lt: period.to } },
+        where: { direction: "OUT", createdAt: cur, conversation: { branchId: { in: scope.ids } } },
       }),
     ]);
 
     const userIds = new Set<string>();
     contracts.forEach((c) => c.consultantId && userIds.add(c.consultantId));
+    collectedBy.forEach((_v, k) => k && userIds.add(k));
     customersAssigned.forEach((c) => c.assignedToId && userIds.add(c.assignedToId));
     messagesSent.forEach((m) => m.senderUserId && userIds.add(m.senderUserId));
 
@@ -686,7 +653,7 @@ router.get(
             customersAssigned: assigned,
             contractsWon: won,
             signed: c?._sum.total ?? 0,
-            collected: c?._sum.paidAmount ?? 0,
+            collected: collectedBy.get(u.id) ?? 0,
             messagesSent: messagesSent.find((x) => x.senderUserId === u.id)?._count ?? 0,
             closeRate: assigned ? Math.round((won / assigned) * 1000) / 10 : 0,
           };
@@ -708,14 +675,16 @@ router.get(
   requireCrossPersonPermission("hr.read", "accounting.read"),
   asyncHandler(async (req, res) => {
     const period = resolvePeriod(req.query as Record<string, unknown>);
-    const me = currentUser(req);
-    const requested = req.query.branchId as string | undefined;
-    const branchIds =
-      requested && me.branchIds.includes(requested) ? [requested] : me.branchIds;
+    const scope = reportBranchScope(req);
 
     res.json({
       period: { from: period.from, to: period.to },
-      departments: await buildDepartments({ from: period.from, to: period.to, branchIds }),
+      departments: await buildDepartments({
+        from: period.from,
+        to: period.to,
+        branchIds: scope.ids,
+        specificBranch: scope.specific,
+      }),
     });
   })
 );
@@ -726,53 +695,141 @@ router.get(
   requireAnyPermission("accounting.read", "appointment.read"),
   asyncHandler(async (req, res) => {
     const period = resolvePeriod(req.query as Record<string, unknown>);
-    const branch = branchFilter(req);
+    const scope = reportBranchScope(req);
+    const branch = { in: scope.ids };
+    const cur = { gte: period.from, lt: period.to };
+    const now = new Date();
+    // B8: chỉ lịch ĐÃ TỚI GIỜ mới có thể "không đến"; lịch tương lai không vào mẫu số.
+    const dueUntil = period.to < now ? period.to : now;
 
-    const [appointments, visits, procedures] = await Promise.all([
+    const [appointments, dueAppointments, visits, procedures, capacityHours] = await Promise.all([
       prisma.appointment.groupBy({
         by: ["status"],
         _count: true,
-        where: { branchId: branch, startAt: { gte: period.from, lt: period.to } },
+        where: { branchId: branch, startAt: cur },
+      }),
+      prisma.appointment.groupBy({
+        by: ["status"],
+        _count: true,
+        where: {
+          branchId: branch,
+          startAt: { gte: period.from, lt: dueUntil },
+          status: { not: AppointmentStatus.CANCELLED },
+        },
       }),
       prisma.visit.findMany({
-        where: { branchId: branch, checkedInAt: { gte: period.from, lt: period.to } },
+        where: { branchId: branch, checkedInAt: cur },
         select: { checkedInAt: true, calledAt: true, finishedAt: true, status: true },
       }),
       prisma.procedureRecord.findMany({
-        where: { branchId: branch, scheduledAt: { gte: period.from, lt: period.to } },
-        select: { durationMin: true, status: true, scheduledAt: true },
+        where: { branchId: branch, scheduledAt: cur },
+        select: {
+          branchId: true,
+          surgeonId: true,
+          durationMin: true,
+          status: true,
+          scheduledAt: true,
+          startedAt: true,
+          finishedAt: true,
+        },
       }),
+      getSettingNumber("surgery.capacityHoursPerDay"),
     ]);
 
     const totalAppointments = appointments.reduce((s, a) => s + a._count, 0);
-    const noShow = appointments.find((a) => a.status === AppointmentStatus.NO_SHOW)?._count ?? 0;
+    const noShowBase = dueAppointments.reduce((s, a) => s + a._count, 0);
+    const noShow = dueAppointments.find((a) => a.status === AppointmentStatus.NO_SHOW)?._count ?? 0;
 
     const waits = visits
       .filter((v) => v.calledAt)
       .map((v) => (v.calledAt!.getTime() - v.checkedInAt.getTime()) / 60000);
     const avgWait = waits.length ? Math.round(waits.reduce((s, w) => s + w, 0) / waits.length) : 0;
 
-    // Công suất phòng mổ theo ngày, lấy 8 giờ mổ/ngày làm mốc 100%.
-    const CAPACITY_MIN_PER_DAY = 8 * 60;
+    // B9: công suất theo phút thật (bắt đầu, kết thúc thật), theo ngày giờ Việt
+    // Nam, theo từng bác sĩ và từng cơ sở.
+    const capacityPerDay = capacityHours * 60;
+    const days = daysInPeriod(period.from, period.to);
     const byDay = new Map<string, number>();
+    const byDoctor = new Map<string | null, { minutes: number; cases: number; days: Set<string> }>();
+    const byBranch = new Map<string, number>();
     for (const p of procedures) {
-      if (p.status === ProcedureStatus.CANCELLED) continue;
-      const k = p.scheduledAt.toISOString().slice(0, 10);
-      byDay.set(k, (byDay.get(k) ?? 0) + p.durationMin);
+      if (!occupiesRoom(p.status)) continue;
+      const minutes = procedureMinutes(p);
+      const k = vnDayKey(p.startedAt ?? p.scheduledAt);
+      byDay.set(k, (byDay.get(k) ?? 0) + minutes);
+      const d = byDoctor.get(p.surgeonId) ?? { minutes: 0, cases: 0, days: new Set<string>() };
+      d.minutes += minutes;
+      d.cases += 1;
+      d.days.add(k);
+      byDoctor.set(p.surgeonId, d);
+      byBranch.set(p.branchId, (byBranch.get(p.branchId) ?? 0) + minutes);
     }
 
+    const [doctorUsers, branches, roomCounts] = await Promise.all([
+      prisma.user.findMany({
+        where: { id: { in: [...byDoctor.keys()].filter(Boolean) as string[] } },
+        select: { id: true, name: true },
+      }),
+      prisma.branch.findMany({ where: { id: { in: scope.ids } }, select: { id: true, name: true } }),
+      prisma.room.groupBy({
+        by: ["branchId"],
+        _count: true,
+        where: {
+          branchId: branch,
+          active: true,
+          type: { in: [RoomType.OPERATING, RoomType.MINOR_OP] },
+        },
+      }),
+    ]);
+    const doctorName = new Map(doctorUsers.map((u) => [u.id, u.name]));
+    const pctOf = (minutes: number, capacity: number) =>
+      capacity > 0 ? Math.min(100, Math.round((minutes / capacity) * 100)) : 0;
+
+    // Mốc 100% của cả kỳ cho cơ sở = số phòng × số ngày × số giờ mỗi ngày.
+    const roomsOf = (branchId: string) =>
+      Math.max(1, roomCounts.find((r) => r.branchId === branchId)?._count ?? 0);
+    const allRooms = scope.ids.reduce((s, id) => s + roomsOf(id), 0);
+
     res.json({
-      appointments: { total: totalAppointments, byStatus: appointments, noShow, noShowRate: totalAppointments ? Math.round((noShow / totalAppointments) * 1000) / 10 : 0 },
+      appointments: {
+        total: totalAppointments,
+        byStatus: appointments,
+        noShow,
+        /** Mẫu số tỉ lệ vắng: lịch đã tới giờ, không tính lịch đã huỷ. */
+        noShowBase,
+        noShowRate: noShowBase ? Math.round((noShow / noShowBase) * 1000) / 10 : 0,
+      },
       queue: {
         visits: visits.length,
         avgWaitMinutes: avgWait,
         stillWaiting: visits.filter((v) => v.status === VisitStatus.WAITING).length,
       },
+      capacityHoursPerDay: capacityHours,
       surgeryCapacity: [...byDay.entries()].sort().map(([date, minutes]) => ({
         date,
         minutes,
-        utilization: Math.min(100, Math.round((minutes / CAPACITY_MIN_PER_DAY) * 100)),
+        utilization: pctOf(minutes, capacityPerDay * allRooms),
       })),
+      capacityByDoctor: [...byDoctor.entries()]
+        .map(([id, d]) => ({
+          doctorId: id,
+          name: id ? (doctorName.get(id) ?? "Không rõ") : "Chưa gán bác sĩ",
+          cases: d.cases,
+          minutes: d.minutes,
+          workDays: d.days.size,
+          utilization: pctOf(d.minutes, capacityPerDay * days),
+        }))
+        .sort((a, b) => b.minutes - a.minutes),
+      capacityByBranch: branches.map((b) => {
+        const minutes = byBranch.get(b.id) ?? 0;
+        return {
+          branchId: b.id,
+          name: b.name,
+          rooms: roomsOf(b.id),
+          minutes,
+          utilization: pctOf(minutes, capacityPerDay * days * roomsOf(b.id)),
+        };
+      }),
     });
   })
 );
@@ -814,6 +871,8 @@ router.post(
           take: env.exportRowLimit + 1,
           select: { code: true, name: true, phone: true, status: true, stage: true, createdAt: true },
         });
+        // S4: tệp xuất là đường rò rỉ dễ nhất, che SĐT y như trên màn hình.
+        rows = rows.map((r) => ({ ...r, phone: phoneFor(req, r.phone as string | null) }));
         break;
       }
       case "contracts":
@@ -862,6 +921,133 @@ router.post(
     });
 
     res.json({ dataset: body.dataset, rowCount: rows.length, rows });
+  })
+);
+
+/**
+ * GET /api/reports/deposits?period=&branchId= — F25 + F12: tỉ lệ lịch có cọc và
+ * tỉ lệ không đến tách theo có cọc / không cọc. Mẫu số tỉ lệ không đến chỉ gồm
+ * lịch đã tới giờ và không bị huỷ (như B8).
+ */
+router.get(
+  "/deposits",
+  requirePermission("appointment.read"),
+  asyncHandler(async (req, res) => {
+    const period = resolvePeriod(req.query as Record<string, unknown>);
+    const scope = reportBranchScope(req);
+    const now = new Date();
+    const base = {
+      branchId: { in: scope.ids },
+      startAt: { gte: period.from, lt: period.to },
+      status: { not: AppointmentStatus.CANCELLED },
+    };
+    const deposited = { depositStatus: { in: [DepositStatus.DA_COC, DepositStatus.HOAN_COC] } };
+    const notDeposited = { OR: [{ depositStatus: null }, { depositStatus: DepositStatus.CHO_COC }] };
+    const past = { startAt: { gte: period.from, lt: period.to < now ? period.to : now } };
+
+    const [total, withDeposit, pastWith, noShowWith, pastWithout, noShowWithout, depositSum] = await Promise.all([
+      prisma.appointment.count({ where: base }),
+      prisma.appointment.count({ where: { ...base, ...deposited } }),
+      prisma.appointment.count({ where: { ...base, ...deposited, ...past } }),
+      prisma.appointment.count({ where: { ...base, ...deposited, ...past, status: AppointmentStatus.NO_SHOW } }),
+      prisma.appointment.count({ where: { ...base, ...notDeposited, ...past } }),
+      prisma.appointment.count({ where: { ...base, ...notDeposited, ...past, status: AppointmentStatus.NO_SHOW } }),
+      prisma.payment.aggregate({
+        where: { branchId: { in: scope.ids }, type: "DEPOSIT", paidAt: { gte: period.from, lt: period.to } },
+        _sum: { amount: true },
+      }),
+    ]);
+    const rate = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 10 : null);
+    res.json({
+      from: period.from,
+      to: period.to,
+      appointments: total,
+      withDeposit,
+      depositRate: rate(withDeposit, total),
+      depositCollected: depositSum._sum.amount ?? 0,
+      noShow: {
+        withDeposit: { due: pastWith, noShow: noShowWith, rate: rate(noShowWith, pastWith) },
+        withoutDeposit: { due: pastWithout, noShow: noShowWithout, rate: rate(noShowWithout, pastWithout) },
+      },
+    });
+  })
+);
+
+/**
+ * GET /api/reports/discount-leakage?period=&from=&to=&branchId=&groupBy=sales|service|month
+ * F21: RÒ RỈ CHIẾT KHẤU = tiền giảm so với giá niêm yết NGOÀI đợt ưu đãi, trên
+ * dòng hợp đồng đã ký trong kỳ (không tính hợp đồng huỷ). Tách phần đã được
+ * quản lý duyệt để thấy giảm "tự ý" (trong trần) và giảm có duyệt.
+ */
+router.get(
+  "/discount-leakage",
+  requireCrossPersonPermission("accounting.read", "sales_order.approve_discount"),
+  asyncHandler(async (req, res) => {
+    const groupBy = z.enum(["sales", "service", "month"]).default("sales").parse(req.query.groupBy ?? undefined);
+    const period = resolvePeriod(req.query as Record<string, unknown>);
+    const scope = reportBranchScope(req);
+    const items = await prisma.contractItem.findMany({
+      where: { contract: countedContractWhere({ gte: period.from, lt: period.to }, scope.ids) },
+      select: {
+        serviceId: true,
+        name: true,
+        quantity: true,
+        unitPrice: true,
+        amount: true,
+        listPrice: true,
+        discountAmount: true,
+        promotionDiscount: true,
+        approvedById: true,
+        service: { select: { name: true } },
+        contract: { select: { signedAt: true, consultantId: true, consultant: { select: { name: true } } } },
+      },
+    });
+
+    interface Row {
+      key: string;
+      label: string;
+      lines: number;
+      listTotal: number;
+      netTotal: number;
+      discountTotal: number;
+      promotionDiscount: number;
+      leakage: number;
+      approvedLeakage: number;
+      leakagePercent: number;
+    }
+    const rows = new Map<string, Row>();
+    const total: Row = {
+      key: "TOTAL", label: "Tổng", lines: 0, listTotal: 0, netTotal: 0, discountTotal: 0,
+      promotionDiscount: 0, leakage: 0, approvedLeakage: 0, leakagePercent: 0,
+    };
+    for (const i of items) {
+      const [key, label] =
+        groupBy === "sales"
+          ? [i.contract.consultantId ?? "none", i.contract.consultant?.name ?? "(chưa gán tư vấn)"]
+          : groupBy === "service"
+            ? [i.serviceId ?? `name:${i.name}`, i.service?.name ?? i.name]
+            : [vnDayKey(i.contract.signedAt!).slice(0, 7), vnDayKey(i.contract.signedAt!).slice(0, 7)];
+      const row = rows.get(key) ?? {
+        key, label, lines: 0, listTotal: 0, netTotal: 0, discountTotal: 0,
+        promotionDiscount: 0, leakage: 0, approvedLeakage: 0, leakagePercent: 0,
+      };
+      const listTotal = (i.listPrice ?? i.unitPrice) * i.quantity;
+      const leak = Math.max(0, i.discountAmount - i.promotionDiscount);
+      for (const r of [row, total]) {
+        r.lines += 1;
+        r.listTotal += listTotal;
+        r.netTotal += i.amount;
+        r.discountTotal += i.discountAmount;
+        r.promotionDiscount += i.promotionDiscount;
+        r.leakage += leak;
+        if (i.approvedById) r.approvedLeakage += leak;
+      }
+      rows.set(key, row);
+    }
+    const pct = (r: Row) => (r.listTotal ? Math.round((r.leakage / r.listTotal) * 10000) / 100 : 0);
+    const out = [...rows.values()].map((r) => ({ ...r, leakagePercent: pct(r) }));
+    out.sort((a, b) => (groupBy === "month" ? a.key.localeCompare(b.key) : b.leakage - a.leakage));
+    res.json({ groupBy, from: period.from, to: period.to, rows: out, total: { ...total, leakagePercent: pct(total) } });
   })
 );
 

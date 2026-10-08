@@ -1,26 +1,23 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { pageQuery, CATALOG_PAGE } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import { requirePermission, notFound } from "../middleware/rbac";
-import { encryptNullable } from "../lib/crypto";
+import crypto from "node:crypto";
+import { decryptNullable, encryptNullable, verifyHmac } from "../lib/crypto";
+import { logger } from "../lib/logger";
 import { writeAudit } from "../lib/audit";
-import { emitTo, roomFor } from "../socket";
 import {
-  fetchConversations,
-  fetchMessages,
   fetchPages,
   normalizePlatform,
   resolveToken,
+  type PancakeConversationRaw,
+  type PancakeMessageRaw,
 } from "../services/pancake";
-import {
-  AuditAction,
-  ConversationKind,
-  MessageDirection,
-  MessageStatus,
-  MessageType,
-} from "../types/enums";
+import { ingestPancakeConversation, isSyncRunning, syncPancakeConfig } from "../services/pancake-sync";
+import { AuditAction } from "../types/enums";
 
 // Cấu hình và đồng bộ Pancake.
 //
@@ -29,7 +26,82 @@ import {
 // idempotent theo pancakeConversationId / externalId của tin nhắn.
 
 const router = Router();
+const publicRouter = Router();
 router.use(requireAuth);
+
+// ------------------------------------------------------------------ WEBHOOK (F5)
+//
+// Pancake đẩy tin thời gian thực vào đây. Xác thực bằng MỘT trong hai cách:
+//   · header X-Pancake-Signature = hex(HMAC-SHA256(raw body, secret)), hoặc
+//   · header X-Webhook-Secret = secret (bí mật chung).
+// secret lấy từ kết nối Pancake (ô "Bí mật webhook") hoặc biến PANCAKE_WEBHOOK_SECRET.
+// TODO-VERIFY: đối chiếu tài liệu webhook Pancake thật: tên header chữ ký, thuật
+// toán, và hình dạng payload (normalizeWebhook bên dưới).
+
+interface PancakeWebhookBody {
+  page_id?: string | number;
+  event_type?: string;
+  data?: {
+    page_id?: string | number;
+    conversation?: PancakeConversationRaw;
+    message?: PancakeMessageRaw;
+    messages?: PancakeMessageRaw[];
+  };
+  conversation?: PancakeConversationRaw;
+  message?: PancakeMessageRaw;
+}
+
+/** TODO-VERIFY: gom mọi biến thể payload về { pageId, conversation, messages }. */
+export function normalizeWebhook(body: PancakeWebhookBody) {
+  const data = body.data ?? {};
+  const conversation = data.conversation ?? body.conversation;
+  const messages = data.messages ?? (data.message ? [data.message] : body.message ? [body.message] : []);
+  const pageId = body.page_id ?? data.page_id ?? conversation?.page_id;
+  return { pageId: pageId != null ? String(pageId) : null, conversation, messages };
+}
+
+function secretMatches(provided: string, secret: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(secret);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+publicRouter.post(
+  "/webhook",
+  asyncHandler(async (req, res) => {
+    const raw = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+    const { pageId, conversation, messages } = normalizeWebhook((req.body ?? {}) as PancakeWebhookBody);
+    if (!pageId || !conversation?.id) return res.status(400).json({ error: "Payload webhook không có page_id hoặc hội thoại" });
+
+    const page = await prisma.pancakePage.findUnique({ where: { pageId }, include: { config: true } });
+    // Trang lạ: trả 200 để Pancake không gửi lại vô hạn, nhưng không xử lý.
+    if (!page || !page.active || !page.config.active) {
+      logger.warn({ pageId }, "[pancake] webhook cho trang chưa đăng ký");
+      return res.json({ ok: true, ignored: true });
+    }
+
+    const secret = decryptNullable(page.config.webhookSecretEnc) ?? process.env.PANCAKE_WEBHOOK_SECRET ?? null;
+    if (!secret) return res.status(503).json({ error: "Chưa cấu hình bí mật webhook Pancake" });
+    const signature = req.headers["x-pancake-signature"];
+    const shared = req.headers["x-webhook-secret"];
+    const ok =
+      (typeof signature === "string" && verifyHmac(raw, signature, secret)) ||
+      (typeof shared === "string" && secretMatches(shared, secret));
+    if (!ok) {
+      logger.warn({ pageId }, "[pancake] webhook sai chữ ký, từ chối");
+      return res.status(401).json({ error: "Sai chữ ký webhook" });
+    }
+
+    const result = await ingestPancakeConversation({
+      page: { ...page, configId: page.configId },
+      configBranchId: page.config.branchId,
+      conversation,
+      messages,
+      incremental: true,
+    });
+    res.json({ ok: true, created: result.created });
+  })
+);
 
 router.get(
   "/configs",
@@ -38,6 +110,7 @@ router.get(
     const me = currentUser(req);
     const rows = await prisma.pancakeConfig.findMany({
       where: { OR: [{ branchId: null }, { branchId: { in: me.branchIds } }] },
+      ...pageQuery(req.query, CATALOG_PAGE),
       include: {
         branch: { select: { id: true, name: true } },
         pages: {
@@ -165,10 +238,11 @@ router.patch(
 );
 
 /**
- * POST /api/pancake/:id/sync — kéo hội thoại và tin nhắn về CRM.
+ * POST /api/pancake/:id/sync — đồng bộ tay, DỰ PHÒNG cho webhook (F5).
  *
- * Idempotent: hội thoại khử trùng theo pancakeConversationId, tin nhắn khử
- * trùng theo externalId. Chạy lại nhiều lần không nhân bản dữ liệu.
+ * Chạy nền: trả 202 ngay, kết quả ghi vào lastSyncNote của kết nối. `?wait=1`
+ * thì chờ chạy xong và trả kết quả (dùng cho test, script).
+ * Idempotent theo pancakeConversationId và externalId của tin.
  */
 router.post(
   "/:id/sync",
@@ -176,110 +250,32 @@ router.post(
   asyncHandler(async (req, res) => {
     const token = await resolveToken(req.params.id);
     if (!token) throw new HttpError(400, "Kết nối Pancake chưa có token hoặc đã tắt");
-
     const config = await prisma.pancakeConfig.findUniqueOrThrow({
       where: { id: req.params.id },
-      include: { pages: { where: { active: true } } },
+      include: { pages: { where: { active: true }, select: { id: true } } },
     });
-    if (!config.pages.length) {
-      throw new HttpError(400, 'Chưa có trang nào. Bấm "Dò trang" trước.');
-    }
-
-    let convCount = 0;
-    let msgCount = 0;
-    const errors: string[] = [];
-
-    for (const page of config.pages) {
-      try {
-        const conversations = await fetchConversations(token, page.pageId);
-
-        for (const c of conversations) {
-          const title = c.customer_name?.trim() || `Khách ${page.platform}`;
-
-          // Tìm khách theo số điện thoại để hội thoại tự gắn vào hồ sơ sẵn có.
-          const phone = c.customer_phone?.replace(/\D/g, "");
-          const customer = phone
-            ? await prisma.customer.findFirst({ where: { phone: { contains: phone.slice(-9) } } })
-            : null;
-
-          const conv = await prisma.conversation.upsert({
-            where: { pancakeConversationId: String(c.id) },
-            create: {
-              pancakeConversationId: String(c.id),
-              pancakePageId: page.id,
-              branchId: page.branchId ?? config.branchId,
-              kind: ConversationKind.CUSTOMER,
-              channel: page.platform,
-              title,
-              customerId: customer?.id ?? null,
-              unreadCount: c.unread_count ?? 0,
-              lastMessageAt: c.updated_at ? new Date(c.updated_at) : new Date(),
-              lastMessagePreview: c.snippet?.slice(0, 160),
-            },
-            update: {
-              title,
-              unreadCount: c.unread_count ?? 0,
-              lastMessageAt: c.updated_at ? new Date(c.updated_at) : new Date(),
-              lastMessagePreview: c.snippet?.slice(0, 160),
-              ...(customer && { customerId: customer.id }),
-            },
-          });
-          convCount++;
-
-          const messages = await fetchMessages(token, page.pageId, String(c.id));
-          for (const m of messages) {
-            const externalId = String(m.id);
-            const exists = await prisma.chatMessage.findFirst({ where: { externalId } });
-            if (exists) continue;
-
-            await prisma.chatMessage.create({
-              data: {
-                conversationId: conv.id,
-                externalId,
-                direction: m.from_customer ? MessageDirection.IN : MessageDirection.OUT,
-                type: MessageType.TEXT,
-                content: m.message ?? "[Nội dung không đọc được]",
-                senderName: m.sender_name ?? (m.from_customer ? title : null),
-                status: MessageStatus.DELIVERED,
-                createdAt: m.inserted_at ? new Date(m.inserted_at) : new Date(),
-              },
-            });
-            msgCount++;
-          }
-
-          if (conv.branchId) {
-            emitTo(roomFor.branch(conv.branchId), "conversation:updated", { id: conv.id });
-          }
-        }
-
-        await prisma.pancakePage.update({
-          where: { id: page.id },
-          data: { lastSyncAt: new Date() },
-        });
-      } catch (err) {
-        errors.push(`${page.name}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-
-    const note = errors.length
-      ? `${convCount} hội thoại, ${msgCount} tin mới. Lỗi: ${errors.join(" | ")}`
-      : `${convCount} hội thoại, ${msgCount} tin mới`;
-
-    await prisma.pancakeConfig.update({
-      where: { id: config.id },
-      data: { lastSyncAt: new Date(), lastSyncNote: note },
-    });
+    if (!config.pages.length) throw new HttpError(400, 'Chưa có trang nào. Bấm "Dò trang" trước.');
+    if (isSyncRunning(config.id)) return res.status(202).json({ started: false, running: true });
 
     await writeAudit({
       req,
       action: AuditAction.UPDATE,
       entity: "PancakeConfig",
       entityId: config.id,
-      summary: `Đồng bộ Pancake: ${note}`,
+      summary: `Chạy đồng bộ tay Pancake "${config.label}"`,
     });
 
-    res.json({ conversations: convCount, messages: msgCount, errors });
+    if (req.query.wait === "1") {
+      return res.json(await syncPancakeConfig(config.id));
+    }
+    void syncPancakeConfig(config.id);
+    res.status(202).json({ started: true, running: true });
   })
 );
 
-export default router;
+// Webhook công khai (Pancake gọi vào, không có Authorization) mount TRƯỚC router có requireAuth.
+const combined = Router();
+combined.use("/", publicRouter);
+combined.use("/", router);
+
+export default combined;

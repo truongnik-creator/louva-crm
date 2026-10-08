@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { formatVnd } from "../lib/datetime";
+import { pageQuery, CATALOG_PAGE } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import { requirePermission, notFound } from "../middleware/rbac";
@@ -18,9 +20,10 @@ router.use(requireAuth);
 router.get(
   "/service-categories",
   requirePermission("service.read"),
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     res.json(
       await prisma.serviceCategory.findMany({
+        ...pageQuery(req.query, CATALOG_PAGE),
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
         include: { _count: { select: { services: true } } },
       })
@@ -53,6 +56,7 @@ router.get(
     const now = new Date();
 
     const services = await prisma.service.findMany({
+      ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 1000 }),
       where: {
         ...(req.query.categoryId ? { categoryId: String(req.query.categoryId) } : {}),
         ...(req.query.kind ? { kind: String(req.query.kind) } : {}),
@@ -96,6 +100,8 @@ const serviceSchema = z.object({
   requiresConsent: z.boolean().optional(),
   requiresPreOpLab: z.boolean().optional(),
   anesthesia: z.nativeEnum(AnesthesiaType).optional().nullable(),
+  /** F10: số ngày tái tiêm (botox 120, filler 180). */
+  retreatDays: z.number().int().min(1).max(1095).optional().nullable(),
   active: z.boolean().optional(),
 });
 
@@ -183,7 +189,7 @@ router.post(
       entity: "ServicePrice",
       entityId: price.id,
       branchId: body.branchId,
-      summary: `Đặt giá ${body.price.toLocaleString("vi-VN")}đ cho dịch vụ`,
+      summary: `Đặt giá ${formatVnd(body.price)}đ cho dịch vụ`,
     });
     res.status(201).json(price);
   })
@@ -195,6 +201,7 @@ router.get(
   asyncHandler(async (req, res) => {
     res.json(
       await prisma.servicePrice.findMany({
+        ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 1000 }),
         where: {
           ...(req.query.serviceId ? { serviceId: String(req.query.serviceId) } : {}),
           ...(req.query.branchId ? { branchId: String(req.query.branchId) } : {}),
@@ -218,6 +225,7 @@ router.get(
     const me = currentUser(req);
     res.json(
       await prisma.shiftTemplate.findMany({
+        ...pageQuery(req.query, CATALOG_PAGE),
         where: { branchId: { in: me.branchIds }, active: true },
         orderBy: { startTime: "asc" },
       })
@@ -259,6 +267,7 @@ router.get(
 
     res.json(
       await prisma.shiftAssignment.findMany({
+        ...pageQuery(req.query, { defaultLimit: 1000, maxLimit: 2000 }),
         where: {
           branchId: branchId && me.branchIds.includes(branchId) ? branchId : { in: me.branchIds },
           date: { gte: from, lt: to },

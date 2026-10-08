@@ -1,6 +1,17 @@
 import { prisma } from "./prisma";
 import { getSettingNumber } from "./settings-catalog";
-import { AppointmentStatus, ProcedureStatus, VisitStatus } from "../types/enums";
+import { vnDayKey } from "./datetime";
+import {
+  type BranchScope,
+  nullableBranchWhere,
+  customerBranchWhere,
+  countedContractWhere,
+  collectedByConsultant,
+  collectedByChannel,
+  procedureMinutes,
+  daysInPeriod,
+} from "./report-scope";
+import { AppointmentStatus, ContractStatus, ProcedureStatus, VisitStatus } from "../types/enums";
 
 /* BẢNG ĐIỂM THEO BỘ PHẬN — nguồn số liệu cho màn Tổng quan kiểu analytics.
  *
@@ -74,7 +85,11 @@ interface Ctx {
   from: Date;
   to: Date;
   branchIds: string[];
+  /** Người xem chọn đúng một cơ sở: lead, chiến dịch chưa gán cơ sở không tính. */
+  specificBranch?: boolean;
 }
+
+const scopeOf = (ctx: Ctx): BranchScope => ({ ids: ctx.branchIds, specific: Boolean(ctx.specificBranch) });
 
 /**
  * Chấm điểm tương đối trong nội bộ một bộ phận.
@@ -166,39 +181,30 @@ const pct = (part: number, whole: number): number =>
 /* ------------------------------------------------------------- MARKETING */
 
 async function marketing(ctx: Ctx): Promise<Department> {
-  const [channels, costs, customers, contracts, leadCounts] = await Promise.all([
+  // B5: lọc theo cơ sở; B6: thực thu là tiền thu TRONG KỲ theo kênh của khách.
+  const scope = scopeOf(ctx);
+  const range = { gte: ctx.from, lt: ctx.to };
+  const [channels, costs, collectedAll, leadCounts] = await Promise.all([
     prisma.channel.findMany(),
     prisma.campaignCost.findMany({
-      where: { date: { gte: ctx.from, lt: ctx.to } },
+      where: { date: range, campaign: nullableBranchWhere("branchId", scope) },
       include: { campaign: { select: { channelId: true } } },
     }),
-    prisma.customer.findMany({
-      where: { channelId: { not: null } },
-      select: { id: true, channelId: true },
-    }),
-    prisma.contract.groupBy({
-      by: ["customerId"],
-      _sum: { total: true, paidAmount: true },
-      where: { signedAt: { gte: ctx.from, lt: ctx.to } },
-    }),
+    collectedByChannel(range, ctx.branchIds),
     prisma.lead.groupBy({
       by: ["channelId"],
       _count: true,
-      where: { createdAt: { gte: ctx.from, lt: ctx.to } },
+      where: { createdAt: range, ...nullableBranchWhere("branchId", scope) },
     }),
   ]);
 
-  const chOfCustomer = new Map(customers.map((c) => [c.id, c.channelId]));
   const spent = new Map<string, number>();
   for (const c of costs) {
     const ch = c.campaign?.channelId;
     if (ch) spent.set(ch, (spent.get(ch) ?? 0) + c.amount);
   }
   const collected = new Map<string, number>();
-  for (const row of contracts) {
-    const ch = chOfCustomer.get(row.customerId);
-    if (ch) collected.set(ch, (collected.get(ch) ?? 0) + (row._sum.paidAmount ?? 0));
-  }
+  for (const [ch, amount] of collectedAll) if (ch) collected.set(ch, amount);
 
   const rows: ScoreRow[] = channels
     .map((ch) => {
@@ -286,7 +292,7 @@ async function telesale(ctx: Ctx): Promise<Department> {
 
   const [leads, messages] = await Promise.all([
     prisma.lead.findMany({
-      where: { createdAt: { gte: ctx.from, lt: ctx.to } },
+      where: { createdAt: { gte: ctx.from, lt: ctx.to }, ...nullableBranchWhere("branchId", scopeOf(ctx)) },
       select: { assignedToId: true, firstContactAt: true, convertedCustomerId: true },
     }),
     prisma.chatMessage.findMany({
@@ -431,18 +437,20 @@ async function telesale(ctx: Ctx): Promise<Department> {
 /* ------------------------------------------------------- TƯ VẤN & CHỐT HĐ */
 
 async function sales(ctx: Ctx): Promise<Department> {
-  const [users, contracts, assigned] = await Promise.all([
+  const range = { gte: ctx.from, lt: ctx.to };
+  const [users, contracts, collectedBy, assigned] = await Promise.all([
     staffByRole(["TU_VAN_VIEN", "QUAN_LY_CO_SO"], ctx.branchIds),
     prisma.contract.groupBy({
       by: ["consultantId"],
-      _sum: { total: true, paidAmount: true },
+      _sum: { total: true },
       _count: true,
-      where: { branchId: { in: ctx.branchIds }, signedAt: { gte: ctx.from, lt: ctx.to } },
+      where: countedContractWhere(range, ctx.branchIds),
     }),
+    collectedByConsultant(range, ctx.branchIds),
     prisma.customer.groupBy({
       by: ["assignedToId"],
       _count: true,
-      where: { createdAt: { gte: ctx.from, lt: ctx.to }, hidden: false },
+      where: { createdAt: range, hidden: false, mergedIntoId: null, ...customerBranchWhere(scopeOf(ctx)) },
     }),
   ]);
 
@@ -451,7 +459,7 @@ async function sales(ctx: Ctx): Promise<Department> {
     const won = c?._count ?? 0;
     const mine = assigned.find((x) => x.assignedToId === u.id)?._count ?? 0;
     const signed = c?._sum.total ?? 0;
-    const collected = c?._sum.paidAmount ?? 0;
+    const collected = collectedBy.get(u.id) ?? 0;
     return {
       key: u.id,
       name: u.name,
@@ -487,7 +495,7 @@ async function sales(ctx: Ctx): Promise<Department> {
   scoreRows(rows, columns, ["assigned", "contracts", "signed"]);
 
   const totalSigned = contracts.reduce((s, c) => s + (c._sum.total ?? 0), 0);
-  const totalCollected = contracts.reduce((s, c) => s + (c._sum.paidAmount ?? 0), 0);
+  const totalCollected = [...collectedBy.values()].reduce((s, v) => s + v, 0);
   const totalContracts = contracts.reduce((s, c) => s + c._count, 0);
 
   const alerts: Department["alerts"] = [];
@@ -546,10 +554,15 @@ async function reception(ctx: Ctx): Promise<Department> {
         status: true,
       },
     }),
+    // B8: mẫu số vắng hẹn = lịch đã tới giờ, không tính lịch huỷ.
     prisma.appointment.groupBy({
       by: ["status"],
       _count: true,
-      where: { branchId: { in: ctx.branchIds }, startAt: { gte: ctx.from, lt: ctx.to } },
+      where: {
+        branchId: { in: ctx.branchIds },
+        startAt: { gte: ctx.from, lt: ctx.to < new Date() ? ctx.to : new Date() },
+        status: { not: AppointmentStatus.CANCELLED },
+      },
     }),
   ]);
 
@@ -623,16 +636,28 @@ async function reception(ctx: Ctx): Promise<Department> {
 /* ------------------------------------------------------ BÁC SĨ · PHÒNG MỔ */
 
 async function doctors(ctx: Ctx): Promise<Department> {
-  const [users, procedures, appointments] = await Promise.all([
+  const [users, procedures, appointments, capacityHours, rooms] = await Promise.all([
     staffByRole(["BAC_SI"], ctx.branchIds),
     prisma.procedureRecord.findMany({
       where: { branchId: { in: ctx.branchIds }, scheduledAt: { gte: ctx.from, lt: ctx.to } },
-      select: { surgeonId: true, status: true, durationMin: true, checklist: true, scheduledAt: true },
+      select: {
+        surgeonId: true,
+        status: true,
+        durationMin: true,
+        checklist: true,
+        scheduledAt: true,
+        startedAt: true,
+        finishedAt: true,
+      },
     }),
     prisma.appointment.groupBy({
       by: ["doctorId"],
       _count: true,
       where: { branchId: { in: ctx.branchIds }, startAt: { gte: ctx.from, lt: ctx.to } },
+    }),
+    getSettingNumber("surgery.capacityHoursPerDay"),
+    prisma.room.count({
+      where: { branchId: { in: ctx.branchIds }, active: true, type: { in: ["OPERATING", "MINOR_OP"] } },
     }),
   ]);
 
@@ -640,7 +665,8 @@ async function doctors(ctx: Ctx): Promise<Department> {
     const mine = procedures.filter((p) => p.surgeonId === u.id);
     const done = mine.filter((p) => p.status === ProcedureStatus.COMPLETED);
     const cancelled = mine.filter((p) => p.status === ProcedureStatus.CANCELLED).length;
-    const minutes = done.reduce((s, p) => s + p.durationMin, 0);
+    // B9: giờ làm thật (bắt đầu, kết thúc thật), thiếu thì lấy thời lượng dự kiến.
+    const minutes = done.reduce((s, p) => s + procedureMinutes(p), 0);
     return {
       key: u.id,
       name: u.name,
@@ -667,10 +693,14 @@ async function doctors(ctx: Ctx): Promise<Department> {
   scoreRows(rows, columns, ["scheduled", "appointments"]);
 
   const allDone = procedures.filter((p) => p.status === ProcedureStatus.COMPLETED);
-  const totalMinutes = allDone.reduce((s, p) => s + p.durationMin, 0);
-  // Mốc công suất: 8 giờ mổ/ngày, đúng mốc đang dùng ở /clinic-operations.
-  const days = Math.max(1, Math.round((ctx.to.getTime() - ctx.from.getTime()) / 86400000));
-  const utilization = Math.min(100, Math.round((totalMinutes / (days * 8 * 60)) * 100));
+  const totalMinutes = allDone.reduce((s, p) => s + procedureMinutes(p), 0);
+  // Mốc công suất: tham số surgery.capacityHoursPerDay mỗi phòng mỗi ngày,
+  // cùng mốc với /clinic-operations.
+  const days = daysInPeriod(ctx.from, ctx.to);
+  const utilization = Math.min(
+    100,
+    Math.round((totalMinutes / (days * capacityHours * 60 * Math.max(1, rooms))) * 100)
+  );
 
   const alerts: Department["alerts"] = [];
   const noChecklist = procedures.filter(
@@ -696,7 +726,7 @@ async function doctors(ctx: Ctx): Promise<Department> {
         value: utilization,
         unit: "%",
         tone: utilization >= 60 ? "good" : "neutral",
-        hint: "Mốc 8 giờ mổ mỗi ngày = 100%",
+        hint: `Mốc ${capacityHours} giờ mỗi phòng mỗi ngày = 100%`,
       },
       {
         label: "Ca huỷ",
@@ -800,11 +830,15 @@ async function finance(ctx: Ctx): Promise<Department> {
       by: ["receivedById", "method"],
       _sum: { amount: true },
       _count: true,
-      where: { branchId: { in: ctx.branchIds }, paidAt: { gte: ctx.from, lt: ctx.to } },
+      where: { branchId: { in: ctx.branchIds }, paidAt: { gte: ctx.from, lt: ctx.to }, method: { not: "VOUCHER" } },
     }),
     prisma.contract.aggregate({
       _sum: { total: true, paidAmount: true },
-      where: { branchId: { in: ctx.branchIds }, status: "ACTIVE" },
+      // B3: "ACTIVE" không phải trạng thái hợp đồng; nợ treo là HĐ đã ký chưa huỷ.
+      where: {
+        branchId: { in: ctx.branchIds },
+        status: { in: [ContractStatus.SIGNED, ContractStatus.IN_PROGRESS, ContractStatus.COMPLETED] },
+      },
     }),
   ]);
 
@@ -974,11 +1008,19 @@ async function warehouse(ctx: Ctx): Promise<Department> {
 
 /** Danh sách periodKey "YYYY-MM" phủ hết khoảng thời gian của kỳ báo cáo. */
 function monthKeysBetween(from: Date, to: Date): string[] {
+  // B4: tháng theo giờ Việt Nam, không theo múi giờ máy chủ.
   const keys: string[] = [];
-  const cur = new Date(from.getFullYear(), from.getMonth(), 1);
-  while (cur < to) {
-    keys.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`);
-    cur.setMonth(cur.getMonth() + 1);
+  let [y, m] = vnDayKey(from).split("-").map(Number);
+  const last = vnDayKey(new Date(to.getTime() - 1)).slice(0, 7);
+  for (;;) {
+    const key = `${y}-${String(m).padStart(2, "0")}`;
+    keys.push(key);
+    if (key >= last) break;
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
   }
   return keys;
 }

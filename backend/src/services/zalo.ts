@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { logger } from "../lib/logger";
 import { prisma } from "../lib/prisma";
 import { encryptNullable, decryptNullable } from "../lib/crypto";
 
@@ -101,7 +102,7 @@ export async function getValidAccessToken(configId: string): Promise<string | nu
     });
     return refreshed.access_token;
   } catch (err) {
-    console.error("[zalo] không làm mới được access token:", err);
+    logger.error({ err }, "[zalo] không làm mới được access token:");
     return config.accessToken;
   }
 }

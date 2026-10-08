@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { formatVnd } from "../lib/datetime";
+import { pageQuery, CATALOG_PAGE } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import { requirePermission, scopeOf, notFound } from "../middleware/rbac";
@@ -49,6 +51,7 @@ router.get(
     const range = periodRange(key);
 
     const rows = await prisma.attendance.findMany({
+      ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 2000 }),
       where: {
         branchId: { in: me.branchIds },
         date: range,
@@ -178,7 +181,7 @@ router.get(
           ...(req.query.status ? { status: String(req.query.status) } : {}),
         },
         orderBy: { createdAt: "desc" },
-        take: 200,
+        ...pageQuery(req.query, { defaultLimit: 200, maxLimit: 500 }),
         include: {
           user: { select: { id: true, name: true } },
           approver: { select: { id: true, name: true } },
@@ -281,6 +284,7 @@ router.get(
     const me = currentUser(req);
     res.json(
       await prisma.commissionRule.findMany({
+        ...pageQuery(req.query, CATALOG_PAGE),
         where: { OR: [{ branchId: null }, { branchId: { in: me.branchIds } }] },
         orderBy: { createdAt: "desc" },
         include: { service: { select: { id: true, name: true } } },
@@ -342,7 +346,7 @@ router.post(
 
     // Chỉ tính trên TIỀN ĐÃ THU trong kỳ.
     const payments = await prisma.payment.findMany({
-      where: { branchId: me.activeBranchId, paidAt: range },
+      where: { branchId: me.activeBranchId, paidAt: range, method: { not: "VOUCHER" } },
       include: {
         contract: {
           select: { id: true, consultantId: true, items: { select: { serviceId: true } } },
@@ -407,7 +411,7 @@ router.post(
       action: AuditAction.UPDATE,
       entity: "CommissionEntry",
       branchId: me.activeBranchId,
-      summary: `Tính hoa hồng kỳ ${key}: ${created} dòng, tổng ${total.toLocaleString("vi-VN")}đ`,
+      summary: `Tính hoa hồng kỳ ${key}: ${created} dòng, tổng ${formatVnd(total)}đ`,
     });
 
     res.json({ period: key, created, total });
@@ -423,6 +427,7 @@ router.get(
     const key = String(req.query.period ?? periodKeyOf());
 
     const entries = await prisma.commissionEntry.findMany({
+      ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 2000 }),
       where: {
         branchId: { in: me.branchIds },
         periodKey: key,
@@ -491,6 +496,7 @@ router.get(
     const group = req.query.group ? String(req.query.group) : undefined;
 
     const definitions = await prisma.kpiDefinition.findMany({
+      ...pageQuery(req.query, CATALOG_PAGE),
       where: { active: true, ...(group ? { group } : {}) },
       orderBy: { name: "asc" },
     });

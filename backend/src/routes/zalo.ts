@@ -1,4 +1,8 @@
 import { Router } from "express";
+import { autoAssignConversation, noteInbound } from "../lib/inbox-routing";
+import { applyStageEventSafe } from "../lib/stages";
+import { scheduleMediaIngest } from "../lib/chat-media";
+import { logger } from "../lib/logger";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { env } from "../lib/env";
@@ -19,6 +23,7 @@ import {
 import {
   AuditAction,
   ConversationChannel,
+  StageEvent,
   ConversationKind,
   MessageDirection,
   MessageStatus,
@@ -154,7 +159,7 @@ router.get(
       });
       res.send("Đã kết nối Official Account thành công. Bạn có thể đóng cửa sổ này.");
     } catch (err) {
-      console.error("[zalo] OAuth callback lỗi:", err);
+      logger.error({ err }, "[zalo] OAuth callback lỗi:");
       res.status(500).send("Kết nối Official Account thất bại. Xem log máy chủ.");
     }
   })
@@ -186,7 +191,7 @@ router.post(
     // Không tìm thấy OA hoặc chữ ký sai: trả 200 để Zalo khỏi gửi lại vô hạn,
     // nhưng KHÔNG xử lý gì cả và ghi lại để giám sát.
     if (!config) {
-      console.warn(`[zalo] webhook cho OA lạ: ${oaId}`);
+      logger.warn(`[zalo] webhook cho OA lạ: ${oaId}`);
       return res.json({ ok: true });
     }
 
@@ -201,7 +206,7 @@ router.post(
     // Cho phép bỏ qua chữ ký ở môi trường phát triển để test webhook cục bộ,
     // nhưng KHÔNG BAO GIỜ ở production.
     if (!signatureOk && env.nodeEnv === "production") {
-      console.warn("[zalo] webhook sai chữ ký, bỏ qua");
+      logger.warn("[zalo] webhook sai chữ ký, bỏ qua");
       return res.json({ ok: true });
     }
 
@@ -226,7 +231,7 @@ router.post(
         data: { processedAt: new Date() },
       });
     } catch (err) {
-      console.error("[zalo] xử lý webhook lỗi:", err);
+      logger.error({ err }, "[zalo] xử lý webhook lỗi:");
       await prisma.zaloWebhookEvent.update({
         where: { id: record.id },
         data: { error: err instanceof Error ? err.message : String(err) },
@@ -236,6 +241,28 @@ router.post(
     res.json({ ok: true });
   })
 );
+
+/** Bóc tệp đính kèm trong webhook Zalo: [{ type: "image" | "file" | ..., payload: { url, name, size } }]. */
+function zaloAttachments(raw: unknown[] | undefined) {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ kind: string; fileName: string; mimeType: string | null; size: number | null; url: string }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const a = item as { type?: string; payload?: { url?: string; thumbnail?: string; name?: string; size?: string | number; type?: string } };
+    const url = a.payload?.url ?? a.payload?.thumbnail;
+    if (!url || !/^https:\/\//.test(url)) continue;
+    const isImage = a.type === "image" || a.type === "gif";
+    const size = Number(a.payload?.size);
+    out.push({
+      kind: isImage ? "IMAGE" : "FILE",
+      fileName: (a.payload?.name ?? (isImage ? "anh-zalo.jpg" : "tep-zalo")).slice(0, 200),
+      mimeType: isImage ? "image/jpeg" : null,
+      size: Number.isFinite(size) ? size : null,
+      url,
+    });
+  }
+  return out;
+}
 
 async function handleZaloEvent(
   event: ZaloEvent,
@@ -273,24 +300,42 @@ async function handleZaloEvent(
     },
   });
 
+  const files = zaloAttachments(event.message?.attachments);
   const message = await prisma.chatMessage.create({
     data: {
       conversationId: conversation.id,
       direction: MessageDirection.IN,
-      type: event.message?.attachments?.length ? MessageType.IMAGE : MessageType.TEXT,
+      type: files.some((f) => f.kind === "IMAGE")
+        ? MessageType.IMAGE
+        : files.length || event.message?.attachments?.length
+          ? MessageType.FILE
+          : MessageType.TEXT,
       content: text,
       senderName: conversation.title,
       status: MessageStatus.DELIVERED,
       externalId: event.message?.msg_id ?? null,
+      // B13: giữ đường dẫn tệp Zalo gửi kèm để khung chat hiện ảnh, tệp.
+      attachments: { create: files },
+    },
+    include: {
+      attachments: { select: { id: true, kind: true, fileName: true, mimeType: true, size: true, savedPhotoSetId: true } },
     },
   });
+
+  // F26: mốc khách chờ trả lời + chia xoay vòng cho sale trong ca nếu chưa ai phụ trách.
+  await noteInbound(conversation.id, message.createdAt);
+  await autoAssignConversation(conversation.id);
 
   if (conversation.customerId) {
     await prisma.customer.update({
       where: { id: conversation.customerId },
       data: { lastContactAt: new Date() },
     });
+    // F1: khách nhắn tin thì tự sang bước Nhắn tin (chỉ tiến, không lùi).
+    await applyStageEventSafe(conversation.customerId, StageEvent.MESSAGE);
   }
+  // F2: ảnh khách gửi được tải về, mã hoá, lưu hồ sơ ở nền.
+  if (files.some((f) => f.kind === "IMAGE")) scheduleMediaIngest([message.id]);
 
   emitTo(roomFor.conversation(conversation.id), "message:new", message);
   if (conversation.branchId) {

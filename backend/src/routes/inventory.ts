@@ -1,9 +1,11 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { formatDateVN } from "../lib/datetime";
+import { pageQuery, CATALOG_PAGE } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
-import { requirePermission, notFound } from "../middleware/rbac";
+import { requirePermission, notFound, maskCustomerPhonesInResponse } from "../middleware/rbac";
 import { writeAudit } from "../lib/audit";
 import { getSettingBool, getSettingNumber } from "../lib/settings-catalog";
 import {
@@ -24,6 +26,8 @@ import { CodePrefix, nextCode } from "../lib/codes";
 
 const router = Router();
 router.use(requireAuth);
+// Che SĐT khách lồng trong mọi phản hồi của router này cho vai không có customer.view_phone.
+router.use(maskCustomerPhonesInResponse);
 
 /** Kho của cơ sở đang làm việc; tự tạo kho mặc định nếu cơ sở chưa có. */
 async function defaultWarehouse(branchId: string) {
@@ -89,6 +93,7 @@ router.get(
   requirePermission("inventory.read"),
   asyncHandler(async (req, res) => {
     const products = await prisma.product.findMany({
+      ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 1000 }),
       where: {
         ...(req.query.q ? { name: { contains: String(req.query.q) } } : {}),
         ...(req.query.kind ? { kind: String(req.query.kind) } : {}),
@@ -162,9 +167,10 @@ router.post(
 router.get(
   "/suppliers",
   requirePermission("inventory.read"),
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     res.json(
       await prisma.supplier.findMany({
+        ...pageQuery(req.query, CATALOG_PAGE),
         orderBy: { name: "asc" },
         include: { _count: { select: { lots: true, purchaseOrders: true } } },
       })
@@ -214,6 +220,7 @@ router.get(
     const now = Date.now();
 
     const lots = await prisma.stockLot.findMany({
+      ...pageQuery(req.query, { defaultLimit: 5000, maxLimit: 5000 }),
       where: {
         warehouse: { branchId: { in: me.branchIds } },
         ...(req.query.productId ? { productId: String(req.query.productId) } : {}),
@@ -353,10 +360,18 @@ router.post(
         lotId: z.string().uuid(),
         customerId: z.string().uuid(),
         procedureId: z.string().uuid().optional(),
-        quantity: z.number().int().positive().default(1),
+        /** F14: số lượng dùng thật, bước 0,1 đơn vị (0,5 ống filler). */
+        quantity: z.number().positive().max(10_000).default(1),
         note: z.string().optional(),
       })
       .parse(req.body);
+    const quantityTenths = Math.round(body.quantity * 10);
+    if (quantityTenths < 1 || Math.abs(quantityTenths - body.quantity * 10) > 1e-6) {
+      throw new HttpError(400, "Số lượng chỉ nhận bước 0,1 đơn vị (ví dụ 0,5)");
+    }
+    // Kho trừ theo đơn vị nguyên đã mở (mở ống nào tính ống đó); lượng dùng thật
+    // và giá vốn theo 0,1 đơn vị lưu ở ProductUsage.
+    const stockQty = Math.ceil(quantityTenths / 10);
 
     const me = currentUser(req);
     const lot = await prisma.stockLot.findUnique({
@@ -367,7 +382,7 @@ router.post(
 
     const blockExpired = await getSettingBool("inventory.blockExpiredUse");
     if (blockExpired && lot.expiryDate && lot.expiryDate.getTime() < Date.now()) {
-      throw new HttpError(400, `Lô ${lot.lotNumber} đã hết hạn ngày ${lot.expiryDate.toLocaleDateString("vi-VN")} — không được dùng cho khách`);
+      throw new HttpError(400, `Lô ${lot.lotNumber} đã hết hạn ngày ${formatDateVN(lot.expiryDate)}, không được dùng cho khách`);
     }
 
     const usage = await prisma.$transaction(async (tx) => {
@@ -376,7 +391,7 @@ router.post(
         productId: lot.productId,
         lotId: lot.id,
         type: StockMoveType.OUT,
-        quantity: -body.quantity,
+        quantity: -stockQty,
         reason: body.note ?? "Xuất dùng cho khách",
         referenceId: body.procedureId,
         actorId: me.id,
@@ -389,7 +404,9 @@ router.post(
           customerId: body.customerId,
           procedureId: body.procedureId,
           branchId: lot.warehouse.branchId,
-          quantity: body.quantity,
+          quantity: stockQty,
+          quantityTenths,
+          costAtUse: Math.round((lot.unitCost * quantityTenths) / 10),
           recordedById: me.id,
           note: body.note,
         },
@@ -469,7 +486,7 @@ router.get(
           ...(req.query.type ? { type: String(req.query.type) } : {}),
         },
         orderBy: { createdAt: "desc" },
-        take: Math.min(Number(req.query.limit ?? 200), 500),
+        ...pageQuery(req.query, { defaultLimit: 200, maxLimit: 500 }),
         include: {
           product: { select: { id: true, name: true, unit: true } },
           lot: { select: { id: true, lotNumber: true, expiryDate: true } },
@@ -504,6 +521,7 @@ router.get(
     if (!lot || !me.branchIds.includes(lot.warehouse.branchId)) throw notFound("Không tìm thấy lô");
 
     const usages = await prisma.productUsage.findMany({
+      ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 1000 }),
       where: { lotId: lot.id },
       orderBy: { usedAt: "desc" },
       include: {
@@ -530,6 +548,7 @@ router.get(
     const me = currentUser(req);
     res.json(
       await prisma.productUsage.findMany({
+        ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 1000 }),
         where: { customerId: req.params.customerId, branchId: { in: me.branchIds } },
         orderBy: { usedAt: "desc" },
         include: {
@@ -550,6 +569,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const me = currentUser(req);
     const rows = await prisma.warehouse.findMany({
+      ...pageQuery(req.query, CATALOG_PAGE),
       where: { branchId: { in: me.branchIds } },
       orderBy: [{ kind: "asc" }, { name: "asc" }],
       include: {
@@ -634,7 +654,7 @@ router.get(
           ...(req.query.status ? { status: String(req.query.status) } : {}),
         },
         orderBy: { createdAt: "desc" },
-        take: 100,
+        ...pageQuery(req.query, { defaultLimit: 100, maxLimit: 500 }),
         include: {
           fromWarehouse: { select: { id: true, name: true } },
           toWarehouse: { select: { id: true, name: true } },
@@ -864,6 +884,7 @@ router.get(
   asyncHandler(async (req, res) => {
     res.json(
       await prisma.serviceMaterial.findMany({
+        ...pageQuery(req.query, CATALOG_PAGE),
         where: req.query.serviceId ? { serviceId: String(req.query.serviceId) } : {},
         orderBy: { createdAt: "asc" },
         include: {
@@ -950,6 +971,7 @@ router.get(
         _sum: { quantity: true },
       }),
       prisma.stockMovement.findMany({
+        ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 2000 }),
         where: { ...scope, createdAt: { gte: from, lte: to } },
         orderBy: { createdAt: "asc" },
         include: {

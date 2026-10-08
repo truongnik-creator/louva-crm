@@ -1,12 +1,14 @@
 import { Router } from "express";
-import multer from "multer";
+import { applyStageEventSafe } from "../lib/stages";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { pageQuery } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import { requirePermission, hasPermission, notFound } from "../middleware/rbac";
 import { writeAudit, writeAccessLog } from "../lib/audit";
 import { withCode, CodePrefix } from "../lib/codes";
+import { createUpload, verifyFileSignatures } from "../lib/upload";
 import { putEncrypted, getDecrypted, removeStored } from "../lib/storage";
 import {
   loadMedicalRecord,
@@ -22,6 +24,7 @@ import {
   ConsentStatus,
   ConsentType,
   PhotoStage,
+  StageEvent,
 } from "../types/enums";
 
 // Bệnh án, dị ứng, chống chỉ định, cam kết, ảnh trước-sau.
@@ -36,10 +39,9 @@ const router = Router();
 router.use(requireAuth);
 
 // Ảnh giữ trong RAM rồi mã hoá ngay, không ghi tệp tạm chưa mã hoá xuống đĩa.
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024, files: 12 },
-});
+// T5: chỉ nhận ảnh (JPEG/PNG/WEBP/GIF/HEIC), kiểm cả đuôi, MIME và byte đầu.
+const upload = createUpload({ kinds: ["image"], maxFileSize: 15 * 1024 * 1024, maxFiles: 12 });
+const checkImages = verifyFileSignatures(["image"]);
 
 // ---------------------------------------------------------------- BREAK-GLASS
 
@@ -60,6 +62,15 @@ router.post(
 );
 
 // ------------------------------------------------------------------ BỆNH ÁN
+
+/** Các trường bệnh án KHÔNG trả cho vai chỉ có quyền xem hạn chế (S5). */
+export const RESTRICTED_MEDICAL_FIELDS = ["chronicDisease", "currentMedication", "pregnancyNote"] as const;
+
+function stripRestrictedMedical<T extends Record<string, unknown>>(record: T): T {
+  const copy: Record<string, unknown> = { ...record };
+  for (const f of RESTRICTED_MEDICAL_FIELDS) delete copy[f];
+  return copy as T;
+}
 
 // GET /api/medical/records/:customerId
 router.get(
@@ -89,8 +100,12 @@ router.get(
     // Không thấy chẩn đoán, phiếu mổ, phiếu gây mê (mục 4.3 chú thích **).
     const restricted = !hasPermission(req, "medical.update");
 
+    // S5: chế độ restricted không trả bệnh nền, thuốc đang dùng, ghi chú thai
+    // kỳ. Tư vấn viên chỉ cần dị ứng + chống chỉ định để không bán sai dịch vụ.
+    const safe = restricted && full ? stripRestrictedMedical(full) : full;
+
     res.json({
-      ...full,
+      ...safe,
       allergies,
       contraindications,
       entries: restricted ? [] : entries,
@@ -286,6 +301,7 @@ router.get(
     const { branchIds } = await resolveMedicalScope(req, customerId);
 
     const forms = await prisma.consentForm.findMany({
+      ...pageQuery(req.query, { defaultLimit: 100, maxLimit: 500 }),
       where: { customerId, ...(branchIds ? { branchId: { in: branchIds } } : {}) },
       orderBy: { createdAt: "desc" },
       include: { staff: { select: { id: true, name: true } } },
@@ -346,6 +362,7 @@ router.post(
   "/consents/:id/sign",
   requirePermission("medical.update"),
   upload.single("signature"),
+  checkImages,
   asyncHandler(async (req, res) => {
     const me = currentUser(req);
     const form = await prisma.consentForm.findUnique({ where: { id: req.params.id } });
@@ -395,6 +412,7 @@ router.get(
     const { branchIds } = await resolveMedicalScope(req, customerId, "photo.read");
 
     const sets = await prisma.photoSet.findMany({
+      ...pageQuery(req.query, { defaultLimit: 100, maxLimit: 500 }),
       where: { customerId, ...(branchIds ? { branchId: { in: branchIds } } : {}) },
       orderBy: { takenAt: "desc" },
       include: {
@@ -418,6 +436,7 @@ router.post(
   "/photo-sets",
   requirePermission("photo.create"),
   upload.array("photos", 12),
+  checkImages,
   asyncHandler(async (req, res) => {
     const body = z
       .object({
@@ -470,6 +489,8 @@ router.post(
       branchId,
       summary: `Thêm ${files.length} ảnh mốc ${body.stage}`,
     });
+    // F1: hồ sơ đã có ảnh thì khách ít nhất ở bước Có ảnh (chỉ tiến, không lùi).
+    await applyStageEventSafe(body.customerId, StageEvent.PHOTO, { actor: { id: me.id, name: me.name } });
     await writeAccessLog({
       req,
       customerId: body.customerId,
@@ -549,6 +570,38 @@ router.delete(
       summary: `Xoá ảnh ${photo.fileName}`,
     });
     res.json({ ok: true });
+  })
+);
+
+/**
+ * PATCH /api/medical/photo-sets/:id/marketing-consent — F2: cho phép dùng bộ
+ * ảnh làm marketing. Mặc định KHÔNG; chỉ bác sĩ hoặc quản lý (quyền riêng
+ * photo.marketing_consent) được bật, có ghi nhật ký kiểm toán.
+ */
+router.patch(
+  "/photo-sets/:id/marketing-consent",
+  requirePermission("photo.marketing_consent"),
+  asyncHandler(async (req, res) => {
+    const body = z.object({ consent: z.boolean(), note: z.string().trim().max(500).optional() }).parse(req.body);
+    const set = await prisma.photoSet.findUnique({ where: { id: req.params.id } });
+    if (!set) throw notFound("Không tìm thấy bộ ảnh");
+    const { branchIds } = await resolveMedicalScope(req, set.customerId, "photo.read");
+    if (branchIds && !branchIds.includes(set.branchId)) throw notFound();
+    const me = currentUser(req);
+    const updated = await prisma.photoSet.update({
+      where: { id: set.id },
+      data: { consentForMarketing: body.consent, consentSetById: me.id, consentSetAt: new Date() },
+    });
+    await writeAudit({
+      req,
+      action: AuditAction.UPDATE,
+      entity: "PhotoSet",
+      entityId: set.id,
+      branchId: set.branchId,
+      summary: `${body.consent ? "Bật" : "Tắt"} cho phép dùng ảnh làm marketing (bộ ảnh ${set.stage})${body.note ? `. Ghi chú: ${body.note}` : ""}`,
+      changes: { consentForMarketing: [set.consentForMarketing, body.consent] },
+    });
+    res.json({ id: updated.id, consentForMarketing: updated.consentForMarketing, consentSetAt: updated.consentSetAt });
   })
 );
 

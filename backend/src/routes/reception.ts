@@ -1,17 +1,27 @@
 import { Router } from "express";
+import { noteShowUp, refreshFirstPurchaseAt, safely } from "../lib/lead-funnel";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { formatTimeVN, formatDateTimeVN, startOfVnDay } from "../lib/datetime";
+import { pageQuery } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
-import { requirePermission, scopedWhere, assertInScope, notFound } from "../middleware/rbac";
+import { requirePermission, scopedWhere, assertInScope, notFound, maskCustomerPhonesInResponse, maskCustomerPhonesForBroadcast } from "../middleware/rbac";
 import { writeAudit, diffFields } from "../lib/audit";
 import { emitTo, roomFor } from "../socket";
+import { applyStageEventSafe } from "../lib/stages";
+import { withCode, CodePrefix } from "../lib/codes";
+import { depositQr, ensureAppointmentCode } from "../lib/deposit";
+import { formatVnd } from "../lib/datetime";
 import {
   AuditAction,
   ActivityType,
   AppointmentStatus,
   AppointmentType,
-  FunnelStage,
+  DepositStatus,
+  PaymentMethod,
+  PaymentType,
+  StageEvent,
   VisitStatus,
   VISIT_FLOW,
 } from "../types/enums";
@@ -21,6 +31,8 @@ import {
 
 const router = Router();
 router.use(requireAuth);
+// Che SĐT khách lồng trong mọi phản hồi của router này cho vai không có customer.view_phone.
+router.use(maskCustomerPhonesInResponse);
 
 const APPT_SCOPE = { ownerFields: ["createdById", "doctorId"], branchField: "branchId" };
 
@@ -33,12 +45,11 @@ const appointmentInclude = {
   visit: { select: { id: true, status: true, queueNumber: true } },
 } as const;
 
+/** Một ngày theo giờ Việt Nam; "2026-09-15" là ngày 15/09 giờ VN, không phải giờ máy chủ. */
 function dayRange(dateStr: string | undefined): { gte: Date; lt: Date } {
-  const base = dateStr ? new Date(dateStr) : new Date();
-  const start = new Date(base.getFullYear(), base.getMonth(), base.getDate());
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { gte: start, lt: end };
+  const base = dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? new Date(`${dateStr}T12:00:00Z`) : dateStr ? new Date(dateStr) : new Date();
+  const start = startOfVnDay(base);
+  return { gte: start, lt: new Date(start.getTime() + 86_400_000) };
 }
 
 // GET /api/appointments?date=&doctorId=&roomId=&status=
@@ -64,6 +75,7 @@ router.get(
     if (req.query.customerId) filters.customerId = String(req.query.customerId);
 
     const items = await prisma.appointment.findMany({
+      ...pageQuery(req.query, { defaultLimit: 500, maxLimit: 1000 }),
       where: filters,
       orderBy: { startAt: "asc" },
       include: appointmentInclude,
@@ -90,7 +102,17 @@ const appointmentSchema = z.object({
   startAt: z.coerce.date(),
   endAt: z.coerce.date().optional(),
   note: z.string().optional().nullable(),
+  /** F25: tiền cọc yêu cầu (đồng). 0 = không yêu cầu cọc. */
+  depositAmount: z.number().int().min(0).max(1_000_000_000).optional(),
 });
+
+function depositFields(amount: number | undefined, current?: { depositStatus: string | null }) {
+  if (amount === undefined) return {};
+  if (current?.depositStatus === DepositStatus.DA_COC || current?.depositStatus === DepositStatus.HOAN_COC) {
+    throw new HttpError(409, "Lịch đã nhận hoặc đã hoàn cọc, không sửa số tiền cọc được nữa");
+  }
+  return { depositAmount: amount, depositStatus: amount > 0 ? DepositStatus.CHO_COC : null };
+}
 
 /**
  * Kiểm tra trùng lịch: một bác sĩ hoặc một phòng không thể có hai lịch chồng
@@ -118,7 +140,7 @@ async function assertNoOverlap(params: {
     if (clash) {
       throw new HttpError(
         409,
-        `Bác sĩ ${clash.doctor?.name} đã có lịch lúc ${clash.startAt.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`
+        `Bác sĩ ${clash.doctor?.name} đã có lịch lúc ${formatTimeVN(clash.startAt)}`
       );
     }
   }
@@ -156,26 +178,27 @@ router.post(
 
     await assertNoOverlap({ doctorId: body.doctorId, roomId: body.roomId, startAt: body.startAt, endAt });
 
-    const appointment = await prisma.appointment.create({
-      data: { ...body, branchId, endAt, createdById: me.id },
-      include: appointmentInclude,
-    });
+    const { depositAmount, ...rest } = body;
+    const appointment = await withCode(CodePrefix.APPOINTMENT, (code) =>
+      prisma.appointment.create({
+        data: { ...rest, ...depositFields(depositAmount), code, branchId, endAt, createdById: me.id },
+        include: appointmentInclude,
+      })
+    );
 
-    // Đặt được lịch thì khách tiến sang giai đoạn "Đã hẹn".
-    await prisma.customer.update({
-      where: { id: body.customerId },
+    await prisma.activity.create({
       data: {
-        stage: FunnelStage.HEN,
-        activities: {
-          create: {
-            type: ActivityType.APPOINTMENT,
-            content: `${me.name} đặt lịch "${body.title}" lúc ${body.startAt.toLocaleString("vi-VN")}`,
-            userId: me.id,
-            userName: me.name,
-          },
-        },
+        customerId: body.customerId,
+        type: ActivityType.APPOINTMENT,
+        content: `${me.name} đặt lịch "${body.title}" lúc ${formatDateTimeVN(body.startAt)}${
+          depositAmount ? `, cọc ${formatVnd(depositAmount)}đ` : ""
+        }`,
+        userId: me.id,
+        userName: me.name,
       },
     });
+    // F1: phẫu thuật = "Đã hẹn"; phòng khám tiêm chỉ lên bước khi đã cọc.
+    await applyStageEventSafe(body.customerId, StageEvent.APPOINTMENT_BOOKED, { actor: { id: me.id, name: me.name } });
 
     await writeAudit({
       req,
@@ -186,7 +209,7 @@ router.post(
       summary: `Đặt lịch ${appointment.title} cho ${appointment.customer.name}`,
     });
 
-    emitTo(roomFor.branch(branchId), "appointment:created", appointment);
+    emitTo(roomFor.branch(branchId), "appointment:created", maskCustomerPhonesForBroadcast(appointment));
     res.status(201).json(appointment);
   })
 );
@@ -209,9 +232,10 @@ router.patch(
       excludeId: before!.id,
     });
 
+    const { depositAmount, ...rest } = body;
     const appointment = await prisma.appointment.update({
       where: { id: req.params.id },
-      data: body,
+      data: { ...rest, ...depositFields(depositAmount, before!) },
       include: appointmentInclude,
     });
 
@@ -225,7 +249,7 @@ router.patch(
       changes: diffFields(before as unknown as Record<string, unknown>, body),
     });
 
-    emitTo(roomFor.branch(appointment.branchId), "appointment:updated", appointment);
+    emitTo(roomFor.branch(appointment.branchId), "appointment:updated", maskCustomerPhonesForBroadcast(appointment));
     res.json(appointment);
   })
 );
@@ -261,8 +285,155 @@ router.post(
       summary: `Lịch ${appointment.title}: ${before!.status} → ${body.status}${body.reason ? ` (${body.reason})` : ""}`,
     });
 
-    emitTo(roomFor.branch(appointment.branchId), "appointment:updated", appointment);
+    emitTo(roomFor.branch(appointment.branchId), "appointment:updated", maskCustomerPhonesForBroadcast(appointment));
     res.json(appointment);
+  })
+);
+
+// ------------------------------------------------------------ CỌC (F25 + F12)
+
+/** GET /api/reception/appointments/:id/deposit-qr — ảnh VietQR, nội dung = mã lịch. */
+router.get(
+  "/appointments/:id/deposit-qr",
+  requirePermission("appointment.read"),
+  asyncHandler(async (req, res) => {
+    const appt = await prisma.appointment.findUnique({ where: { id: req.params.id } });
+    assertInScope(req, "appointment.read", appt as unknown as Record<string, unknown>, APPT_SCOPE);
+    res.json(await depositQr(appt!.id));
+  })
+);
+
+/**
+ * POST /api/reception/appointments/:id/deposit/confirm — lễ tân bấm một nút
+ * "Đã nhận cọc": sinh phiếu thu loại DEPOSIT gắn lịch, lịch sang DA_COC, khách
+ * sang bước Lịch cọc.
+ */
+router.post(
+  "/appointments/:id/deposit/confirm",
+  requirePermission("finance.create"),
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        amount: z.number().int().positive().optional(),
+        method: z
+          .nativeEnum(PaymentMethod)
+          .refine((m) => m !== PaymentMethod.VOUCHER, "Voucher dùng qua nút Dùng voucher, không chọn như phương thức thu")
+          .optional(),
+        reference: z.string().max(100).optional(),
+      })
+      .parse(req.body ?? {});
+    const before = await prisma.appointment.findUnique({ where: { id: req.params.id } });
+    assertInScope(req, "appointment.update", before as unknown as Record<string, unknown>, APPT_SCOPE);
+    const me = currentUser(req);
+    if (before!.depositStatus === DepositStatus.DA_COC) throw new HttpError(409, "Lịch này đã xác nhận nhận cọc");
+    if (before!.status === AppointmentStatus.CANCELLED) throw new HttpError(400, "Lịch đã huỷ, không nhận cọc");
+    const amount = body.amount ?? before!.depositAmount;
+    if (!amount || amount <= 0) throw new HttpError(400, "Lịch chưa có số tiền cọc. Nhập số tiền cọc trước.");
+    const code = await ensureAppointmentCode(before!.id);
+
+    const payment = await withCode(CodePrefix.PAYMENT, (pcode) =>
+      prisma.$transaction(async (tx) => {
+        const p = await tx.payment.create({
+          data: {
+            code: pcode,
+            branchId: before!.branchId,
+            customerId: before!.customerId,
+            appointmentId: before!.id,
+            type: PaymentType.DEPOSIT,
+            amount,
+            method: body.method ?? PaymentMethod.BANK_TRANSFER,
+            reference: body.reference ?? code,
+            note: `Cọc lịch ${code}`,
+            receivedById: me.id,
+          },
+        });
+        await tx.appointment.update({
+          where: { id: before!.id },
+          data: {
+            depositAmount: amount,
+            depositStatus: DepositStatus.DA_COC,
+            depositConfirmedAt: new Date(),
+            depositConfirmedById: me.id,
+            ...(before!.status === AppointmentStatus.PENDING ? { status: AppointmentStatus.CONFIRMED } : {}),
+          },
+        });
+        await tx.activity.create({
+          data: {
+            customerId: before!.customerId,
+            type: ActivityType.PAYMENT,
+            content: `${me.name} xác nhận nhận cọc ${formatVnd(amount)}đ cho lịch ${code}, phiếu ${pcode}`,
+            userId: me.id,
+            userName: me.name,
+          },
+        });
+        return p;
+      })
+    );
+
+    await applyStageEventSafe(before!.customerId, StageEvent.DEPOSIT_CONFIRMED, { actor: { id: me.id, name: me.name } });
+    await writeAudit({
+      req,
+      action: AuditAction.CREATE,
+      entity: "Payment",
+      entityId: payment.id,
+      branchId: before!.branchId,
+      summary: `Nhận cọc ${formatVnd(amount)}đ cho lịch ${code}: phiếu ${payment.code}`,
+    });
+    const appointment = await prisma.appointment.findUniqueOrThrow({ where: { id: before!.id }, include: appointmentInclude });
+    emitTo(roomFor.branch(appointment.branchId), "appointment:updated", maskCustomerPhonesForBroadcast(appointment));
+    await safely("mốc mua đầu", () => refreshFirstPurchaseAt(before!.customerId));
+    res.status(201).json({ appointment, payment });
+  })
+);
+
+/** POST /api/reception/appointments/:id/deposit/refund — hoàn cọc (phiếu REFUND số âm), bắt buộc lý do. */
+router.post(
+  "/appointments/:id/deposit/refund",
+  requirePermission("finance.approve"),
+  asyncHandler(async (req, res) => {
+    const { reason } = z.object({ reason: z.string().trim().min(5, "Lý do hoàn cọc tối thiểu 5 ký tự") }).parse(req.body ?? {});
+    const before = await prisma.appointment.findUnique({ where: { id: req.params.id } });
+    assertInScope(req, "appointment.update", before as unknown as Record<string, unknown>, APPT_SCOPE);
+    if (before!.depositStatus !== DepositStatus.DA_COC) throw new HttpError(400, "Lịch chưa nhận cọc nên không hoàn được");
+    const deposit = await prisma.payment.findFirst({
+      where: { appointmentId: before!.id, type: PaymentType.DEPOSIT },
+      orderBy: { paidAt: "desc" },
+    });
+    if (!deposit) throw new HttpError(400, "Không tìm thấy phiếu cọc của lịch này");
+    if (deposit.depositAppliedAt) throw new HttpError(409, "Tiền cọc đã được trừ vào thanh toán dịch vụ, không hoàn được");
+    const me = currentUser(req);
+    const code = await ensureAppointmentCode(before!.id);
+
+    const refund = await withCode(CodePrefix.PAYMENT, (pcode) =>
+      prisma.$transaction(async (tx) => {
+        const r = await tx.payment.create({
+          data: {
+            code: pcode,
+            branchId: before!.branchId,
+            customerId: before!.customerId,
+            appointmentId: before!.id,
+            type: PaymentType.REFUND,
+            amount: -deposit.amount,
+            method: deposit.method,
+            note: `Hoàn cọc lịch ${code}. Lý do: ${reason}`,
+            receivedById: me.id,
+          },
+        });
+        await tx.payment.update({ where: { id: deposit.id }, data: { depositAppliedAt: new Date() } });
+        await tx.appointment.update({ where: { id: before!.id }, data: { depositStatus: DepositStatus.HOAN_COC } });
+        return r;
+      })
+    );
+    await writeAudit({
+      req,
+      action: AuditAction.UPDATE,
+      entity: "Appointment",
+      entityId: before!.id,
+      branchId: before!.branchId,
+      summary: `Hoàn cọc ${formatVnd(deposit.amount)}đ lịch ${code}. Lý do: ${reason}`,
+    });
+    await safely("mốc mua đầu", () => refreshFirstPurchaseAt(before!.customerId));
+    res.status(201).json(refund);
   })
 );
 
@@ -289,6 +460,7 @@ router.get(
     const branchId = (req.query.branchId as string) ?? me.activeBranchId ?? undefined;
 
     const visits = await prisma.visit.findMany({
+      ...pageQuery(req.query, { defaultLimit: 200, maxLimit: 500 }),
       where: {
         ...where,
         ...(branchId && me.branchIds.includes(branchId) ? { branchId } : {}),
@@ -361,12 +533,11 @@ router.post(
       prisma.customer.update({
         where: { id: body.customerId },
         data: {
-          stage: FunnelStage.DEN,
           lastContactAt: new Date(),
           activities: {
             create: {
               type: ActivityType.CHECK_IN,
-              content: `Lễ tân ${me.name} check-in — số thứ tự ${visit.queueNumber}. Giai đoạn: Đã hẹn → Đã đến`,
+              content: `Lễ tân ${me.name} check-in, số thứ tự ${visit.queueNumber}`,
               userId: me.id,
               userName: me.name,
             },
@@ -383,6 +554,10 @@ router.post(
         : []),
     ]);
 
+    await applyStageEventSafe(body.customerId, StageEvent.CHECK_IN, { actor: { id: me.id, name: me.name }, branchId });
+    // F15: mốc khách đến lần đầu của lead.
+    await safely("mốc khách đến", () => noteShowUp(body.customerId, visit.checkedInAt));
+
     await writeAudit({
       req,
       action: AuditAction.CREATE,
@@ -392,7 +567,7 @@ router.post(
       summary: `Check-in ${visit.customer.name} — STT ${visit.queueNumber}`,
     });
 
-    emitTo(roomFor.branch(branchId), "visit:checked-in", visit);
+    emitTo(roomFor.branch(branchId), "visit:checked-in", maskCustomerPhonesForBroadcast(visit));
     emitTo(roomFor.branch(branchId), "queue:updated", { branchId });
     res.status(201).json(visit);
   })
@@ -433,6 +608,15 @@ router.patch(
       },
       include: visitInclude,
     });
+
+    // F1: khách rời bước "đang làm dịch vụ" (sang thanh toán hoặc xong) = đã làm dịch vụ.
+    if (
+      before!.status === VisitStatus.IN_SERVICE &&
+      (body.status === VisitStatus.PAYING || body.status === VisitStatus.DONE)
+    ) {
+      const me = currentUser(req);
+      await applyStageEventSafe(visit.customerId, StageEvent.VISIT_SERVICE_DONE, { actor: { id: me.id, name: me.name } });
+    }
 
     emitTo(roomFor.branch(visit.branchId), "queue:updated", { branchId: visit.branchId });
     res.json(visit);

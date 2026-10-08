@@ -1,12 +1,16 @@
 import { Router } from "express";
+import { getClinicMode, initialStageFor, stageForEvent } from "../lib/stages";
+import { noteLeadPhone, safely, syncLeadsForCustomer } from "../lib/lead-funnel";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
-import { requirePermission, scopedWhere, assertInScope, notFound } from "../middleware/rbac";
+import { requirePermission, scopedWhere, assertInScope, notFound, phoneFor, hasPermission } from "../middleware/rbac";
+import { pageQuery, CATALOG_PAGE } from "../lib/pagination";
+import { normalizeVnPhone } from "../lib/phone";
 import { writeAudit } from "../lib/audit";
 import { withCode, CodePrefix } from "../lib/codes";
-import { AuditAction, ActivityType, ChannelKind, LeadStage, FunnelStage, CustomerStatus } from "../types/enums";
+import { AuditAction, ActivityType, ChannelKind, LeadStage, StageEvent, CustomerStatus } from "../types/enums";
 
 // Lead & chiến dịch — màn "Lead & Chiến dịch" trong prototype.
 // Marketing có phạm vi ALL với lead; telesale chỉ thấy lead của mình (OWN).
@@ -16,12 +20,25 @@ router.use(requireAuth);
 
 const LEAD_SCOPE = { ownerFields: ["assignedToId"], branchField: "branchId" };
 
+/**
+ * S4: lead trả ra ngoài luôn đi qua đây. Marketing có quyền lead phạm vi ALL
+ * nhưng KHÔNG có `customer.view_phone`, nên chỉ thấy SĐT dạng 09xx xxx 123.
+ * `phoneNormalized` luôn bị bỏ khỏi phản hồi vì nó chính là SĐT thật.
+ */
+function presentLead<T extends { phone?: string | null; phoneNormalized?: string | null }>(
+  req: Parameters<typeof phoneFor>[0],
+  lead: T
+) {
+  const { phoneNormalized: _hidden, ...rest } = lead;
+  return { ...rest, phone: phoneFor(req, lead.phone) };
+}
+
 // ------------------------------------------------------------------ CHANNELS
 
 router.get(
   "/channels",
-  asyncHandler(async (_req, res) => {
-    res.json(await prisma.channel.findMany({ orderBy: { name: "asc" } }));
+  asyncHandler(async (req, res) => {
+    res.json(await prisma.channel.findMany({ orderBy: { name: "asc" }, ...pageQuery(req.query, CATALOG_PAGE) }));
   })
 );
 
@@ -62,6 +79,7 @@ router.get(
         OR: [{ branchId: null }, { branchId: { in: me.branchIds } }],
       },
       orderBy: { createdAt: "desc" },
+      ...pageQuery(req.query, CATALOG_PAGE),
       include: {
         channel: { select: { id: true, name: true, kind: true } },
         _count: { select: { leads: true, customers: true } },
@@ -148,24 +166,26 @@ router.get(
     if (req.query.campaignId) filters.campaignId = String(req.query.campaignId);
     if (req.query.assignedToId) filters.assignedToId = String(req.query.assignedToId);
     if (req.query.q) {
+      const q = String(req.query.q).trim();
+      const qPhone = normalizeVnPhone(q);
       filters.OR = [
-        { name: { contains: String(req.query.q) } },
-        { phone: { contains: String(req.query.q) } },
+        { name: { contains: q } },
+        { phone: { contains: q } },
+        ...(qPhone ? [{ phoneNormalized: { contains: qPhone } }] : []),
       ];
     }
 
-    res.json(
-      await prisma.lead.findMany({
-        where: filters,
-        orderBy: { createdAt: "desc" },
-        take: Math.min(Number(req.query.limit ?? 200), 500),
-        include: {
-          channel: { select: { id: true, name: true, kind: true } },
-          campaign: { select: { id: true, name: true, code: true } },
-          assignedTo: { select: { id: true, name: true } },
-        },
-      })
-    );
+    const leads = await prisma.lead.findMany({
+      where: filters,
+      orderBy: { createdAt: "desc" },
+      ...pageQuery(req.query, { defaultLimit: 200, maxLimit: 500 }),
+      include: {
+        channel: { select: { id: true, name: true, kind: true } },
+        campaign: { select: { id: true, name: true, code: true } },
+        assignedTo: { select: { id: true, name: true } },
+      },
+    });
+    res.json(leads.map((l) => presentLead(req, l)));
   })
 );
 
@@ -192,8 +212,33 @@ router.post(
     // Chống trùng khi lead đến từ webhook Facebook chạy lại.
     if (body.externalId) {
       const existing = await prisma.lead.findFirst({ where: { externalId: body.externalId } });
-      if (existing) return res.status(200).json(existing);
+      if (existing) return res.status(200).json(presentLead(req, existing));
     }
+
+    // B17: chống trùng theo SĐT chuẩn hoá. Một người nhắn qua 2 kênh chỉ là
+    // MỘT lead đang mở; lead đã chốt/thất bại thì cho tạo lead mới (quay lại).
+    const phoneNormalized = normalizeVnPhone(body.phone);
+    if (phoneNormalized) {
+      const dup = await prisma.lead.findFirst({
+        where: {
+          phoneNormalized,
+          stage: { notIn: [LeadStage.WON, LeadStage.LOST, LeadStage.SPAM] },
+        },
+        select: { id: true, name: true, stage: true },
+      });
+      if (dup) {
+        return res.status(409).json({
+          error: `Số điện thoại đã có lead đang mở: ${dup.name}`,
+          duplicate: { type: "lead", id: dup.id, name: dup.name, stage: dup.stage },
+        });
+      }
+    }
+    const matchedCustomer = phoneNormalized
+      ? await prisma.customer.findFirst({
+          where: { phoneNormalized, mergedIntoId: null },
+          select: { id: true, code: true, name: true },
+        })
+      : null;
 
     const lead = await prisma.lead.create({
       data: { ...body, branchId: body.branchId ?? me.activeBranchId },
@@ -206,7 +251,9 @@ router.post(
       branchId: lead.branchId,
       summary: `Tạo lead ${lead.name}`,
     });
-    res.status(201).json(lead);
+    // Khách cũ quay lại qua quảng cáo vẫn tạo lead (để đo chiến dịch), nhưng
+    // báo cho người nhập biết đã có hồ sơ khách, khi chuyển đổi sẽ gộp vào đó.
+    res.status(201).json({ ...presentLead(req, lead), matchedCustomer });
   })
 );
 
@@ -222,12 +269,20 @@ router.patch(
     const before = await prisma.lead.findUnique({ where: { id: req.params.id } });
     assertInScope(req, "lead.update", before as unknown as Record<string, unknown>, LEAD_SCOPE);
 
+    // Người không được xem SĐT chỉ thấy bản che; form sửa gửi lại chuỗi che đó
+    // thì KHÔNG được ghi đè số thật.
+    if (!hasPermission(req, "customer.view_phone") && before!.phone && body.phone !== undefined) {
+      delete body.phone;
+    }
+
     if (body.stage === LeadStage.LOST && !body.lostReason && !before!.lostReason) {
       throw new HttpError(400, "Đánh dấu lead thất bại bắt buộc ghi lý do");
     }
 
     const lead = await prisma.lead.update({ where: { id: req.params.id }, data: body });
-    res.json(lead);
+    // F15: lần đầu lead có SĐT.
+    if (lead.phone) await noteLeadPhone([lead.id]);
+    res.json(presentLead(req, lead));
   })
 );
 
@@ -252,7 +307,7 @@ router.post(
       entityId: lead.id,
       summary: `Chia lead ${lead.name} cho ${lead.assignedTo?.name}`,
     });
-    res.json(lead);
+    res.json(presentLead(req, lead));
   })
 );
 
@@ -273,10 +328,16 @@ router.post(
     const me = currentUser(req);
     const branchId = lead.branchId ?? me.activeBranchId;
 
-    const existing = lead.phone
-      ? await prisma.customer.findFirst({ where: { phone: lead.phone } })
+    // B17: so theo SĐT chuẩn hoá, "+84 912..." và "0912..." là cùng một khách.
+    const phoneNormalized = lead.phoneNormalized ?? normalizeVnPhone(lead.phone);
+    const existing = phoneNormalized
+      ? await prisma.customer.findFirst({
+          where: { phoneNormalized, mergedIntoId: null },
+          orderBy: { createdAt: "asc" },
+        })
       : null;
 
+    const mode = await getClinicMode();
     const customer =
       existing ??
       (await withCode(CodePrefix.CUSTOMER, (code) =>
@@ -291,7 +352,8 @@ router.post(
             interest: lead.interest ? JSON.stringify([lead.interest]) : null,
             note: lead.note,
             status: CustomerStatus.LEAD,
-            stage: FunnelStage.LIENHE,
+            // Lead đã được liên hệ: phẫu thuật = "Đã liên hệ", tiêm = "Nhắn tin".
+            stage: stageForEvent(mode, StageEvent.MESSAGE) ?? initialStageFor(mode),
             assignedToId: lead.assignedToId ?? me.id,
             ...(branchId ? { branchLinks: { create: { branchId, isPrimary: true } } } : {}),
           },
@@ -307,10 +369,15 @@ router.post(
       });
     }
 
+    // Khách cũ đã có lead gốc: convertedCustomerId là duy nhất, lead này chỉ lên WON
+    // (trước đây ghi đè gây lỗi trùng khoá và lead kẹt ngoài phễu marketing).
+    const hasOrigin = existing
+      ? Boolean(await prisma.lead.findFirst({ where: { convertedCustomerId: existing.id }, select: { id: true } }))
+      : false;
     await prisma.$transaction([
       prisma.lead.update({
         where: { id: lead.id },
-        data: { convertedCustomerId: customer.id, stage: LeadStage.WON },
+        data: { ...(hasOrigin ? {} : { convertedCustomerId: customer.id }), stage: LeadStage.WON },
       }),
       prisma.activity.create({
         data: {
@@ -325,6 +392,8 @@ router.post(
       }),
     ]);
 
+    await safely("đồng bộ lead khi chuyển", () => syncLeadsForCustomer(customer.id, { leadId: lead.id }));
+
     await writeAudit({
       req,
       action: AuditAction.UPDATE,
@@ -334,7 +403,10 @@ router.post(
       summary: `Chuyển lead ${lead.name} thành khách ${customer.code}${existing ? " (gộp vào khách sẵn có)" : ""}`,
     });
 
-    res.status(201).json({ customer, merged: Boolean(existing) });
+    res.status(201).json({
+      customer: { ...customer, phone: phoneFor(req, customer.phone), phoneNormalized: undefined },
+      merged: Boolean(existing),
+    });
   })
 );
 

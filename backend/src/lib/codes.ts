@@ -16,6 +16,7 @@ export const CodePrefix = {
   MEDICAL_RECORD: "BA",
   PROCEDURE: "PM",
   TRANSFER: "PC", // phiếu chuyển kho
+  APPOINTMENT: "LH", // lịch hẹn (F25: nội dung chuyển khoản cọc)
 } as const;
 export type CodePrefix = (typeof CodePrefix)[keyof typeof CodePrefix];
 
@@ -35,6 +36,7 @@ const counters: Record<CodePrefix, Counter> = {
   BA: (p) => prisma.medicalRecord.count({ where: { code: { startsWith: p } } }),
   PM: (p) => prisma.procedureRecord.count({ where: { code: { startsWith: p } } }),
   PC: (p) => prisma.stockTransfer.count({ where: { code: { startsWith: p } } }),
+  LH: (p) => prisma.appointment.count({ where: { code: { startsWith: p } } }),
 };
 
 /**
