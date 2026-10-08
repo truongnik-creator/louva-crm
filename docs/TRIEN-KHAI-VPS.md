@@ -92,10 +92,30 @@ HTTP-01: tên miền chưa trỏ đúng thì nó không cấp được chứng t
 ## Bước 3 — Dựng máy chủ (một lần)
 
 ```bash
-ssh louva-vps 'curl -fsSL https://raw.githubusercontent.com/truongnik-creator/louva-crm/main/deploy/provision.sh -o /root/provision.sh && DOMAIN=crm.louva.vn ADMIN_EMAIL=truongnik@gmail.com bash /root/provision.sh'
+SHA=$(git rev-parse HEAD) && ssh louva-vps "curl -fsSL https://raw.githubusercontent.com/truongnik-creator/louva-crm/$SHA/deploy/provision.sh -o /root/provision.sh && DOMAIN=crm.louva.vn ADMIN_EMAIL=truongnik@gmail.com bash /root/provision.sh"
 ```
 
-Bật proxy Cloudflare thì thêm `CF_PROXY=1` vào trước `bash`.
+**Lấy theo SHA commit, không lấy theo `main`.** `raw.githubusercontent.com` cache
+tệp vài phút, nên `/main/` hay trả bản cũ ngay sau khi push — đã mất hai lần
+chạy vì đúng lỗi này. URL theo SHA là bất biến nên không bao giờ cache sai.
+
+Đứng sau proxy Cloudflare thì thêm `CF_PROXY=1 SKIP_CERTBOT=1`: khách nhận
+chứng thư hợp lệ của biên Cloudflare, chặng Cloudflare→máy chủ dùng chứng thư
+tự ký, và nginx lấy IP khách thật từ `CF-Connecting-IP`.
+
+### Nếu Cloudflare trả lỗi 522
+
+522 là Cloudflare không mở được kết nối TCP tới máy chủ gốc. Phân biệt nhanh:
+
+```bash
+ssh louva-vps 'tail -5 /var/log/nginx/access.log'   # có IP dải Cloudflare không?
+curl -sSk -o /dev/null -w "%{http_code}\n" https://221.132.16.132/health
+```
+
+- Máy chủ trả 200 nhưng access log **không có IP Cloudflare nào** → bản ghi A
+  trong Cloudflare đang trỏ sai IP. Sửa lại cho đúng IP máy chủ.
+- Access log có IP Cloudflare → vấn đề ở tầng TLS hoặc SSL/TLS mode, không
+  phải 522.
 
 Script làm: cài Node 20 + nginx + ufw, tạo user `louva`, sinh khoá mã hoá và
 `JWT_SECRET` tại chỗ, clone repo, build backend và bản web, dựng systemd, lấy
