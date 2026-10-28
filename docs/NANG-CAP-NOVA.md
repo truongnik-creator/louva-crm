@@ -652,6 +652,80 @@ việc; thư viện tài sản nối vào ảnh đã duyệt marketing (đườn
 `consentForMarketing` và ghi nhật ký riêng); báo cáo nối bài đăng → lead →
 doanh thu.
 
+## F38 · Đấu nối trang tính báo cáo vào đo lường nội dung
+
+**Vấn đề:** F37 cho khối sáng tạo chỗ lên kế hoạch, nhưng kết quả thật của bài
+đăng thì nằm ở trang tính họ vẫn ghi hàng ngày. Bắt nhập lại vào CRM là bắt làm
+hai lần, và ai cũng biết việc đó sẽ chết yểu.
+
+**Chốt kiến trúc:** trang tính là NGUỒN SỰ THẬT, CRM chỉ đọc lên. Trang tính đã
+có sẵn hai cột cần thiết: `✅Link hoàn thành` (bằng chứng đã đăng) và
+`📶Đánh giá bài đăng` (kết quả, phân bậc theo view: <5k / ≥5k / ≥10k / ≥50k).
+F36 đã kéo cả hai về CSDL từ 08/10. Việc duy nhất còn thiếu là nhận ra dòng việc
+nào ứng với bài nào.
+
+**Cách ghép:** so khoá URL đã chuẩn hoá. `normalizePostUrl()` quy mọi biến thể về
+một khoá — bỏ tiền tố thiết bị (`m.`, `vt.`, `www.`), gộp tên miền Facebook theo
+quốc gia, bỏ tham số theo dõi (`utm_*`, `fbclid`, `_t`, `is_from_webapp`…), bỏ
+`/` cuối và neo `#`. Nhờ vậy link dán từ điện thoại và link dán từ máy tính ra
+cùng một khoá. Chạy ở hai chiều: `matchEntriesToPlans()` sau mỗi lần đồng bộ
+trang tính, và `matchPlan()` khi có người dán link vào bài — vì ngoài đời bài
+thường được đăng và ghi trang tính TRƯỚC khi ai đó mở CRM dán link.
+
+**Ghép sai nguy hiểm hơn không ghép.** Một bài bị gán kết quả của bài khác làm
+hỏng mọi số liệu dựa trên nó mà không có báo đỏ ở đâu. Nên:
+- chỉ ghép tự động khi khoá TRÙNG KHÍT; giống tên việc thì chỉ *gợi ý*, người bấm
+  mới ghép (`POST /plans/:id/link-entry`);
+- một khoá ứng với nhiều bài thì **bỏ qua cả cụm**, không chọn bừa;
+- chỉ ghép trong phạm vi cơ sở của nguồn;
+- tính lại mỗi lần đồng bộ, không cộng dồn.
+
+Một lỗi bị test bắt khi dựng: `normalizePostUrl("Link")` từng trả `link/` thay vì
+`null`, vì `"Link"` được thêm `https://` vào là thành URL hợp lệ về cú pháp. Hậu
+quả là **mọi** ô chỉ có chữ "Link" (trang tính chạy đường KÉO) cùng ra một khoá
+rồi ghép nhầm vào nhau. Đã chặn bằng kiểm tra tên miền phải có dấu chấm và đuôi
+là chữ.
+
+**Lược đồ:** `content_plans.postUrlKey`, `work_report_entries.linkUrlKey`,
+`work_report_entries.contentPlanId` (migration `20261028041951_add_content_measurement`).
+Lưu ý khi triển khai: SQLite thêm khoá ngoại bằng cách **dựng lại bảng**
+(`CREATE` bảng mới → chép → `DROP` → `RENAME`), không phải `ADD COLUMN` đơn
+thuần. Đã đối chiếu lệnh `INSERT`: đủ 26 cột cũ, khớp từng cặp, hai cột mới cho
+phép rỗng — không mất dữ liệu.
+
+**Quyền:** thêm quyền đặc biệt `content.view_team_output` thay vì dùng lại
+`work_report.read`. Hai thứ đó khác nhau: `work_report.read` là dữ liệu NHÂN SỰ
+(ngày công, ngày nghỉ, từng dòng việc), còn đây là SẢN LƯỢNG nội dung. Gộp lại
+thì MKT — đúng người cần số này — bị chặn vì `work_report.read` của họ là OWN;
+mà mở cho MKT thì lại phải mở luôn bảng công của cả đội. Cấp cho MARKETING,
+Giám đốc, Quản lý cơ sở, Quản trị hệ thống; KHÔNG cấp cho MEDIA, DESIGN, CONTENT.
+Không có quyền này thì `/measure` trả `owner: null` — nếu vẫn trả tên kèm đánh
+giá thì chỉ cần cộng tay là ra bảng xếp hạng đồng nghiệp, và cái cổng ở
+`/measure/by-person` chỉ còn là hình thức.
+
+**Giao diện:** tab **Đo lường** thứ ba trên màn Sản xuất nội dung — bốn ô tổng,
+bảng theo kênh, bảng theo người (chỉ với ai có quyền), danh sách bài đã có kết
+quả, và khu "dòng trang tính chưa ứng với bài nào" kèm nút ghép tay có gợi ý.
+Màn hiện cảnh báo rõ khi còn trang tính chạy đường **KÉO**: đường đó không lấy
+được địa chỉ trong ô "Link hoàn thành" nên bài của những người đó không tự ghép
+được — nói thẳng còn hơn để người đọc tưởng số đã đủ.
+
+**Kiểm chứng:** 22 test (`tests/f38-do-luong-noi-dung.test.ts`). Phần lớn là để
+chặn ghép nhầm: nhiều biến thể URL phải ra cùng khoá, hai bài khác nhau không
+được gộp, ô "Link" phải ra null, hai bài trùng khoá thì bỏ qua, đổi link thì gỡ
+liên kết cũ, ghép lại nhiều lần không nhân đôi. Test `by-person` kiểm cả việc
+**có số liệu của người khác** chứ không chỉ mã 200 — bản đầu cổng mở nhưng bộ
+lọc vẫn theo `work_report.read` nên MKT nhận bảng rỗng mà không có lỗi nào.
+
+**Sửa kèm:** test F36 `"token KHÔNG bao giờ trả ra dạng gốc"` trước đây duyệt
+TOÀN BỘ nguồn trong CSDL test dùng chung và bắt mọi nguồn phải `hasToken`. Nguồn
+chưa cấp token là trạng thái hợp lệ, nên bất kỳ tệp test nào tạo nguồn mới cũng
+làm nó vỡ. Đã tách: không rò token thì kiểm mọi hàng, còn "đã có token" chỉ kiểm
+nguồn mà chính test đó vừa tạo.
+
+**Còn thiếu:** nối tiếp sang lead và doanh thu (bài → chiến dịch đã có, nhưng
+chiến dịch → lead → tiền thì cần đối chiếu thêm với F15).
+
 ## Việc cần xác minh với tài khoản thật
 
 1. **Pancake**: đường dẫn API, hai loại token và mốc thời gian đã đối chiếu bản OpenAPI chính thức (xem mục F35). Còn phải thử với tài khoản thật: định dạng chữ ký webhook (`X-Pancake-Signature` HMAC-SHA256 hay bí mật chung — các chỗ `TODO-VERIFY` còn lại ở `backend/src/routes/pancake.ts`), trường nguồn quảng cáo (ad_id, post_id, campaign), cách tải ảnh đính kèm, và xác nhận `GET /pages/{page_id}/statistics/users` có trong gói thuê bao của phòng khám.

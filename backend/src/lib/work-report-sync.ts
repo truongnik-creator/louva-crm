@@ -4,6 +4,7 @@ import { hashToken, randomToken } from "./crypto";
 import { monthFromTabName, parseSheet, type ParseSheetResult } from "./work-report";
 import { WorkReportSyncMode, WorkReportSyncStatus } from "../types/enums";
 import { fetchPublicSheet, listPublicTabs, WorksheetError } from "../services/worksheet";
+import { matchEntriesToPlans, normalizePostUrl } from "./content-link";
 
 // F36 · GHI DỮ LIỆU BÁO CÁO CÔNG VIỆC.
 //
@@ -116,6 +117,8 @@ export async function applyTab(sourceId: string, payload: TabPayload): Promise<A
           rating: e.rating,
           linkText: e.linkText,
           linkUrl: e.linkUrl,
+          // F38: chuẩn hoá ngay lúc ghi để ghép bằng index, khỏi quét bảng.
+          linkUrlKey: normalizePostUrl(e.linkUrl),
           note: e.note,
           summary: e.summary,
           dayCredit: e.dayCredit,
@@ -140,6 +143,18 @@ export interface FinishSyncInput {
 
 /** Cập nhật trạng thái đồng bộ + hai số liệu tổng (tổng dòng, ngày việc mới nhất). */
 export async function finishSync({ sourceId, status, error, title }: FinishSyncInput): Promise<void> {
+  // F38: ghép dòng việc với bài trong bảng sản xuất. Đặt ở đây chứ không ở
+  // applyTab vì applyTab chạy từng sheet tháng một, còn việc ghép phải nhìn
+  // toàn bộ dòng của nguồn. Ghép hỏng thì KHÔNG được làm hỏng đồng bộ — dữ
+  // liệu trang tính vẫn phải về, chỉ là chưa nối được.
+  if (status === WorkReportSyncStatus.OK) {
+    try {
+      await matchEntriesToPlans(sourceId);
+    } catch (e) {
+      logger.warn({ err: e, sourceId }, "[F38] ghép dòng việc với bài nội dung thất bại");
+    }
+  }
+
   const [rowCount, latest] = await Promise.all([
     prisma.workReportEntry.count({ where: { sourceId } }),
     prisma.workReportEntry.findFirst({
