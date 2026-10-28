@@ -733,3 +733,51 @@ export interface ContentMyDay {
   waiting: ContentPlan[]
   overdue: number
 }
+
+/** F38: đo lường nội dung, số liệu lấy từ trang tính báo cáo. */
+export type ContentRating = 'BAD' | 'AVERAGE' | 'GOOD' | 'EXCELLENT'
+
+export interface ContentMeasureRow {
+  id: string
+  title: string
+  format: ContentFormat
+  stage: ContentStage
+  channel: { id: string; name: string } | null
+  campaign: { id: string; name: string } | null
+  /** null khi người xem không có quyền `content.view_team_output`. */
+  owner: { id: string; name: string } | null
+  plannedDate: string | null
+  publishedAt: string | null
+  postUrl: string | null
+  rating: ContentRating | null
+  ngayBaoCao: string | null
+  soDong: number
+}
+
+export interface ContentUnmatchedEntry {
+  id: string
+  taskName: string | null
+  channel: string | null
+  workDate: string | null
+  linkUrl: string | null
+  ratingCode: ContentRating | null
+  user: { id: string; name: string }
+}
+
+export interface ContentMeasure {
+  tong: { keHoach: number; daDang: number; huy: number; coKetQua: number; ratings: Record<string, number> }
+  theoKenh: Array<{ id: string; name: string; keHoach: number; daDang: number; ratings: Record<string, number> }>
+  theoDang: Array<{ format: ContentFormat; keHoach: number; daDang: number; ratings: Record<string, number> }>
+  coKetQua: ContentMeasureRow[]
+  chuaCoKetQua: ContentMeasureRow[]
+  chuaGhep: ContentUnmatchedEntry[]
+  canhBao: { nguonKeo: number; thieuLink: boolean }
+}
+
+export interface ContentPersonRow {
+  id: string
+  name: string
+  soBai: number
+  ratings: Record<string, number>
+  baiTot: number
+}

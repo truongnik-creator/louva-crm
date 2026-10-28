@@ -5,7 +5,10 @@ import {
   deleteContentPlan,
   fetchCampaigns,
   fetchChannels,
+  fetchContentByPerson,
+  fetchContentMeasure,
   fetchContentPlans,
+  linkEntryToPlan,
   fetchStaff,
   getApiErrorMessage,
   moveContentStage,
@@ -14,6 +17,10 @@ import {
 } from '../lib/api'
 import type {
   Campaign,
+  ContentMeasure,
+  ContentPersonRow,
+  ContentRating,
+  ContentUnmatchedEntry,
   ContentFormat,
   ContentPlan,
   ContentStage,
@@ -72,7 +79,7 @@ export default function ContentBoard(): React.JSX.Element {
   const { can, scopeOf, user } = useAuth()
   const { say, fail } = useToast()
 
-  const [tab, setTab] = useState<'bang' | 'lich'>('bang')
+  const [tab, setTab] = useState<'bang' | 'lich' | 'dolo'>('bang')
   const [plans, setPlans] = useState<ContentPlan[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -187,6 +194,9 @@ export default function ContentBoard(): React.JSX.Element {
           <button className={tab === 'lich' ? 'on' : ''} role="tab" onClick={() => setTab('lich')}>
             Lịch
           </button>
+          <button className={tab === 'dolo' ? 'on' : ''} role="tab" onClick={() => setTab('dolo')}>
+            Đo lường
+          </button>
         </div>
 
         <select className="input" style={{ width: 160 }} value={filterChannel} onChange={(e) => setFilterChannel(e.target.value)}>
@@ -225,9 +235,9 @@ export default function ContentBoard(): React.JSX.Element {
       </div>
 
       {error ? <div className="card t-over" style={{ marginBottom: 10 }}>{error}</div> : null}
-      {loading ? <Empty>Đang tải…</Empty> : null}
+      {loading && tab !== 'dolo' ? <Empty>Đang tải…</Empty> : null}
 
-      {!loading && plans.length === 0 ? (
+      {!loading && plans.length === 0 && tab !== 'dolo' ? (
         <Empty>
           Chưa có bài nào.
           {canCreate ? ' Bấm "Bài mới" để thêm bài đầu tiên.' : ' Chờ MKT hoặc quản lý lên kế hoạch.'}
@@ -266,7 +276,9 @@ export default function ContentBoard(): React.JSX.Element {
 
       {!loading && plans.length > 0 && tab === 'lich' ? <LichDang plans={plans} onOpen={setDetail} /> : null}
 
-      {huy.length > 0 ? (
+      {tab === 'dolo' ? <DoLuong plans={plans} /> : null}
+
+      {huy.length > 0 && tab !== 'dolo' ? (
         <div className="card" style={{ marginTop: 12 }}>
           <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
             Đã huỷ ({huy.length}) — giữ lại để tra lịch sử, không quay lại được
@@ -713,6 +725,335 @@ function ChiTietBai({
           </button>
         </div>
       ) : null}
+    </Modal>
+  )
+}
+
+/* ---- F38: TAB ĐO LƯỜNG ----
+   Số liệu ở đây KHÔNG do ai gõ vào CRM. Cột "Đánh giá bài đăng" của trang tính
+   đã phân bậc theo view (<5k / ≥5k / ≥10k / ≥50k) và F36 đã kéo về; màn này chỉ
+   đọc lên. Nhờ vậy khối sáng tạo không phải nhập hai lần. */
+
+const RATING_LABEL: Record<ContentRating, string> = {
+  BAD: 'Chưa tốt <5k',
+  AVERAGE: 'Trung bình ≥5k',
+  GOOD: 'Tốt ≥10k',
+  EXCELLENT: 'Xuất sắc ≥50k'
+}
+const RATING_FG: Record<ContentRating, string> = {
+  BAD: '#b23b3b',
+  AVERAGE: '#c98a00',
+  GOOD: '#2f8f4e',
+  EXCELLENT: '#1d6b38'
+}
+const RATING_KEYS: ContentRating[] = ['BAD', 'AVERAGE', 'GOOD', 'EXCELLENT']
+
+function RatingBar({ ratings }: { ratings: Record<string, number> }): React.JSX.Element {
+  const tong = RATING_KEYS.reduce((s, k) => s + (ratings[k] ?? 0), 0)
+  if (tong === 0) return <span className="muted">chưa có kết quả</span>
+  return (
+    <span style={{ display: 'inline-flex', gap: 2, alignItems: 'center' }}>
+      {RATING_KEYS.map((k) =>
+        ratings[k] ? (
+          <span
+            key={k}
+            title={`${RATING_LABEL[k]}: ${ratings[k]} bài`}
+            style={{
+              background: RATING_FG[k],
+              color: '#fff',
+              borderRadius: 3,
+              padding: '0 5px',
+              fontSize: 11
+            }}
+          >
+            {ratings[k]}
+          </span>
+        ) : null
+      )}
+    </span>
+  )
+}
+
+function DoLuong({ plans }: { plans: ContentPlan[] }): React.JSX.Element {
+  const { can } = useAuth()
+  const { say, fail } = useToast()
+  const [data, setData] = useState<ContentMeasure | null>(null)
+  const [people, setPeople] = useState<ContentPersonRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [ghep, setGhep] = useState<ContentUnmatchedEntry | null>(null)
+  const xemTheoNguoi = can('content.view_team_output')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      setData(await fetchContentMeasure())
+      if (xemTheoNguoi) setPeople(await fetchContentByPerson())
+    } catch (e) {
+      fail(getApiErrorMessage(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [xemTheoNguoi, fail])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  if (loading) return <Empty>Đang tải…</Empty>
+  if (!data) return <Empty>Chưa có số liệu.</Empty>
+
+  const t = data.tong
+  const tyLeDang = t.keHoach > 0 ? Math.round((t.daDang / t.keHoach) * 100) : 0
+
+  return (
+    <div>
+      {data.canhBao.thieuLink ? (
+        <div className="card" style={{ marginBottom: 10, borderLeft: '3px solid #c98a00' }}>
+          <b>Còn {data.canhBao.nguonKeo} trang tính chạy đường KÉO.</b>{' '}
+          <span className="muted">
+            Đường kéo không lấy được địa chỉ trong ô “Link hoàn thành” (chỉ còn chữ “Link”), nên bài của những
+            người đó không tự ghép được. Chuyển sang đường ĐẨY ở màn “Báo cáo công việc (trang tính)”.
+          </span>
+        </div>
+      ) : null}
+
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginBottom: 10 }}>
+        <div className="card">
+          <div className="muted" style={{ fontSize: 11.5 }}>KẾ HOẠCH</div>
+          <div style={{ fontSize: 26, fontWeight: 700 }}>{t.keHoach}</div>
+        </div>
+        <div className="card">
+          <div className="muted" style={{ fontSize: 11.5 }}>ĐÃ ĐĂNG</div>
+          <div style={{ fontSize: 26, fontWeight: 700 }}>
+            {t.daDang} <span className="muted" style={{ fontSize: 13 }}>{tyLeDang}%</span>
+          </div>
+        </div>
+        <div className="card">
+          <div className="muted" style={{ fontSize: 11.5 }}>CÓ KẾT QUẢ TỪ TRANG TÍNH</div>
+          <div style={{ fontSize: 26, fontWeight: 700 }}>{t.coKetQua}</div>
+        </div>
+        <div className="card">
+          <div className="muted" style={{ fontSize: 11.5 }}>BÀI TỐT (≥10k view)</div>
+          <div style={{ fontSize: 26, fontWeight: 700 }}>
+            {(t.ratings.GOOD ?? 0) + (t.ratings.EXCELLENT ?? 0)}
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 10 }}>
+        <div className="sec-title">Theo kênh</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Kênh</th>
+              <th>Kế hoạch</th>
+              <th>Đã đăng</th>
+              <th>Phân bố đánh giá</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.theoKenh.map((k) => (
+              <tr key={k.id}>
+                <td><b>{k.name}</b></td>
+                <td>{k.keHoach}</td>
+                <td>{k.daDang}</td>
+                <td><RatingBar ratings={k.ratings} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {xemTheoNguoi && people.length > 0 ? (
+        <div className="card" style={{ marginBottom: 10 }}>
+          <div className="sec-title">Theo người</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Người</th>
+                <th>Bài có kết quả</th>
+                <th>Bài tốt</th>
+                <th>Phân bố</th>
+              </tr>
+            </thead>
+            <tbody>
+              {people.map((p) => (
+                <tr key={p.id}>
+                  <td><b>{p.name}</b></td>
+                  <td>{p.soBai}</td>
+                  <td>{p.baiTot}</td>
+                  <td><RatingBar ratings={p.ratings} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      <div className="card" style={{ marginBottom: 10 }}>
+        <div className="sec-title">Bài đã có kết quả ({data.coKetQua.length})</div>
+        {data.coKetQua.length === 0 ? (
+          <div className="muted">
+            Chưa bài nào ghép được với trang tính. Bài phải có link, và link đó phải xuất hiện ở cột “Link hoàn
+            thành” trong trang tính của người làm.
+          </div>
+        ) : (
+          <table>
+            <tbody>
+              {data.coKetQua.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    <b>{r.title}</b>
+                    <div className="muted" style={{ fontSize: 11.5 }}>
+                      {r.channel?.name ?? '—'}
+                      {r.owner ? ` · ${r.owner.name}` : ''}
+                      {r.campaign ? ` · ${r.campaign.name}` : ''}
+                    </div>
+                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {r.rating ? (
+                      <span style={{ color: RATING_FG[r.rating], fontWeight: 600 }}>{RATING_LABEL[r.rating]}</span>
+                    ) : null}
+                  </td>
+                  <td className="muted" style={{ fontSize: 11.5, whiteSpace: 'nowrap' }}>
+                    trang tính {dateVi(r.ngayBaoCao)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {data.chuaCoKetQua.length > 0 ? (
+        <div className="card" style={{ marginBottom: 10 }}>
+          <div className="sec-title">Đã đăng nhưng trang tính chưa báo ({data.chuaCoKetQua.length})</div>
+          {data.chuaCoKetQua.map((r) => (
+            <div key={r.id} className="ln">
+              {r.title}
+              <span className="muted"> · {r.channel?.name ?? '—'}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {data.chuaGhep.length > 0 ? (
+        <div className="card">
+          <div className="sec-title">Dòng trang tính chưa ứng với bài nào ({data.chuaGhep.length})</div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+            Thường là do link rút gọn, hoặc bài chưa được dán link vào CRM. Ghép tay để kết quả về đúng bài.
+          </div>
+          <table>
+            <tbody>
+              {data.chuaGhep.map((e) => (
+                <tr key={e.id}>
+                  <td>
+                    <b>{e.taskName ?? '(không tên)'}</b>
+                    <div className="muted" style={{ fontSize: 11.5 }}>
+                      {e.user.name} · {e.channel ?? '—'} · {dateVi(e.workDate)}
+                    </div>
+                  </td>
+                  <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {e.linkUrl ? (
+                      <a href={e.linkUrl} target="_blank" rel="noreferrer" className="muted" style={{ fontSize: 11.5 }}>
+                        {e.linkUrl}
+                      </a>
+                    ) : null}
+                  </td>
+                  <td>
+                    <button className="btn sec sm" onClick={() => setGhep(e)}>
+                      Ghép vào bài…
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {ghep ? (
+        <GhepTay
+          entry={ghep}
+          plans={plans}
+          onClose={() => setGhep(null)}
+          onDone={() => {
+            setGhep(null)
+            say('Đã ghép')
+            void load()
+          }}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+/** Chọn bài để ghép tay. Gợi ý theo tên việc, nhưng người bấm mới quyết. */
+function GhepTay({
+  entry,
+  plans,
+  onClose,
+  onDone
+}: {
+  entry: ContentUnmatchedEntry
+  plans: ContentPlan[]
+  onClose: () => void
+  onDone: () => void
+}): React.JSX.Element {
+  const { fail } = useToast()
+  const [q, setQ] = useState(entry.taskName ?? '')
+  const [saving, setSaving] = useState(false)
+
+  const ungVien = useMemo(() => {
+    const tu = q.toLowerCase().split(/\s+/).filter((w) => w.length > 2)
+    return plans
+      .filter((p) => p.stage !== 'HUY')
+      .map((p) => ({ p, diem: tu.filter((w) => p.title.toLowerCase().includes(w)).length }))
+      .sort((a, b) => b.diem - a.diem || a.p.title.localeCompare(b.p.title))
+      .slice(0, 12)
+  }, [plans, q])
+
+  async function ghep(planId: string) {
+    setSaving(true)
+    try {
+      await linkEntryToPlan(planId, entry.id)
+      onDone()
+    } catch (e) {
+      fail(getApiErrorMessage(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title="Ghép dòng trang tính vào bài" onClose={onClose} width={560}>
+      <div className="card" style={{ marginBottom: 10 }}>
+        <b>{entry.taskName ?? '(không tên)'}</b>
+        <div className="muted" style={{ fontSize: 12 }}>
+          {entry.user.name} · {entry.channel ?? '—'} · {dateVi(entry.workDate)}
+        </div>
+        {entry.linkUrl ? (
+          <div className="muted" style={{ fontSize: 11.5, wordBreak: 'break-all' }}>{entry.linkUrl}</div>
+        ) : null}
+      </div>
+
+      <label className="lbl">Tìm bài</label>
+      <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Gõ tên bài" />
+
+      <div style={{ marginTop: 8 }}>
+        {ungVien.length === 0 ? <div className="muted">Không có bài nào.</div> : null}
+        {ungVien.map(({ p, diem }) => (
+          <div key={p.id} className="ln" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span>
+              {p.title}
+              {diem > 0 ? <span className="muted" style={{ fontSize: 11 }}> · có thể là bài này</span> : null}
+            </span>
+            <button className="btn sec sm" style={{ marginLeft: 'auto' }} disabled={saving} onClick={() => void ghep(p.id)}>
+              Ghép
+            </button>
+          </div>
+        ))}
+      </div>
     </Modal>
   )
 }

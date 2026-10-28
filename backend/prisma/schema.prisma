@@ -2993,6 +2993,13 @@ model WorkReportEntry {
   rating    String?
   linkText  String?
   linkUrl   String?
+  /// F38: `linkUrl` đã chuẩn hoá — null khi ô chỉ có chữ "Link" (trang tính
+  /// chạy đường KÉO không lấy được siêu liên kết).
+  linkUrlKey String?
+  /// F38: bài trong bảng sản xuất mà dòng này ứng với. Tính lại mỗi lần đồng
+  /// bộ, không bao giờ lệch với trang tính.
+  contentPlanId String?
+  contentPlan   ContentPlan? @relation("ContentPlanEntries", fields: [contentPlanId], references: [id], onDelete: SetNull)
   note      String?
   summary   String?
   /// Cột "Công/ngày" — số công tích luỹ, chỉ điền ở dòng đầu mỗi ngày.
@@ -3014,6 +3021,8 @@ model WorkReportEntry {
   @@index([sourceId, year, month])
   @@index([branchId, workDate])
   @@index([statusCode])
+  @@index([contentPlanId])
+  @@index([linkUrlKey])
   @@map("work_report_entries")
 }
 
@@ -3060,6 +3069,9 @@ model ContentPlan {
   publishedAt DateTime?
   /// Link bài đã đăng (công khai), không phải ảnh khách.
   postUrl     String?
+  /// F38: `postUrl` đã chuẩn hoá (bỏ utm, m./vt. → gốc, bỏ "/" cuối) để ghép
+  /// với cột "Link hoàn thành" của trang tính báo cáo bằng index.
+  postUrlKey  String?
 
   approvedById String?
   approvedBy   User?     @relation("ContentPlanApprover", fields: [approvedById], references: [id], onDelete: SetNull)
@@ -3072,10 +3084,12 @@ model ContentPlan {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tasks ContentTask[]
+  tasks   ContentTask[]
+  entries WorkReportEntry[] @relation("ContentPlanEntries")
 
   @@index([branchId, stage])
   @@index([plannedDate])
+  @@index([postUrlKey])
   @@index([ownerId, stage])
   @@index([campaignId])
   @@map("content_plans")

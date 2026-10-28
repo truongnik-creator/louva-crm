@@ -286,13 +286,22 @@ describe("F36 · cổng đẩy /api/work-reports/ingest", () => {
   });
 
   it("token KHÔNG bao giờ trả ra dạng gốc ở màn danh sách", async () => {
-    await makeSource();
+    const mine = await makeSource();
     const res = await ctx.as("QUAN_LY_HE_THONG").get("/api/work-reports/sources").expect(200);
+
+    // Điều phải đúng với MỌI nguồn: không rò token gốc.
     for (const s of res.body) {
-      expect(s.hasToken).toBe(true);
       expect(s.tokenHash).toBeUndefined();
+      expect(s.token).toBeUndefined();
       expect(String(s.tokenPrefix ?? "").length).toBeLessThanOrEqual(8);
     }
+
+    // Còn "đã có token" chỉ đúng với nguồn vừa cấp token ở trên. CSDL test dùng
+    // chung nhiều tệp, và nguồn CHƯA cấp token là trạng thái hợp lệ (vừa tạo,
+    // hoặc chạy đường KÉO) — bắt mọi hàng phải có token là tự gài bẫy cho tệp
+    // test khác.
+    const row = (res.body as Array<{ id: string; hasToken: boolean }>).find((s) => s.id === mine.sourceId);
+    expect(row?.hasToken).toBe(true);
   });
 });
 

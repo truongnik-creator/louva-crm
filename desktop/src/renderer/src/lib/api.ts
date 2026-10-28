@@ -36,6 +36,8 @@ import type {
   Visit,
   WorkPostRating,
   ContentFormat,
+  ContentMeasure,
+  ContentPersonRow,
   ContentMyDay,
   ContentPlan,
   ContentStage,
@@ -2001,4 +2003,20 @@ export async function deleteContentTask(id: string): Promise<void> {
 export async function fetchContentMyDay(): Promise<ContentMyDay> {
   const { data } = await api.get('/content/my-day')
   return data
+}
+
+/** F38: đo lường nội dung — số liệu gốc là trang tính báo cáo, không nhập lại. */
+export async function fetchContentMeasure(params?: { from?: string; to?: string }): Promise<ContentMeasure> {
+  const { data } = await api.get('/content/measure', { params })
+  return data
+}
+
+export async function fetchContentByPerson(): Promise<ContentPersonRow[]> {
+  const { data } = await api.get('/content/measure/by-person')
+  return data
+}
+
+/** Ghép tay một dòng trang tính vào bài, khi link không khớp được tự động. */
+export async function linkEntryToPlan(planId: string, entryId: string): Promise<void> {
+  await api.post(`/content/plans/${planId}/link-entry`, { entryId })
 }

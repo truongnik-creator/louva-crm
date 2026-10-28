@@ -4,9 +4,15 @@ import { prisma } from "../lib/prisma";
 import { pageQuery } from "../lib/pagination";
 import { asyncHandler, HttpError } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
-import { requirePermission, scopedWhere, notFound, scopeOf } from "../middleware/rbac";
+import {
+  requirePermission,
+  scopedWhere,
+  notFound,
+  scopeOf,
+} from "../middleware/rbac";
 import { writeAudit } from "../lib/audit";
 import { startOfVnDay } from "../lib/datetime";
+import { bestRating, matchPlan, normalizePostUrl } from "../lib/content-link";
 import {
   AuditAction,
   ContentFormat,
@@ -14,6 +20,7 @@ import {
   ContentTaskKind,
   CONTENT_STAGE_ORDER,
   PermissionScope,
+  WorkReportSyncMode,
   WorkTaskStatus,
 } from "../types/enums";
 
@@ -217,6 +224,8 @@ router.patch(
     for (const k of ["title", "format", "brief", "campaignId", "channelId", "ownerId", "note", "postUrl"] as const) {
       if (k in body) data[k] = body[k] ?? null;
     }
+    // F38: khoá ghép luôn đi kèm postUrl — không bao giờ để hai cột lệch nhau.
+    if ("postUrl" in body) data.postUrlKey = normalizePostUrl(body.postUrl);
     if ("plannedDate" in body) {
       data.plannedDate = body.plannedDate ? startOfVnDay(new Date(body.plannedDate)) : null;
     }
@@ -226,6 +235,7 @@ router.patch(
       data,
       include: planInclude,
     });
+    if ("postUrl" in body) await matchPlan(plan.id);
     await writeAudit({
       req,
       action: AuditAction.UPDATE,
@@ -287,12 +297,14 @@ router.post(
       data: {
         stage: to,
         postUrl,
+        postUrlKey: normalizePostUrl(postUrl),
         ...(to === ContentStage.DA_DUYET ? { approvedById: me.id, approvedAt: new Date() } : {}),
         ...(to === ContentStage.DA_DANG ? { publishedAt: new Date() } : {}),
       },
       include: planInclude,
     });
 
+    if (postUrl !== plan.postUrl) await matchPlan(plan.id);
     await writeAudit({
       req,
       action: to === ContentStage.DA_DUYET ? AuditAction.APPROVE : AuditAction.UPDATE,
@@ -468,6 +480,252 @@ router.get(
       waiting,
       overdue: tasks.filter((t) => t.dueDate && t.dueDate < today).length,
     });
+  })
+);
+
+// ------------------------------------------------------------- ĐO LƯỜNG F38
+//
+// Nguồn số liệu là TRANG TÍNH, không phải người gõ lại vào CRM. Cột "Đánh giá
+// bài đăng" của trang tính đã phân bậc theo view (<5k / ≥5k / ≥10k / ≥50k), nên
+// chỉ việc đọc lên chứ không tự chấm lại.
+
+/** Một bài kèm kết quả thật lấy từ trang tính. */
+function ketQuaCuaBai(plan: {
+  id: string;
+  entries: Array<{ ratingCode: string | null; workDate: Date | null; linkUrl: string | null }>;
+}) {
+  const rating = bestRating(plan.entries.map((e) => e.ratingCode));
+  const ngayBaoCao = plan.entries
+    .map((e) => e.workDate)
+    .filter((d): d is Date => Boolean(d))
+    .sort((a, b) => a.getTime() - b.getTime())[0];
+  return { rating, ngayBaoCao: ngayBaoCao ?? null, soDong: plan.entries.length };
+}
+
+router.get(
+  "/measure",
+  requirePermission("content.read"),
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({ from: z.string().optional(), to: z.string().optional() })
+      .parse(req.query);
+
+    const where: Record<string, unknown> = { ...planScope(req) };
+    if (q.from || q.to) {
+      where.plannedDate = {
+        ...(q.from ? { gte: startOfVnDay(new Date(q.from)) } : {}),
+        ...(q.to ? { lte: startOfVnDay(new Date(q.to)) } : {}),
+      };
+    }
+
+    const plans = await prisma.contentPlan.findMany({
+      where,
+      select: {
+        id: true,
+        title: true,
+        format: true,
+        stage: true,
+        plannedDate: true,
+        publishedAt: true,
+        postUrl: true,
+        channel: { select: { id: true, name: true } },
+        campaign: { select: { id: true, name: true } },
+        owner: { select: { id: true, name: true } },
+        entries: { select: { ratingCode: true, workDate: true, linkUrl: true } },
+      },
+      orderBy: [{ plannedDate: "desc" }],
+    });
+
+    // Xem được năng suất của NGƯỜI KHÁC hay không.
+    //
+    // Nếu cứ trả `owner` kèm `rating` cho mọi vai thì một bạn media chỉ cần
+    // cộng tay là ra bảng xếp hạng đồng nghiệp — lúc đó cổng ở /measure/by-person
+    // chỉ là hình thức. Tổng theo kênh, theo dạng thì ai cũng xem được: đó là
+    // kết quả của đội, không phải điểm của một người.
+    const xemDuocNguoiKhac = Boolean(req.user?.permissions["content.view_team_output"]);
+
+    const RATINGS = ["BAD", "AVERAGE", "GOOD", "EXCELLENT"] as const;
+    const emptyRatings = () => Object.fromEntries(RATINGS.map((r) => [r, 0])) as Record<string, number>;
+
+    const tong = {
+      keHoach: plans.filter((p) => p.stage !== ContentStage.HUY).length,
+      daDang: plans.filter((p) => p.stage === ContentStage.DA_DANG).length,
+      huy: plans.filter((p) => p.stage === ContentStage.HUY).length,
+      coKetQua: 0,
+      ratings: emptyRatings(),
+    };
+
+    const theoKenh = new Map<string, { name: string; keHoach: number; daDang: number; ratings: Record<string, number> }>();
+    const theoDang = new Map<string, { keHoach: number; daDang: number; ratings: Record<string, number> }>();
+
+    const coKetQua: unknown[] = [];
+    const chuaCoKetQua: unknown[] = [];
+
+    for (const p of plans) {
+      const kq = ketQuaCuaBai(p);
+      const kenhKey = p.channel?.id ?? "KHONG";
+      const kenh =
+        theoKenh.get(kenhKey) ??
+        { name: p.channel?.name ?? "Chưa chọn kênh", keHoach: 0, daDang: 0, ratings: emptyRatings() };
+      const dang = theoDang.get(p.format) ?? { keHoach: 0, daDang: 0, ratings: emptyRatings() };
+
+      if (p.stage !== ContentStage.HUY) {
+        kenh.keHoach++;
+        dang.keHoach++;
+      }
+      if (p.stage === ContentStage.DA_DANG) {
+        kenh.daDang++;
+        dang.daDang++;
+      }
+      if (kq.rating) {
+        tong.coKetQua++;
+        tong.ratings[kq.rating]++;
+        kenh.ratings[kq.rating]++;
+        dang.ratings[kq.rating]++;
+      }
+
+      theoKenh.set(kenhKey, kenh);
+      theoDang.set(p.format, dang);
+
+      const row = {
+        id: p.id,
+        title: p.title,
+        format: p.format,
+        stage: p.stage,
+        channel: p.channel,
+        campaign: p.campaign,
+        owner: xemDuocNguoiKhac ? p.owner : null,
+        plannedDate: p.plannedDate,
+        publishedAt: p.publishedAt,
+        postUrl: p.postUrl,
+        ...kq,
+      };
+      if (kq.rating) coKetQua.push(row);
+      else if (p.stage === ContentStage.DA_DANG) chuaCoKetQua.push(row);
+    }
+
+    // Dòng việc có link trong trang tính mà chưa ứng với bài nào — gợi ý ghép tay.
+    const { where: entryWhere } = scopedWhere(req, "content.read", {
+      ownerFields: ["userId"],
+      branchField: "branchId",
+    });
+    const chuaGhep = await prisma.workReportEntry.findMany({
+      where: { ...entryWhere, contentPlanId: null, linkUrlKey: { not: null } },
+      select: {
+        id: true,
+        taskName: true,
+        channel: true,
+        workDate: true,
+        linkUrl: true,
+        ratingCode: true,
+        user: { select: { id: true, name: true } },
+      },
+      orderBy: { workDate: "desc" },
+      take: 50,
+    });
+
+    // Trang tính chạy đường KÉO không lấy được URL trong ô "Link hoàn thành" —
+    // nói thẳng ra, đừng để người đọc tưởng số liệu đã đủ.
+    const nguonKeo = await prisma.workReportSource.count({
+      where: { active: true, syncMode: WorkReportSyncMode.PULL },
+    });
+
+    res.json({
+      tong,
+      theoKenh: [...theoKenh.entries()].map(([id, v]) => ({ id, ...v })),
+      theoDang: [...theoDang.entries()].map(([format, v]) => ({ format, ...v })),
+      coKetQua,
+      chuaCoKetQua,
+      chuaGhep,
+      canhBao: {
+        nguonKeo,
+        thieuLink: nguonKeo > 0,
+      },
+    });
+  })
+);
+
+/**
+ * Năng suất theo NGƯỜI.
+ *
+ * Gác bằng quyền riêng `content.view_team_output`, không dùng lại
+ * `work_report.read`.
+ *
+ * Hai thứ đó khác nhau: `work_report.read` là dữ liệu NHÂN SỰ (ngày công, ngày
+ * nghỉ, từng dòng việc), còn đây là SẢN LƯỢNG nội dung. Gộp chúng lại thì MKT —
+ * người lên kế hoạch và duyệt bài, đúng người cần số này — bị chặn vì
+ * `work_report.read` của họ là OWN; còn muốn mở cho MKT thì lại phải mở luôn cả
+ * bảng công của đội. Tách quyền là cách duy nhất cho đúng cả hai.
+ */
+router.get(
+  "/measure/by-person",
+  requirePermission("content.view_team_output"),
+  asyncHandler(async (req, res) => {
+    // Phạm vi phải đi theo ĐÚNG quyền đang gác cổng. Lọc theo work_report.read
+    // thì MKT (OWN với quyền đó) qua được cổng nhưng chỉ thấy dòng của chính
+    // mình — bảng rỗng, không báo lỗi, không ai biết tại sao.
+    const { where } = scopedWhere(req, "content.view_team_output", {
+      ownerFields: ["userId"],
+      branchField: "branchId",
+    });
+
+    const entries = await prisma.workReportEntry.findMany({
+      where: { ...where, contentPlanId: { not: null } },
+      select: {
+        ratingCode: true,
+        contentPlanId: true,
+        user: { select: { id: true, name: true } },
+      },
+    });
+
+    const byUser = new Map<string, { id: string; name: string; baiCoKetQua: Set<string>; ratings: Record<string, number> }>();
+    for (const e of entries) {
+      const row =
+        byUser.get(e.user.id) ??
+        { id: e.user.id, name: e.user.name, baiCoKetQua: new Set<string>(), ratings: { BAD: 0, AVERAGE: 0, GOOD: 0, EXCELLENT: 0 } };
+      if (e.contentPlanId) row.baiCoKetQua.add(e.contentPlanId);
+      if (e.ratingCode) row.ratings[e.ratingCode] = (row.ratings[e.ratingCode] ?? 0) + 1;
+      byUser.set(e.user.id, row);
+    }
+
+    res.json(
+      [...byUser.values()]
+        .map((r) => ({
+          id: r.id,
+          name: r.name,
+          soBai: r.baiCoKetQua.size,
+          ratings: r.ratings,
+          baiTot: r.ratings.GOOD + r.ratings.EXCELLENT,
+        }))
+        .sort((a, b) => b.soBai - a.soBai)
+    );
+  })
+);
+
+/** Ghép tay một dòng việc vào bài, khi URL không khớp (gõ tay, rút gọn...). */
+router.post(
+  "/plans/:id/link-entry",
+  requirePermission("content.update"),
+  asyncHandler(async (req, res) => {
+    const plan = await assertCanEdit(req, req.params.id);
+    const { entryId } = z.object({ entryId: z.string() }).parse(req.body);
+
+    const { where } = scopedWhere(req, "content.read", { ownerFields: ["userId"], branchField: "branchId" });
+    const entry = await prisma.workReportEntry.findFirst({
+      where: { ...where, id: entryId },
+      select: { id: true, taskName: true },
+    });
+    if (!entry) throw notFound("Không tìm thấy dòng việc");
+
+    await prisma.workReportEntry.update({ where: { id: entry.id }, data: { contentPlanId: plan.id } });
+    await writeAudit({
+      req,
+      action: AuditAction.UPDATE,
+      entity: "ContentPlan",
+      entityId: plan.id,
+      summary: `Ghép tay dòng trang tính "${entry.taskName ?? entry.id}" vào bài "${plan.title}"`,
+    });
+    res.json({ ok: true });
   })
 );
 
