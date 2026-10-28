@@ -57,6 +57,8 @@ const MODULES: ModuleDef[] = [
   { key: "settings", module: "E4", label: "Phân quyền & cài đặt" },
   { key: "audit", module: "E4b", label: "Nhật ký kiểm toán", actions: ["read"] },
   { key: "work_report", module: "E5", label: "Báo cáo công việc theo trang tính", actions: ["read"] },
+  // F37: sản xuất nội dung của khối Sáng tạo & Marketing.
+  { key: "content", module: "F1", label: "Sản xuất nội dung", actions: [...DEFAULT_ACTIONS, "approve"] },
 ];
 
 /** Bốn quyền đặc biệt tách khỏi CRUD (mục 4.4). */
@@ -300,6 +302,7 @@ export const ROLES: RoleDef[] = [
           "work_report.read",
           "work_report.manage_source",
           "work_report.sync",
+          "content:cruda",
           "medical.break_glass",
         ],
       },
@@ -347,6 +350,7 @@ export const ROLES: RoleDef[] = [
           "work_report.read",
           "work_report.manage_source",
           "work_report.sync",
+          "content:cruda",
           "medical.break_glass",
         ],
       },
@@ -402,6 +406,7 @@ export const ROLES: RoleDef[] = [
           "work_report.read",
           "work_report.manage_source",
           "work_report.sync",
+          "content:cruda",
         ],
       },
     ],
@@ -580,6 +585,7 @@ export const ROLES: RoleDef[] = [
     grants: [
       { scope: ALL, items: ["customer.read", "lead:crud", "sales_order.read", "case_study.read"] },
       { scope: BR, items: ["inbox.read", "service.read"] },
+      { scope: BR, items: ["content:crud", "content.approve"] },
       { scope: OWN, items: ["shift.read", "hr.read", "work_report.read"] },
     ],
   },
@@ -603,7 +609,9 @@ export const ROLES: RoleDef[] = [
       "Quay, dựng, đăng nội dung trên các kênh. Xem được dịch vụ, case đã duyệt và báo cáo công việc của chính mình.",
     grants: [
       { scope: BR, items: ["customer.read", "service.read", "case_study.read", "inbox.read"] },
-      { scope: OWN, items: ["appointment.read", "shift.read", "hr.read", "work_report.read"] },
+      { scope: BR, items: ["content.read"] },
+      // Sửa được việc gán cho mình, không tạo và không duyệt bài.
+      { scope: OWN, items: ["appointment.read", "shift.read", "hr.read", "work_report.read", "content.update"] },
     ],
   },
   {
@@ -613,7 +621,9 @@ export const ROLES: RoleDef[] = [
       "Thiết kế ấn phẩm, ảnh trước-sau đã được phép dùng marketing, backdrop, voucher. Xem báo cáo công việc của chính mình.",
     grants: [
       { scope: BR, items: ["customer.read", "service.read", "case_study.read", "inbox.read"] },
-      { scope: OWN, items: ["appointment.read", "shift.read", "hr.read", "work_report.read"] },
+      { scope: BR, items: ["content.read"] },
+      // Sửa được việc gán cho mình, không tạo và không duyệt bài.
+      { scope: OWN, items: ["appointment.read", "shift.read", "hr.read", "work_report.read", "content.update"] },
     ],
   },
   {
@@ -626,7 +636,9 @@ export const ROLES: RoleDef[] = [
         scope: BR,
         items: ["customer.read", "service.read", "case_study.read", "inbox.read", "inbox.manage_scripts"],
       },
-      { scope: OWN, items: ["appointment.read", "shift.read", "hr.read", "work_report.read"] },
+      { scope: BR, items: ["content.read"] },
+      // Sửa được việc gán cho mình, không tạo và không duyệt bài.
+      { scope: OWN, items: ["appointment.read", "shift.read", "hr.read", "work_report.read", "content.update"] },
     ],
   },
 ];

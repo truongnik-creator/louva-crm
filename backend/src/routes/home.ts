@@ -4,7 +4,7 @@ import { startOfVnDay } from "../lib/datetime";
 import { asyncHandler } from "../middleware/errorHandler";
 import { requireAuth, currentUser } from "../middleware/auth";
 import { hasPermission, scopeOf, scopedWhere, maskCustomerPhones } from "../middleware/rbac";
-import { AppointmentStatus, DepositStatus, InvoiceStatus, PermissionScope, ProcedureStatus, ReferralRewardStatus, TaskKind, TaskStatus, VisitStatus } from "../types/enums";
+import { AppointmentStatus, ContentStage, DepositStatus, InvoiceStatus, PermissionScope, ProcedureStatus, ReferralRewardStatus, TaskKind, TaskStatus, VisitStatus, WorkTaskStatus } from "../types/enums";
 import { RoleCode } from "../lib/rbac-catalog";
 import { REAL_MONEY } from "../lib/report-scope";
 import { settingList, vnPeriodKey } from "../lib/metrics";
@@ -318,6 +318,42 @@ router.get(
             ? { OR: [{ branchId: { in: me.branchIds } }, { ownerId: me.id }] }
             : { ownerId: me.id };
       sections.reengage = { pending: await prisma.reengageDraft.count({ where: { ...where, status: "PENDING" } }) };
+    }
+
+    // F37: khối Sáng tạo & Marketing — việc nội dung của chính mình.
+    //
+    // Media, Design, Content trước đây mở CRM ra là màn trống vì mọi khối trên
+    // đều đòi quyền họ không có. Khối này là thứ đầu tiên họ thực sự dùng.
+    if (hasPermission(req, "content.read")) {
+      const openStages = [
+        ContentStage.Y_TUONG,
+        ContentStage.DANG_LAM,
+        ContentStage.CHO_DUYET,
+        ContentStage.DA_DUYET,
+      ];
+      const [tasks, owned, waiting] = await Promise.all([
+        prisma.contentTask.findMany({
+          where: { assigneeId: me.id, status: { notIn: [WorkTaskStatus.DONE, WorkTaskStatus.CANCELLED] } },
+          include: { plan: { select: { id: true, title: true, stage: true, plannedDate: true } } },
+          orderBy: [{ dueDate: "asc" }],
+          take: 20,
+        }),
+        prisma.contentPlan.count({ where: { ownerId: me.id, stage: { in: openStages } } }),
+        hasPermission(req, "content.approve")
+          ? prisma.contentPlan.count({
+              where: {
+                stage: ContentStage.CHO_DUYET,
+                OR: [{ branchId: { in: me.branchIds } }, { branchId: null }],
+              },
+            })
+          : Promise.resolve(0),
+      ]);
+      sections.content = {
+        tasks,
+        owned,
+        waiting,
+        overdue: tasks.filter((t) => t.dueDate && t.dueDate < start).length,
+      };
     }
 
     res.json(

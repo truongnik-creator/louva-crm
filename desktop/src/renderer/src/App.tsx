@@ -39,6 +39,7 @@ import CustomerImport from './pages/CustomerImport'
 import ConsentTemplates from './pages/ConsentTemplates'
 import JobLog from './pages/JobLog'
 import WorkReports from './pages/WorkReports'
+import ContentBoard from './pages/ContentBoard'
 import MyTasks from './pages/MyTasks'
 import Outreach from './pages/Outreach'
 import Promotions from './pages/Promotions'
@@ -125,6 +126,14 @@ export default function App(): React.JSX.Element {
           element={
             <ProtectedRoute permission="work_report.read">
               <WorkReports />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="san-xuat-noi-dung"
+          element={
+            <ProtectedRoute permission="content.read">
+              <ContentBoard />
             </ProtectedRoute>
           }
         />
