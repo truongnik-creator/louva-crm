@@ -596,6 +596,62 @@ Mọi con số kinh doanh là tham số trong **Cài đặt hệ thống** (`bac
 - **AI6**: bản tin toàn hệ thống gửi Giám đốc và Quản trị hệ thống; bản từng cơ sở gửi Quản lý cơ sở (khi có từ 2 cơ sở).
 - Quyền mới: Giám đốc, Quản lý cơ sở được lập phiếu tư vấn; Bác sĩ được duyệt cổng chuyên môn của case.
 
+## F37 · Khối Sáng tạo & Marketing — bảng sản xuất nội dung
+
+**Vấn đề:** F36 kéo được báo cáo công việc từ trang tính về, nhưng trang tính
+chỉ ghi VIỆC ĐÃ LÀM. Media, Design, Content, MKT không có chỗ nào trong CRM để
+lên kế hoạch bài sắp đăng, đặt việc cho nhau, hay biết bài đang tắc ở bước nào.
+Mở CRM ra, ba vai trò này thấy một màn gần như trống vì mọi khối trên trang chủ
+đều đòi quyền họ không có.
+
+**Chốt kiến trúc:** gộp vào CRM, không làm phần mềm riêng. Lý do quyết định là
+phép nối nội dung → chiến dịch → lead → doanh thu chỉ tồn tại khi cùng một CSDL;
+tách app là mất vĩnh viễn hoặc phải đồng bộ hai chiều rồi lệch số. Thêm vào đó
+RBAC ba phạm vi, che SĐT và nhật ký kiểm toán đã có sẵn — app thứ hai phải giải
+lại bài toán rủi ro dữ liệu khách từ đầu. Điều kiện lật ngược: nếu đội Media
+nhận job cho thương hiệu ngoài phòng khám thì phải tách, vì CRM chỉ đa **cơ sở**
+chứ không đa **thương hiệu**. Chủ phòng khám đã xác nhận đội chỉ phục vụ NOVA.
+
+**Lược đồ:** hai bảng mới `content_plans`, `content_tasks` (migration
+`20261028030248_add_content_production`, chỉ `CREATE TABLE`, không `ALTER` cột
+đang có dữ liệu). `content_plans` cố ý **không có `customerId`** — khối sáng tạo
+không chạm hồ sơ khách. Nối về phễu qua `campaignId` (dùng lại `Campaign` sẵn có
+với `utmSource/Medium/Campaign`) và `channelId`.
+
+**Bước của một bài:** `Y_TUONG → DANG_LAM → CHO_DUYET → DA_DUYET → DA_DANG`, đi
+một bước một, không nhảy cóc, không lùi. `HUY` là lối ra ở bất kỳ bước nào và
+không quay lại được (muốn làm lại thì tạo bài mới, để lịch sử khỏi bị đục). Hai
+cổng riêng: vào `DA_DUYET` cần `content.approve`; vào `DA_DANG` bắt buộc có
+`postUrl`, vì bài đã đăng mà không có link thì sau này không đối chiếu được kết
+quả về phễu.
+
+**Quyền:** module mới `content` (F1) với 5 hành động. Media, Design, Content:
+`content.read` phạm vi BRANCH (bảng sản xuất là bảng chung của đội — mỗi người
+chỉ thấy phần mình thì không còn là bảng nữa) và `content.update` phạm vi OWN
+(chỉ bài mình phụ trách hoặc có việc gán cho mình). MKT dùng lại vai trò
+MARKETING, được `content:crud` + `content.approve` phạm vi BRANCH. Giám đốc,
+Quản lý cơ sở, Quản trị hệ thống: `content:cruda`. Lễ tân và các vai khác không
+có quyền nào — nhóm menu tự ẩn.
+
+**Giao diện:** nhóm menu mới **"Sáng tạo & Marketing"** đặt trên nhóm Nhân sự,
+gồm màn mới `/san-xuat-noi-dung` (tab Bảng theo bước, tab Lịch theo ngày đăng)
+và mục "Báo cáo công việc (trang tính)" **chuyển từ nhóm Nhân sự sang** — cùng
+một nhóm người dùng thì để cùng một chỗ. Trang chủ có thêm khối "Nội dung của
+tôi" (section `content` ở `routes/home.ts` + một `<Block>` ở `RoleHome.tsx`,
+đúng cách mở rộng mà tệp đó mô tả). Nút chuyển bước chỉ hiện trên bài người dùng
+thực sự sửa được: phạm vi OWN mà vẫn bày nút trên mọi thẻ thì bấm vào chỉ nhận
+404 — đúng về bảo mật nhưng là giao diện gài bẫy.
+
+**Kiểm chứng:** 21 test (`tests/f37-san-xuat-noi-dung.test.ts`) phủ ba cổng phân
+quyền, thứ tự bước, cổng duyệt, bắt buộc link khi đăng, nhật ký kiểm toán, và
+một test đọc thẳng `PRAGMA table_info(content_plans)` để chặn việc ai đó thêm
+cột khách vào bảng này về sau.
+
+**Còn thiếu (giai đoạn sau):** hàng đợi yêu cầu thiết kế để bộ phận khác đặt
+việc; thư viện tài sản nối vào ảnh đã duyệt marketing (đường đó cần kiểm
+`consentForMarketing` và ghi nhật ký riêng); báo cáo nối bài đăng → lead →
+doanh thu.
+
 ## Việc cần xác minh với tài khoản thật
 
 1. **Pancake**: đường dẫn API, hai loại token và mốc thời gian đã đối chiếu bản OpenAPI chính thức (xem mục F35). Còn phải thử với tài khoản thật: định dạng chữ ký webhook (`X-Pancake-Signature` HMAC-SHA256 hay bí mật chung — các chỗ `TODO-VERIFY` còn lại ở `backend/src/routes/pancake.ts`), trường nguồn quảng cáo (ad_id, post_id, campaign), cách tải ảnh đính kèm, và xác nhận `GET /pages/{page_id}/statistics/users` có trong gói thuê bao của phòng khám.

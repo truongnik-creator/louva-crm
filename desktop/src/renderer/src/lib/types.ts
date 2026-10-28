@@ -680,3 +680,56 @@ export interface WorkReportOverview {
     neverSynced: number
   }
 }
+
+// --------------------------------------------------------------------- F37
+// Khối Sáng tạo & Marketing: sản xuất nội dung.
+
+export type ContentFormat = 'VIDEO' | 'ANH' | 'BAI_VIET' | 'LIVE'
+export type ContentStage = 'Y_TUONG' | 'DANG_LAM' | 'CHO_DUYET' | 'DA_DUYET' | 'DA_DANG' | 'HUY'
+export type ContentTaskKind = 'QUAY' | 'DUNG' | 'THIET_KE' | 'VIET' | 'DANG'
+
+export interface ContentTask {
+  id: string
+  planId: string
+  kind: ContentTaskKind
+  assigneeId: string | null
+  assignee: { id: string; name: string } | null
+  dueDate: string | null
+  status: WorkTaskStatus
+  resultUrl: string | null
+  note: string | null
+  createdAt: string
+}
+
+export interface ContentPlan {
+  id: string
+  branchId: string | null
+  campaignId: string | null
+  campaign: { id: string; code: string; name: string } | null
+  channelId: string | null
+  channel: { id: string; key: string; name: string } | null
+  title: string
+  format: ContentFormat
+  brief: string | null
+  ownerId: string | null
+  owner: { id: string; name: string } | null
+  stage: ContentStage
+  plannedDate: string | null
+  publishedAt: string | null
+  postUrl: string | null
+  approvedById: string | null
+  approvedBy: { id: string; name: string } | null
+  approvedAt: string | null
+  note: string | null
+  createdAt: string
+  updatedAt: string
+  tasks: ContentTask[]
+}
+
+export interface ContentMyDay {
+  today: string
+  tasks: Array<ContentTask & { plan: { id: string; title: string; stage: ContentStage; plannedDate: string | null } }>
+  owned: ContentPlan[]
+  waiting: ContentPlan[]
+  overdue: number
+}

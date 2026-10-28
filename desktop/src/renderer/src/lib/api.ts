@@ -35,6 +35,12 @@ import type {
   TimelineEntry,
   Visit,
   WorkPostRating,
+  ContentFormat,
+  ContentMyDay,
+  ContentPlan,
+  ContentStage,
+  ContentTask,
+  ContentTaskKind,
   WorkReportEntry,
   WorkReportOverview,
   WorkReportSource,
@@ -820,6 +826,20 @@ export interface HomeData {
         lastMessageAt: string | null
         lastMessagePreview: string | null
       }>
+    }
+    /** F37: việc nội dung của chính mình (khối Sáng tạo & Marketing). */
+    content?: {
+      tasks: Array<{
+        id: string
+        planId: string
+        kind: 'QUAY' | 'DUNG' | 'THIET_KE' | 'VIET' | 'DANG'
+        dueDate: string | null
+        status: string
+        plan: { id: string; title: string; stage: string; plannedDate: string | null }
+      }>
+      owned: number
+      waiting: number
+      overdue: number
     }
   } & import('./api-lo5-home').HomeLo5Sections
   roles?: string[]
@@ -1884,5 +1904,101 @@ export async function previewWorkReportSheet(url: string): Promise<{
   sample: { gid: string; name: string; rows: string[][] } | null
 }> {
   const { data } = await api.get('/work-reports/preview', { params: { url } })
+  return data
+}
+
+// --------------------------------------------------------------------- F37
+// Sản xuất nội dung — khối Sáng tạo & Marketing.
+
+export async function fetchContentPlans(params?: {
+  stage?: ContentStage
+  channelId?: string
+  campaignId?: string
+  ownerId?: string
+  from?: string
+  to?: string
+}): Promise<ContentPlan[]> {
+  const { data } = await api.get('/content/plans', { params })
+  return data
+}
+
+export async function createContentPlan(payload: {
+  title: string
+  format?: ContentFormat
+  brief?: string | null
+  campaignId?: string | null
+  channelId?: string | null
+  ownerId?: string | null
+  plannedDate?: string | null
+  note?: string | null
+}): Promise<ContentPlan> {
+  const { data } = await api.post('/content/plans', payload)
+  return data
+}
+
+export async function updateContentPlan(
+  id: string,
+  payload: Partial<{
+    title: string
+    format: ContentFormat
+    brief: string | null
+    campaignId: string | null
+    channelId: string | null
+    ownerId: string | null
+    plannedDate: string | null
+    note: string | null
+    postUrl: string | null
+  }>
+): Promise<ContentPlan> {
+  const { data } = await api.patch(`/content/plans/${id}`, payload)
+  return data
+}
+
+/** Chuyển bước. Backend chặn nhảy cóc, lùi bước và duyệt khi không có quyền. */
+export async function moveContentStage(
+  id: string,
+  stage: ContentStage,
+  postUrl?: string
+): Promise<ContentPlan> {
+  const { data } = await api.post(`/content/plans/${id}/stage`, { stage, ...(postUrl ? { postUrl } : {}) })
+  return data
+}
+
+export async function deleteContentPlan(id: string): Promise<void> {
+  await api.delete(`/content/plans/${id}`)
+}
+
+export async function createContentTask(payload: {
+  planId: string
+  kind: ContentTaskKind
+  assigneeId?: string | null
+  dueDate?: string | null
+  note?: string | null
+}): Promise<ContentTask> {
+  const { data } = await api.post('/content/tasks', payload)
+  return data
+}
+
+export async function updateContentTask(
+  id: string,
+  payload: Partial<{
+    kind: ContentTaskKind
+    assigneeId: string | null
+    dueDate: string | null
+    status: WorkTaskStatus
+    resultUrl: string | null
+    note: string | null
+  }>
+): Promise<ContentTask> {
+  const { data } = await api.patch(`/content/tasks/${id}`, payload)
+  return data
+}
+
+export async function deleteContentTask(id: string): Promise<void> {
+  await api.delete(`/content/tasks/${id}`)
+}
+
+export async function fetchContentMyDay(): Promise<ContentMyDay> {
+  const { data } = await api.get('/content/my-day')
   return data
 }

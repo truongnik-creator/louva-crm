@@ -28,6 +28,7 @@ import inventoryRoutes from "./routes/inventory";
 import hrRoutes from "./routes/hr";
 import pancakeRoutes from "./routes/pancake";
 import workReportRoutes from "./routes/work-reports";
+import contentRoutes from "./routes/content";
 import settingsRoutes from "./routes/settings";
 import homeRoutes from "./routes/home";
 import clinicRoutes from "./routes/clinic";
@@ -209,6 +210,7 @@ export function createApp(): express.Express {
   app.use("/api/hr", hrRoutes);
   app.use("/api/pancake", pancakeRoutes);
   app.use("/api/work-reports", workReportRoutes);
+  app.use("/api/content", contentRoutes);
   app.use("/api/settings", settingsRoutes);
   app.use("/api/home", homeRoutes);
   app.use("/api/clinic", clinicRoutes);

@@ -298,6 +298,12 @@ Thay đổi lược đồ luôn bằng **migration mới** (`npx prisma migrate 
 - **AI5 Chăm lại khách im lặng** (`/cham-lai-khach`, quyền `inbox.reengage`): tác vụ nền mỗi ngày soạn nháp cho khách im lặng quá `ai.reengageSilentDays` ngày (bộ lọc nhóm khách của F11), chỉ khách đã đồng ý dữ liệu và không từ chối nhận tin, không gửi tên, SĐT khách lên AI. Nháp vào hàng chờ; sale phụ trách đọc, sửa, bấm duyệt thì tin vào hàng đợi gửi theo nhóm (tôn trọng từ chối nhận tin và cửa sổ 24 giờ).
 - **AI6 Bản tin sáng** (trang chủ giám đốc, quản lý cơ sở + thông báo): 7h00 giờ Việt Nam tổng hợp số liệu hôm qua và tiến độ tháng, chỉ con số tổng, không thông tin cá nhân khách; AI chưa cấu hình thì gửi bản số liệu thuần.
 
+### Khối Sáng tạo & Marketing (F36, F37)
+
+- **Sản xuất nội dung** (`/san-xuat-noi-dung`, quyền `content.*`): kế hoạch bài đăng của Media, Design, Content, MKT. Tab *Bảng* xếp theo bước `Ý tưởng → Đang làm → Chờ duyệt → Đã duyệt → Đã đăng` (đi một bước một, không nhảy cóc, không lùi; `Huỷ` là lối ra một chiều); tab *Lịch* xếp theo ngày dự kiến đăng. Mỗi bài chia việc con theo vai (quay, dựng, thiết kế, viết, đăng) có người nhận và hạn. Vào *Đã duyệt* cần `content.approve`; vào *Đã đăng* bắt buộc có link bài. Nối về phễu qua chiến dịch và kênh. **Không chạm hồ sơ khách**: bảng không có cột khách, API không trả SĐT.
+- **Báo cáo công việc (trang tính)** (`/bao-cao-cong-viec`, quyền `work_report.*`): kéo báo cáo hàng ngày từ trang tính Google riêng của từng người về một màn (F36, xem `docs/BAO-CAO-CONG-VIEC-TRANG-TINH.md`).
+- Media, Design, Content thấy cả bảng của đội (phạm vi cơ sở) nhưng chỉ sửa được bài mình phụ trách hoặc có việc gán cho mình. MKT dùng vai trò Marketing, được tạo và duyệt bài.
+
 Mục *Đào tạo & Chứng chỉ* vẫn là màn "sắp có" (ngoài phạm vi 54 hạng mục).
 
 ---
@@ -313,13 +319,13 @@ backend/
                                       stages, deposit, analytics, metrics, payroll, growth,
                                       consultation, reengage (AI5), briefing (AI6), settings-catalog, ...
   src/middleware/                     auth, rbac (ba cổng, che SĐT), errorHandler
-  src/routes/                         32 nhóm API (/api/...), trong đó Lô 6: consultations, cases, reengage
+  src/routes/                         33 nhóm API (/api/...), trong đó Lô 6: consultations, cases, reengage; F37: content
   src/services/                       Zalo, Pancake, gửi tin ra kênh
   scripts/                            backup, restore, create-admin, refresh-demo-dates, migrate-stages
   tests/                              vitest + supertest trên CSDL test riêng
 desktop/
   src/main, src/preload               vỏ Electron
-  src/renderer/src/                   React: pages (44 màn), components, lib (api theo lô), styles (theme, mobile)
+  src/renderer/src/                   React: pages (50 màn), components, lib (api theo lô), styles (theme, mobile)
   src/renderer/public-web/            manifest, biểu tượng, service worker (chỉ bản web)
   vite.web.config.mts                 build bản web vào out/web (backend phục vụ)
 docs/NANG-CAP-NOVA.md                 nhật ký 54 hạng mục và tham số chờ chủ xác nhận

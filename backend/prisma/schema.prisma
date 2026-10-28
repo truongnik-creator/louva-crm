@@ -99,6 +99,7 @@ model Branch {
   pancakePages         PancakePage[]
   stockTransfers       StockTransfer[]
   workReportSources    WorkReportSource[]    @relation("WorkReportSourceBranch")
+  contentPlans         ContentPlan[]         @relation("ContentPlanBranch")
 
   @@map("branches")
 }
@@ -200,6 +201,10 @@ model User {
   transfersApproved         StockTransfer[]       @relation("TransferApprover")
   workReportSource          WorkReportSource?     @relation("WorkReportSourceUser")
   workReportEntries         WorkReportEntry[]     @relation("WorkReportEntryUser")
+  contentPlansOwned         ContentPlan[]         @relation("ContentPlanOwner")
+  contentPlansCreated       ContentPlan[]         @relation("ContentPlanCreator")
+  contentPlansApproved      ContentPlan[]         @relation("ContentPlanApprover")
+  contentTasks              ContentTask[]         @relation("ContentTaskAssignee")
 
   @@index([status])
   @@map("users")
@@ -426,6 +431,7 @@ model Channel {
   leads        Lead[]
   customers    Customer[]
   pancakePages PancakePage[]
+  contentPlans ContentPlan[] @relation("ContentPlanChannel")
 
   @@map("channels")
 }
@@ -450,6 +456,7 @@ model Campaign {
   costs     CampaignCost[]
   leads     Lead[]
   customers Customer[]
+  contentPlans ContentPlan[] @relation("ContentPlanCampaign")
 
   @@map("campaigns")
 }
@@ -3008,4 +3015,96 @@ model WorkReportEntry {
   @@index([branchId, workDate])
   @@index([statusCode])
   @@map("work_report_entries")
+}
+
+// =============================================================================
+// F37. SẢN XUẤT NỘI DUNG — KHỐI SÁNG TẠO & MARKETING (media, mkt, design, content)
+// =============================================================================
+//
+// F36 đã kéo được báo cáo công việc từ trang tính về, nhưng trang tính chỉ ghi
+// VIỆC ĐÃ LÀM. Hai bảng dưới cho phần còn thiếu: KẾ HOẠCH sắp làm, và ĐẶT VIỆC
+// cho nhau.
+//
+// Cố ý KHÔNG có `customerId`: khối sáng tạo không được chạm hồ sơ khách. Ảnh
+// khách đã duyệt marketing sẽ nối ở giai đoạn sau, qua CaseStudy đã ẩn danh,
+// vì đường đó cần kiểm tra `consentForMarketing` và ghi nhật ký riêng.
+
+/// Một bài / sản phẩm nội dung, từ lúc là ý tưởng tới lúc đăng.
+model ContentPlan {
+  id       String  @id @default(uuid())
+  branchId String?
+  branch   Branch? @relation("ContentPlanBranch", fields: [branchId], references: [id], onDelete: SetNull)
+
+  /// Nối về phễu: bài này phục vụ chiến dịch nào. Rỗng = nội dung thường ngày.
+  campaignId String?
+  campaign   Campaign? @relation("ContentPlanCampaign", fields: [campaignId], references: [id], onDelete: SetNull)
+  /// Kênh dự định đăng (tiktok, facebook...). Dùng lại danh mục Channel sẵn có.
+  channelId  String?
+  channel    Channel?  @relation("ContentPlanChannel", fields: [channelId], references: [id], onDelete: SetNull)
+
+  title  String
+  /// ContentFormat: VIDEO | ANH | BAI_VIET | LIVE
+  format String @default("VIDEO")
+  /// Yêu cầu nội dung: nói gì, cho ai, chốt gì.
+  brief  String?
+
+  /// Người chịu trách nhiệm chính cho bài này.
+  ownerId String?
+  owner   User?   @relation("ContentPlanOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  /// ContentStage: Y_TUONG | DANG_LAM | CHO_DUYET | DA_DUYET | DA_DANG | HUY
+  stage String @default("Y_TUONG")
+
+  /// Ngày dự định đăng — trục của tab Lịch.
+  plannedDate DateTime?
+  publishedAt DateTime?
+  /// Link bài đã đăng (công khai), không phải ảnh khách.
+  postUrl     String?
+
+  approvedById String?
+  approvedBy   User?     @relation("ContentPlanApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt   DateTime?
+
+  note String?
+
+  createdById String?
+  createdBy   User?    @relation("ContentPlanCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tasks ContentTask[]
+
+  @@index([branchId, stage])
+  @@index([plannedDate])
+  @@index([ownerId, stage])
+  @@index([campaignId])
+  @@map("content_plans")
+}
+
+/// Việc con của một bài, chia theo vai: quay, dựng, thiết kế, viết, đăng.
+model ContentTask {
+  id     String      @id @default(uuid())
+  planId String
+  plan   ContentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  /// ContentTaskKind: QUAY | DUNG | THIET_KE | VIET | DANG
+  kind String
+
+  assigneeId String?
+  assignee   User?   @relation("ContentTaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  dueDate DateTime?
+  /// WorkTaskStatus — dùng lại bộ trạng thái của F36 để đếm chung được.
+  status  String    @default("PENDING")
+  /// Link kết quả (file dựng, bản thiết kế, bản thảo).
+  resultUrl String?
+  note      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([planId])
+  @@index([assigneeId, status])
+  @@index([dueDate])
+  @@map("content_tasks")
 }

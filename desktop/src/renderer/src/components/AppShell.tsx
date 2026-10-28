@@ -100,16 +100,23 @@ export const MENU: NavGroup[] = [
     ]
   },
   {
+    group: 'Sáng tạo & Marketing',
+    items: [
+      { id: 'noidung', path: '/san-xuat-noi-dung', ic: '🎬', t: 'Sản xuất nội dung', perm: 'content.read' },
+      // F36: media, mkt, design, content ghi báo cáo trên trang tính riêng;
+      // màn này kéo về để theo dõi tiến độ mà không phải mở từng trang tính.
+      // Ở cùng khối với bảng sản xuất vì cùng một nhóm người dùng.
+      { id: 'bccv', path: '/bao-cao-cong-viec', ic: '🗒', t: 'Báo cáo công việc (trang tính)', perm: 'work_report.read' }
+    ]
+  },
+  {
     group: 'Nhân sự',
     items: [
       { id: 'hsnv', path: '/nhan-vien', ic: '🧑‍⚕️', t: 'Hồ sơ nhân viên', perm: 'hr.read' },
       { id: 'chamcong', path: '/cham-cong', ic: '⏱', t: 'Chấm công & Ca trực', perm: 'hr.read' },
       { id: 'luong', path: '/luong', ic: '💵', t: 'Lương & Hoa hồng', perm: 'hr.read' },
       { id: 'kyluong', path: '/ky-luong', ic: '🧮', t: 'Kỳ lương theo coaching', perm: 'hr.read' },
-      { id: 'daotao', path: '/dao-tao', ic: '🎓', t: 'Đào tạo & Chứng chỉ', perm: 'hr.read', soon: true },
-      // F36: media, mkt, design, content ghi báo cáo trên trang tính riêng;
-      // màn này kéo về để theo dõi tiến độ mà không phải mở từng trang tính.
-      { id: 'bccv', path: '/bao-cao-cong-viec', ic: '🗒', t: 'Báo cáo công việc (trang tính)', perm: 'work_report.read' }
+      { id: 'daotao', path: '/dao-tao', ic: '🎓', t: 'Đào tạo & Chứng chỉ', perm: 'hr.read', soon: true }
     ]
   },
   {

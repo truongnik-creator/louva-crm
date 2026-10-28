@@ -15,6 +15,14 @@ import RoleHomeLo6, { type HomeLo6Sections } from './RoleHomeLo6'
  * khi máy chủ trả về (tức là vai có quyền tương ứng), nên thêm khối mới cho F29
  * chỉ cần: thêm section ở routes/home.ts + một <Block> ở đây. */
 
+const TASK_KIND_LABEL: Record<string, string> = {
+  QUAY: 'Quay',
+  DUNG: 'Dựng',
+  THIET_KE: 'Thiết kế',
+  VIET: 'Viết',
+  DANG: 'Đăng'
+}
+
 function Block({
   title,
   action,
@@ -262,6 +270,45 @@ export default function RoleHome(): React.JSX.Element {
                         {relativeVi(c.lastMessageAt)}
                       </td>
                       <td>{c.unreadCount > 0 ? <span className="zdot">{c.unreadCount}</span> : null}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Block>
+        ) : null}
+
+        {/* F37: khối đầu tiên media, design, content thực sự dùng được. Trước
+            đó họ mở CRM ra chỉ thấy màn trống vì không có quyền nào ở trên. */}
+        {s.content ? (
+          <Block title="Nội dung của tôi" action="Mở bảng sản xuất" onAction={() => navigate('/san-xuat-noi-dung')}>
+            <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)', marginBottom: 8 }}>
+              <Stat label="Việc đang mở" value={s.content.tasks.length} />
+              <Stat label="Quá hạn" value={s.content.overdue} tone={s.content.overdue > 0 ? 'bad' : undefined} />
+              {s.content.waiting > 0 ? (
+                <Stat label="Chờ tôi duyệt" value={s.content.waiting} tone="bad" />
+              ) : (
+                <Stat label="Bài tôi phụ trách" value={s.content.owned} />
+              )}
+            </div>
+            {s.content.tasks.length === 0 ? (
+              <div className="muted" style={{ fontSize: 12.5 }}>
+                Không có việc nội dung nào đang mở.
+              </div>
+            ) : (
+              <table>
+                <tbody>
+                  {s.content.tasks.map((t) => (
+                    <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => navigate('/san-xuat-noi-dung')}>
+                      <td>
+                        <b>{t.plan.title}</b>
+                        <div className="muted" style={{ fontSize: 11.5 }}>
+                          {TASK_KIND_LABEL[t.kind]}
+                        </div>
+                      </td>
+                      <td className="muted" style={{ fontSize: 11.5, whiteSpace: 'nowrap' }}>
+                        {t.dueDate ? `hạn ${relativeVi(t.dueDate)}` : 'chưa đặt hạn'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

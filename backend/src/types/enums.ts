@@ -823,3 +823,50 @@ export const WorkPostRating = makeEnum({
   EXCELLENT: "EXCELLENT",
 });
 export type WorkPostRating = (typeof WorkPostRating)[keyof typeof WorkPostRating];
+
+// --------------------------------------------------------------------- F37
+// Khối Sáng tạo & Marketing: sản xuất nội dung.
+
+/** Dạng sản phẩm nội dung. */
+export const ContentFormat = makeEnum({
+  VIDEO: "VIDEO",
+  ANH: "ANH",
+  BAI_VIET: "BAI_VIET",
+  LIVE: "LIVE",
+});
+export type ContentFormat = (typeof ContentFormat)[keyof typeof ContentFormat];
+
+/**
+ * Bước của một bài, đi một chiều từ trái sang phải.
+ *
+ * HUY đứng ngoài chuỗi: bỏ bài thì dừng ở đâu cũng huỷ được, nhưng huỷ rồi
+ * không quay lại được — muốn làm lại thì tạo bài mới, để lịch sử khỏi bị đục.
+ */
+export const ContentStage = makeEnum({
+  Y_TUONG: "Y_TUONG",
+  DANG_LAM: "DANG_LAM",
+  CHO_DUYET: "CHO_DUYET",
+  DA_DUYET: "DA_DUYET",
+  DA_DANG: "DA_DANG",
+  HUY: "HUY",
+});
+export type ContentStage = (typeof ContentStage)[keyof typeof ContentStage];
+
+/** Thứ tự các bước — dùng để chặn nhảy cóc và lùi bước. */
+export const CONTENT_STAGE_ORDER: ContentStage[] = [
+  ContentStage.Y_TUONG,
+  ContentStage.DANG_LAM,
+  ContentStage.CHO_DUYET,
+  ContentStage.DA_DUYET,
+  ContentStage.DA_DANG,
+];
+
+/** Việc con chia theo vai của khối sáng tạo. */
+export const ContentTaskKind = makeEnum({
+  QUAY: "QUAY",
+  DUNG: "DUNG",
+  THIET_KE: "THIET_KE",
+  VIET: "VIET",
+  DANG: "DANG",
+});
+export type ContentTaskKind = (typeof ContentTaskKind)[keyof typeof ContentTaskKind];
